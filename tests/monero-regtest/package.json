@@ -1,0 +1,30 @@
+{
+  "name": "monero-regtest-harness",
+  "private": true,
+  "type": "module",
+  "description": "Regtest harness + prototype for the 2-of-2 joint-address XMR lock (derive, fund, verify by view key, sweep)",
+  "scripts": {
+    "start": "./start.sh",
+    "start:fresh": "./start.sh --fresh",
+    "stop": "./stop.sh",
+    "e2e": "node e2e.mjs",
+    "edge": "node edge-cases.mjs",
+    "deposit-watch": "node deposit-watch.mjs",
+    "presplit": "node presplit-demo.mjs",
+    "build:rust": "cd rust-sweep && cargo build --release",
+    "build:wasm": "cd rust-sweep && cargo build --release --lib --target wasm32-unknown-unknown && cd .. && ${WASM_BINDGEN:-wasm-bindgen} --target web --out-dir browser/pkg rust-sweep/target/wasm32-unknown-unknown/release/xmr_joint_sweep.wasm",
+    "e2e:rust": "node run-rust-sweep.mjs",
+    "e2e:browser": "node browser/run-browser-sweep.mjs",
+    "monero-ts-check": "node browser/monero-ts-check.mjs",
+    "test": "node e2e.mjs && node edge-cases.mjs && node deposit-watch.mjs && node presplit-demo.mjs && node run-rust-sweep.mjs && node browser/run-browser-sweep.mjs"
+  },
+  "dependencies": {
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0"
+  },
+  "devDependencies": {
+    "monero-ts": "0.11.22",
+    "esbuild": "0.25.10",
+    "playwright-core": "1.56.1"
+  }
+}
