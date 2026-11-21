@@ -98,3 +98,9 @@ These are conventions the contracts MUST share with the model, because the vecto
 - A viem signing round trip reproduces the vector signatures byte for byte.
 - EIP-712 fixed-size arrays: see E6.
 - `anchor idl build` works with the root `rust-toolchain.toml` present, and the IDL it produces from the skeleton is the frozen one (`check-idl.mjs` passes on a fresh build).
+
+## Found by the clean-checkout acceptance run
+
+| # | Spec | Kind | What was done | Why |
+| --- | --- | --- | --- | --- |
+| A1 | 10.3 WP1 and WP2 commands: `cargo build-sbf && anchor idl build -o target/idl/xmr_swap.json` | Note | `solana/program/build.rs` creates `target/idl/`. WP2 must keep it. | On a clean checkout `anchor idl build -o` fails with "No such file or directory": neither it nor `cargo build-sbf` creates the output directory. |
