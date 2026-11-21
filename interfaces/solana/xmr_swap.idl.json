@@ -1,0 +1,6978 @@
+{
+  "address": "5SDDBJfrRbEehBjzKwZKRLdRNyqHi6sNynGwmmUW947u",
+  "metadata": {
+    "name": "xmr_swap",
+    "version": "0.1.0",
+    "spec": "0.1.0"
+  },
+  "instructions": [
+    {
+      "name": "abort",
+      "docs": [
+        "A7a-d, B8."
+      ],
+      "discriminator": [
+        73,
+        205,
+        102,
+        177,
+        241,
+        200,
+        145,
+        80
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "swap",
+          "writable": true
+        },
+        {
+          "name": "maker",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "taker",
+          "writable": true
+        },
+        {
+          "name": "maker_wallet",
+          "writable": true
+        },
+        {
+          "name": "treasury",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "mint",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "taker_token",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "maker_token",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "treasury_vault",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "token_program",
+          "optional": true,
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "approve",
+      "docs": [
+        "A2."
+      ],
+      "discriminator": [
+        69,
+        74,
+        217,
+        36,
+        115,
+        117,
+        97,
+        76
+      ],
+      "accounts": [
+        {
+          "name": "operator",
+          "signer": true
+        },
+        {
+          "name": "swap",
+          "writable": true
+        },
+        {
+          "name": "maker",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "expected_open",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "maker_spend_pub",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "maker_pok",
+          "type": {
+            "array": [
+              "u8",
+              64
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "bump_epochs",
+      "discriminator": [
+        79,
+        68,
+        133,
+        169,
+        235,
+        35,
+        2,
+        210
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "maker",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "approvals",
+          "type": "bool"
+        },
+        {
+          "name": "quotes",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "cancel_pending",
+      "docs": [
+        "A4, B2."
+      ],
+      "discriminator": [
+        74,
+        87,
+        109,
+        242,
+        64,
+        192,
+        151,
+        71
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "swap",
+          "writable": true
+        },
+        {
+          "name": "maker",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "taker",
+          "writable": true
+        },
+        {
+          "name": "maker_wallet",
+          "writable": true
+        },
+        {
+          "name": "treasury",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "mint",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "taker_token",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "maker_token",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "treasury_vault",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "token_program",
+          "optional": true,
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "cancel_quote",
+      "discriminator": [
+        41,
+        51,
+        237,
+        236,
+        153,
+        159,
+        210,
+        185
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "docs": [
+            "The operator, or anyone once `now > expires_at`."
+          ],
+          "signer": true
+        },
+        {
+          "name": "maker",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "quote",
+          "writable": true
+        },
+        {
+          "name": "quote_rent_receiver",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "claim",
+      "docs": [
+        "A11a-c, B10a-c."
+      ],
+      "discriminator": [
+        62,
+        198,
+        214,
+        193,
+        213,
+        159,
+        108,
+        210
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "swap",
+          "writable": true
+        },
+        {
+          "name": "maker",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "taker",
+          "writable": true
+        },
+        {
+          "name": "maker_wallet",
+          "writable": true
+        },
+        {
+          "name": "treasury",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "mint",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "taker_token",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "maker_token",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "treasury_vault",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "token_program",
+          "optional": true,
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "secret",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "close_swap",
+      "discriminator": [
+        244,
+        111,
+        137,
+        155,
+        121,
+        104,
+        126,
+        143
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "swap",
+          "writable": true
+        },
+        {
+          "name": "maker",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "taker",
+          "writable": true
+        },
+        {
+          "name": "maker_wallet",
+          "writable": true
+        },
+        {
+          "name": "treasury",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "mint",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "taker_token",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "maker_token",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "treasury_vault",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "token_program",
+          "optional": true,
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "expire_pending",
+      "docs": [
+        "A5, B4."
+      ],
+      "discriminator": [
+        70,
+        169,
+        9,
+        55,
+        182,
+        166,
+        196,
+        204
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "swap",
+          "writable": true
+        },
+        {
+          "name": "maker",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "taker",
+          "writable": true
+        },
+        {
+          "name": "maker_wallet",
+          "writable": true
+        },
+        {
+          "name": "treasury",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "mint",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "taker_token",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "maker_token",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "treasury_vault",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "token_program",
+          "optional": true,
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "expire_unnoticed",
+      "docs": [
+        "B11."
+      ],
+      "discriminator": [
+        230,
+        49,
+        111,
+        149,
+        24,
+        207,
+        234,
+        102
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "swap",
+          "writable": true
+        },
+        {
+          "name": "maker",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "taker",
+          "writable": true
+        },
+        {
+          "name": "maker_wallet",
+          "writable": true
+        },
+        {
+          "name": "treasury",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "mint",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "taker_token",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "maker_token",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "treasury_vault",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "token_program",
+          "optional": true,
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "freeze_config",
+      "docs": [
+        "Sets `admin` to the default key; afterwards the four admin setters fail forever."
+      ],
+      "discriminator": [
+        30,
+        68,
+        20,
+        154,
+        197,
+        42,
+        47,
+        122
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "fund",
+      "docs": [
+        "B5."
+      ],
+      "discriminator": [
+        218,
+        188,
+        111,
+        221,
+        152,
+        113,
+        174,
+        7
+      ],
+      "accounts": [
+        {
+          "name": "operator",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "swap",
+          "writable": true
+        },
+        {
+          "name": "maker",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "mint",
+          "optional": true
+        },
+        {
+          "name": "operator_token",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "token_program",
+          "optional": true,
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "expected_open",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "maker_spend_pub",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "maker_pok",
+          "type": {
+            "array": [
+              "u8",
+              64
+            ]
+          }
+        },
+        {
+          "name": "maker_view",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "initialize",
+      "docs": [
+        "Signer MUST be the program's upgrade authority. Creates `Config` (admin = signer),",
+        "`Treasury` and the USDC treasury vault."
+      ],
+      "discriminator": [
+        175,
+        175,
+        109,
+        31,
+        13,
+        152,
+        155,
+        237
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "docs": [
+            "MUST equal the upgrade authority in the program's ProgramData account. Pays the rent."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "usdc_mint"
+        },
+        {
+          "name": "treasury_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "usdc_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "program"
+        },
+        {
+          "name": "program_data"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "cluster_tag",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "treasury_authority",
+          "type": "pubkey"
+        },
+        {
+          "name": "split_mode",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "lock",
+      "docs": [
+        "A1: direction A."
+      ],
+      "discriminator": [
+        21,
+        19,
+        208,
+        43,
+        237,
+        62,
+        255,
+        87
+      ],
+      "accounts": [
+        {
+          "name": "taker",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "swap",
+          "writable": true
+        },
+        {
+          "name": "maker",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "session_key",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "offer",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "quote",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "quote_rent_receiver",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "instructions_sysvar",
+          "optional": true
+        },
+        {
+          "name": "mint",
+          "optional": true
+        },
+        {
+          "name": "taker_token",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "token_program",
+          "optional": true,
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "LockArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "post_message",
+      "docs": [
+        "Checks only the length (at most 900 bytes) and the magic. Writes nothing and emits",
+        "nothing: the message is the instruction data."
+      ],
+      "discriminator": [
+        214,
+        50,
+        100,
+        209,
+        38,
+        34,
+        7,
+        76
+      ],
+      "accounts": [
+        {
+          "name": "sender",
+          "signer": true
+        },
+        {
+          "name": "recipient"
+        },
+        {
+          "name": "swap",
+          "optional": true
+        }
+      ],
+      "args": [
+        {
+          "name": "payload",
+          "type": "bytes"
+        }
+      ]
+    },
+    {
+      "name": "post_notice",
+      "docs": [
+        "A6, B6."
+      ],
+      "discriminator": [
+        235,
+        105,
+        13,
+        222,
+        215,
+        80,
+        13,
+        125
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "swap",
+          "writable": true
+        },
+        {
+          "name": "maker",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "commitment",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "ciphertext",
+          "type": {
+            "array": [
+              "u8",
+              104
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "post_quote",
+      "discriminator": [
+        68,
+        231,
+        88,
+        224,
+        13,
+        116,
+        27,
+        84
+      ],
+      "accounts": [
+        {
+          "name": "operator",
+          "docs": [
+            "Pays the rent; it returns when the quote is consumed or cancelled."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "maker",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "quote",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker"
+              },
+              {
+                "kind": "arg",
+                "path": "terms.quote_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "terms",
+          "type": {
+            "defined": {
+              "name": "QuoteTerms"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "publish_evidence",
+      "discriminator": [
+        243,
+        125,
+        137,
+        196,
+        177,
+        55,
+        69,
+        203
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "swap",
+          "writable": true
+        },
+        {
+          "name": "maker",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "txid",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "view",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "refill_keys",
+      "docs": [
+        "Direction-A offer only; at most 8 slots."
+      ],
+      "discriminator": [
+        63,
+        70,
+        210,
+        166,
+        49,
+        61,
+        6,
+        173
+      ],
+      "accounts": [
+        {
+          "name": "operator",
+          "signer": true
+        },
+        {
+          "name": "maker",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "offer",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "asset",
+          "type": "u8"
+        },
+        {
+          "name": "slots",
+          "type": {
+            "vec": {
+              "defined": {
+                "name": "KeySlot"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "refresh_offers",
+      "docs": [
+        "One transaction refreshes every market. Offer accounts are remaining accounts in the",
+        "order of `offers`."
+      ],
+      "discriminator": [
+        134,
+        114,
+        29,
+        7,
+        151,
+        119,
+        110,
+        148
+      ],
+      "accounts": [
+        {
+          "name": "operator",
+          "signer": true
+        },
+        {
+          "name": "maker",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "eth_board",
+          "writable": true,
+          "optional": true
+        }
+      ],
+      "args": [
+        {
+          "name": "offers",
+          "type": {
+            "vec": {
+              "defined": {
+                "name": "OfferRefresh"
+              }
+            }
+          }
+        },
+        {
+          "name": "eth",
+          "type": {
+            "vec": {
+              "defined": {
+                "name": "EthQuoteRefresh"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "refund",
+      "docs": [
+        "A10a-g, B9a-h."
+      ],
+      "discriminator": [
+        2,
+        96,
+        183,
+        251,
+        63,
+        208,
+        46,
+        46
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "swap",
+          "writable": true
+        },
+        {
+          "name": "maker",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "taker",
+          "writable": true
+        },
+        {
+          "name": "maker_wallet",
+          "writable": true
+        },
+        {
+          "name": "treasury",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "mint",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "taker_token",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "maker_token",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "treasury_vault",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "token_program",
+          "optional": true,
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "secret",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "refund_unnoticed",
+      "docs": [
+        "A8."
+      ],
+      "discriminator": [
+        16,
+        100,
+        33,
+        53,
+        209,
+        100,
+        44,
+        110
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "swap",
+          "writable": true
+        },
+        {
+          "name": "maker",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "taker",
+          "writable": true
+        },
+        {
+          "name": "maker_wallet",
+          "writable": true
+        },
+        {
+          "name": "treasury",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "mint",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "taker_token",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "maker_token",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "treasury_vault",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "token_program",
+          "optional": true,
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "register_maker",
+      "discriminator": [
+        148,
+        253,
+        56,
+        234,
+        31,
+        33,
+        225,
+        11
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "maker",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "operator",
+          "type": "pubkey"
+        },
+        {
+          "name": "payout",
+          "type": "pubkey"
+        },
+        {
+          "name": "enc_key",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "reject",
+      "docs": [
+        "A3, B3. Reason 0, 1 or 2."
+      ],
+      "discriminator": [
+        135,
+        7,
+        63,
+        85,
+        131,
+        114,
+        111,
+        224
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "swap",
+          "writable": true
+        },
+        {
+          "name": "maker",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "taker",
+          "writable": true
+        },
+        {
+          "name": "maker_wallet",
+          "writable": true
+        },
+        {
+          "name": "treasury",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "mint",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "taker_token",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "maker_token",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "treasury_vault",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "token_program",
+          "optional": true,
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "expected_open",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "reason",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "release_deposit",
+      "discriminator": [
+        64,
+        87,
+        121,
+        32,
+        104,
+        72,
+        160,
+        185
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "swap",
+          "writable": true
+        },
+        {
+          "name": "maker",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "taker",
+          "writable": true
+        },
+        {
+          "name": "maker_wallet",
+          "writable": true
+        },
+        {
+          "name": "treasury",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "mint",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "taker_token",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "maker_token",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "treasury_vault",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "token_program",
+          "optional": true,
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "rotate_enc_key",
+      "discriminator": [
+        27,
+        59,
+        240,
+        172,
+        5,
+        226,
+        199,
+        68
+      ],
+      "accounts": [
+        {
+          "name": "operator",
+          "signer": true
+        },
+        {
+          "name": "maker",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "new_key",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "prev_expires_at",
+          "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "set_contacts",
+      "docs": [
+        "Replaces the list."
+      ],
+      "discriminator": [
+        113,
+        210,
+        244,
+        81,
+        202,
+        195,
+        87,
+        124
+      ],
+      "accounts": [
+        {
+          "name": "operator",
+          "signer": true
+        },
+        {
+          "name": "maker",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "contacts",
+          "type": {
+            "vec": {
+              "defined": {
+                "name": "Contact"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "set_eth_link",
+      "discriminator": [
+        208,
+        173,
+        52,
+        203,
+        249,
+        162,
+        74,
+        201
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "signer": true
+        },
+        {
+          "name": "maker",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "eth_address",
+          "type": {
+            "array": [
+              "u8",
+              20
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "set_eth_quote",
+      "docs": [
+        "Full write of one board slot. Opaque to the program."
+      ],
+      "discriminator": [
+        163,
+        241,
+        133,
+        129,
+        206,
+        238,
+        218,
+        57
+      ],
+      "accounts": [
+        {
+          "name": "operator",
+          "docs": [
+            "Pays the rent on the first call."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "maker",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "eth_board",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "slot",
+          "type": "u8"
+        },
+        {
+          "name": "quote",
+          "type": {
+            "array": [
+              "u8",
+              251
+            ]
+          }
+        },
+        {
+          "name": "sig",
+          "type": {
+            "array": [
+              "u8",
+              65
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "set_inbox_policy",
+      "discriminator": [
+        79,
+        85,
+        207,
+        170,
+        69,
+        37,
+        160,
+        143
+      ],
+      "accounts": [
+        {
+          "name": "operator",
+          "signer": true
+        },
+        {
+          "name": "maker",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "policy",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "set_offer",
+      "discriminator": [
+        230,
+        220,
+        7,
+        113,
+        40,
+        254,
+        223,
+        140
+      ],
+      "accounts": [
+        {
+          "name": "operator",
+          "docs": [
+            "Pays the rent when the offer is created."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "maker",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "offer",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "asset",
+          "type": "u8"
+        },
+        {
+          "name": "direction",
+          "type": "u8"
+        },
+        {
+          "name": "terms",
+          "type": {
+            "defined": {
+              "name": "OfferTerms"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "set_onion",
+      "docs": [
+        "Empty clears. Otherwise 56 base32 characters + `.onion`."
+      ],
+      "discriminator": [
+        153,
+        164,
+        213,
+        176,
+        8,
+        214,
+        132,
+        248
+      ],
+      "accounts": [
+        {
+          "name": "operator",
+          "signer": true
+        },
+        {
+          "name": "maker",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "onion",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "set_operator",
+      "docs": [
+        "Also increments both epochs."
+      ],
+      "discriminator": [
+        238,
+        153,
+        101,
+        169,
+        243,
+        131,
+        36,
+        1
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "signer": true
+        },
+        {
+          "name": "maker",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "operator",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "set_paused",
+      "docs": [
+        "Sets or clears the caller's pause bit."
+      ],
+      "discriminator": [
+        91,
+        60,
+        125,
+        192,
+        176,
+        225,
+        166,
+        218
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "maker",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "paused",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "set_payout",
+      "discriminator": [
+        55,
+        43,
+        132,
+        51,
+        227,
+        169,
+        242,
+        195
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "signer": true
+        },
+        {
+          "name": "maker",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "payout",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "set_ready",
+      "docs": [
+        "A9, B7."
+      ],
+      "discriminator": [
+        105,
+        78,
+        7,
+        162,
+        181,
+        167,
+        186,
+        43
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "swap",
+          "writable": true
+        },
+        {
+          "name": "maker",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "set_split_mode",
+      "discriminator": [
+        155,
+        52,
+        223,
+        31,
+        22,
+        227,
+        167,
+        87
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "split_mode",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "set_treasury_authority",
+      "discriminator": [
+        131,
+        244,
+        37,
+        32,
+        108,
+        28,
+        31,
+        8
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "treasury_authority",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "split_deposit",
+      "discriminator": [
+        32,
+        221,
+        37,
+        208,
+        75,
+        165,
+        170,
+        118
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "swap",
+          "writable": true
+        },
+        {
+          "name": "maker",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "taker",
+          "writable": true
+        },
+        {
+          "name": "maker_wallet",
+          "writable": true
+        },
+        {
+          "name": "treasury",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "mint",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "taker_token",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "maker_token",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "treasury_vault",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "token_program",
+          "optional": true,
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "sweep_treasury",
+      "docs": [
+        "Moves fees to a destination the treasury authority names. SOL: never below the Treasury",
+        "account's rent minimum."
+      ],
+      "discriminator": [
+        125,
+        203,
+        4,
+        4,
+        87,
+        34,
+        238,
+        169
+      ],
+      "accounts": [
+        {
+          "name": "treasury_authority",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "destination",
+          "writable": true
+        },
+        {
+          "name": "mint",
+          "optional": true
+        },
+        {
+          "name": "treasury_vault",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "token_program",
+          "optional": true,
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "asset",
+          "type": "u8"
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "take",
+      "docs": [
+        "B1: direction B."
+      ],
+      "discriminator": [
+        149,
+        226,
+        52,
+        104,
+        6,
+        142,
+        230,
+        39
+      ],
+      "accounts": [
+        {
+          "name": "taker",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "swap",
+          "writable": true
+        },
+        {
+          "name": "maker",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "session_key",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "offer",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "quote",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "quote_rent_receiver",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "instructions_sysvar",
+          "optional": true
+        },
+        {
+          "name": "mint",
+          "optional": true
+        },
+        {
+          "name": "taker_token",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "token_program",
+          "optional": true,
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "TakeArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "transfer_admin",
+      "discriminator": [
+        42,
+        242,
+        66,
+        106,
+        228,
+        10,
+        111,
+        156
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "admin",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "withdraw_owed",
+      "docs": [
+        "`who`: 0 taker, 1 maker (signer: the maker's owner), 2 treasury."
+      ],
+      "discriminator": [
+        110,
+        222,
+        234,
+        254,
+        112,
+        86,
+        192,
+        66
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "swap",
+          "writable": true
+        },
+        {
+          "name": "maker",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "taker",
+          "writable": true
+        },
+        {
+          "name": "maker_wallet",
+          "writable": true
+        },
+        {
+          "name": "treasury",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "mint",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "taker_token",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "maker_token",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "treasury_vault",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "token_program",
+          "optional": true,
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "who",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "withhold",
+      "discriminator": [
+        19,
+        57,
+        248,
+        249,
+        224,
+        39,
+        94,
+        136
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "swap",
+          "writable": true
+        },
+        {
+          "name": "maker",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  107,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "maker.owner",
+                "account": "Maker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "evidence",
+          "type": {
+            "option": {
+              "defined": {
+                "name": "Evidence"
+              }
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Config",
+      "discriminator": [
+        155,
+        12,
+        170,
+        224,
+        30,
+        250,
+        204,
+        130
+      ]
+    },
+    {
+      "name": "EthBoard",
+      "discriminator": [
+        105,
+        107,
+        138,
+        140,
+        112,
+        148,
+        146,
+        31
+      ]
+    },
+    {
+      "name": "Maker",
+      "discriminator": [
+        31,
+        255,
+        232,
+        61,
+        38,
+        28,
+        189,
+        147
+      ]
+    },
+    {
+      "name": "Offer",
+      "discriminator": [
+        215,
+        88,
+        60,
+        71,
+        170,
+        162,
+        73,
+        229
+      ]
+    },
+    {
+      "name": "Quote",
+      "discriminator": [
+        167,
+        202,
+        20,
+        198,
+        228,
+        66,
+        105,
+        208
+      ]
+    },
+    {
+      "name": "Swap",
+      "discriminator": [
+        53,
+        206,
+        146,
+        152,
+        44,
+        97,
+        120,
+        177
+      ]
+    },
+    {
+      "name": "Treasury",
+      "discriminator": [
+        238,
+        239,
+        123,
+        238,
+        89,
+        1,
+        168,
+        253
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "Aborted",
+      "discriminator": [
+        174,
+        37,
+        127,
+        34,
+        59,
+        60,
+        173,
+        65
+      ]
+    },
+    {
+      "name": "Claimed",
+      "discriminator": [
+        217,
+        192,
+        123,
+        72,
+        108,
+        150,
+        248,
+        33
+      ]
+    },
+    {
+      "name": "ConfigChanged",
+      "discriminator": [
+        147,
+        25,
+        86,
+        98,
+        98,
+        77,
+        78,
+        192
+      ]
+    },
+    {
+      "name": "ConfigInitialized",
+      "discriminator": [
+        181,
+        49,
+        200,
+        156,
+        19,
+        167,
+        178,
+        91
+      ]
+    },
+    {
+      "name": "ContactsChanged",
+      "discriminator": [
+        235,
+        59,
+        52,
+        8,
+        217,
+        172,
+        151,
+        162
+      ]
+    },
+    {
+      "name": "DepositReleased",
+      "discriminator": [
+        124,
+        51,
+        186,
+        122,
+        47,
+        97,
+        234,
+        181
+      ]
+    },
+    {
+      "name": "DepositSplit",
+      "discriminator": [
+        237,
+        185,
+        221,
+        249,
+        27,
+        162,
+        233,
+        3
+      ]
+    },
+    {
+      "name": "DepositWithheld",
+      "discriminator": [
+        148,
+        96,
+        114,
+        77,
+        210,
+        164,
+        196,
+        52
+      ]
+    },
+    {
+      "name": "EncKeyRotated",
+      "discriminator": [
+        174,
+        210,
+        146,
+        21,
+        144,
+        132,
+        112,
+        36
+      ]
+    },
+    {
+      "name": "EpochsBumped",
+      "discriminator": [
+        164,
+        211,
+        80,
+        55,
+        167,
+        112,
+        18,
+        222
+      ]
+    },
+    {
+      "name": "EthQuoteSet",
+      "discriminator": [
+        164,
+        172,
+        233,
+        151,
+        147,
+        69,
+        128,
+        32
+      ]
+    },
+    {
+      "name": "EvidencePublished",
+      "discriminator": [
+        23,
+        174,
+        187,
+        16,
+        70,
+        197,
+        36,
+        174
+      ]
+    },
+    {
+      "name": "ExpiredUnnoticed",
+      "discriminator": [
+        66,
+        248,
+        141,
+        17,
+        103,
+        171,
+        178,
+        38
+      ]
+    },
+    {
+      "name": "InboxPolicyChanged",
+      "discriminator": [
+        250,
+        91,
+        100,
+        134,
+        242,
+        102,
+        135,
+        84
+      ]
+    },
+    {
+      "name": "KeysRefilled",
+      "discriminator": [
+        77,
+        86,
+        173,
+        113,
+        28,
+        96,
+        223,
+        172
+      ]
+    },
+    {
+      "name": "LinkChanged",
+      "discriminator": [
+        112,
+        70,
+        201,
+        24,
+        90,
+        229,
+        142,
+        1
+      ]
+    },
+    {
+      "name": "MakerRegistered",
+      "discriminator": [
+        69,
+        159,
+        137,
+        103,
+        38,
+        120,
+        18,
+        196
+      ]
+    },
+    {
+      "name": "NoticePosted",
+      "discriminator": [
+        98,
+        25,
+        213,
+        237,
+        96,
+        133,
+        90,
+        224
+      ]
+    },
+    {
+      "name": "OfferSet",
+      "discriminator": [
+        178,
+        51,
+        213,
+        35,
+        109,
+        56,
+        35,
+        242
+      ]
+    },
+    {
+      "name": "OffersRefreshed",
+      "discriminator": [
+        191,
+        88,
+        47,
+        143,
+        85,
+        214,
+        255,
+        192
+      ]
+    },
+    {
+      "name": "OnionChanged",
+      "discriminator": [
+        66,
+        204,
+        86,
+        48,
+        58,
+        9,
+        227,
+        155
+      ]
+    },
+    {
+      "name": "OperatorChanged",
+      "discriminator": [
+        231,
+        79,
+        62,
+        226,
+        190,
+        139,
+        176,
+        51
+      ]
+    },
+    {
+      "name": "OwedWithdrawn",
+      "discriminator": [
+        5,
+        182,
+        86,
+        222,
+        137,
+        212,
+        104,
+        229
+      ]
+    },
+    {
+      "name": "PausedChanged",
+      "discriminator": [
+        12,
+        10,
+        153,
+        247,
+        60,
+        115,
+        137,
+        69
+      ]
+    },
+    {
+      "name": "PayoutChanged",
+      "discriminator": [
+        174,
+        152,
+        48,
+        114,
+        25,
+        63,
+        230,
+        39
+      ]
+    },
+    {
+      "name": "PayoutParked",
+      "discriminator": [
+        105,
+        156,
+        186,
+        112,
+        140,
+        62,
+        5,
+        183
+      ]
+    },
+    {
+      "name": "PendingCancelled",
+      "discriminator": [
+        24,
+        20,
+        230,
+        224,
+        239,
+        65,
+        117,
+        159
+      ]
+    },
+    {
+      "name": "PendingExpired",
+      "discriminator": [
+        134,
+        15,
+        131,
+        133,
+        94,
+        40,
+        150,
+        19
+      ]
+    },
+    {
+      "name": "QuoteCancelled",
+      "discriminator": [
+        214,
+        79,
+        62,
+        196,
+        138,
+        75,
+        231,
+        29
+      ]
+    },
+    {
+      "name": "QuotePosted",
+      "discriminator": [
+        130,
+        69,
+        35,
+        209,
+        183,
+        130,
+        239,
+        156
+      ]
+    },
+    {
+      "name": "ReadySet",
+      "discriminator": [
+        212,
+        56,
+        168,
+        33,
+        122,
+        51,
+        205,
+        158
+      ]
+    },
+    {
+      "name": "Refunded",
+      "discriminator": [
+        35,
+        103,
+        149,
+        246,
+        196,
+        123,
+        221,
+        99
+      ]
+    },
+    {
+      "name": "RefundedKeyless",
+      "discriminator": [
+        169,
+        78,
+        84,
+        67,
+        183,
+        244,
+        127,
+        126
+      ]
+    },
+    {
+      "name": "SwapApproved",
+      "discriminator": [
+        177,
+        1,
+        6,
+        100,
+        93,
+        219,
+        119,
+        35
+      ]
+    },
+    {
+      "name": "SwapClosed",
+      "discriminator": [
+        71,
+        35,
+        64,
+        248,
+        81,
+        171,
+        71,
+        52
+      ]
+    },
+    {
+      "name": "SwapOpened",
+      "discriminator": [
+        31,
+        172,
+        136,
+        212,
+        249,
+        139,
+        42,
+        67
+      ]
+    },
+    {
+      "name": "SwapRejected",
+      "discriminator": [
+        58,
+        226,
+        16,
+        157,
+        198,
+        134,
+        56,
+        19
+      ]
+    },
+    {
+      "name": "TreasurySwept",
+      "discriminator": [
+        235,
+        3,
+        4,
+        187,
+        184,
+        147,
+        44,
+        99
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "Unauthorized"
+    },
+    {
+      "code": 6001,
+      "name": "Paused"
+    },
+    {
+      "code": 6002,
+      "name": "BadState"
+    },
+    {
+      "code": 6003,
+      "name": "TooEarly"
+    },
+    {
+      "code": 6004,
+      "name": "TooLate"
+    },
+    {
+      "code": 6005,
+      "name": "InvalidKeyCommitment"
+    },
+    {
+      "code": 6006,
+      "name": "InvalidProofOfKnowledge"
+    },
+    {
+      "code": 6007,
+      "name": "InvalidScalar"
+    },
+    {
+      "code": 6008,
+      "name": "InvalidEncryptionKey"
+    },
+    {
+      "code": 6009,
+      "name": "ScalarMismatch"
+    },
+    {
+      "code": 6010,
+      "name": "OfferDisabled"
+    },
+    {
+      "code": 6011,
+      "name": "OfferStale"
+    },
+    {
+      "code": 6012,
+      "name": "SeqTooOld"
+    },
+    {
+      "code": 6013,
+      "name": "TermsChanged"
+    },
+    {
+      "code": 6014,
+      "name": "PriceMoved"
+    },
+    {
+      "code": 6015,
+      "name": "AmountOutOfRange"
+    },
+    {
+      "code": 6016,
+      "name": "CapacityExceeded"
+    },
+    {
+      "code": 6017,
+      "name": "NoKeyAvailable"
+    },
+    {
+      "code": 6018,
+      "name": "KeySlotBusy"
+    },
+    {
+      "code": 6019,
+      "name": "ApprovalRequired"
+    },
+    {
+      "code": 6020,
+      "name": "ApprovalInvalid"
+    },
+    {
+      "code": 6021,
+      "name": "QuoteMismatch"
+    },
+    {
+      "code": 6022,
+      "name": "QuoteExpired"
+    },
+    {
+      "code": 6023,
+      "name": "StaleEpoch"
+    },
+    {
+      "code": 6024,
+      "name": "StaleKeyVersion"
+    },
+    {
+      "code": 6025,
+      "name": "SignatureInstructionInvalid"
+    },
+    {
+      "code": 6026,
+      "name": "WrongDirection"
+    },
+    {
+      "code": 6027,
+      "name": "WrongAsset"
+    },
+    {
+      "code": 6028,
+      "name": "MintNotAllowed"
+    },
+    {
+      "code": 6029,
+      "name": "DepositTooHigh"
+    },
+    {
+      "code": 6030,
+      "name": "ApprovalWindowOutOfRange"
+    },
+    {
+      "code": 6031,
+      "name": "NoticeWindowOutOfRange"
+    },
+    {
+      "code": 6032,
+      "name": "ClaimDelayTooShort"
+    },
+    {
+      "code": 6033,
+      "name": "ClaimWindowTooShort"
+    },
+    {
+      "code": 6034,
+      "name": "FinalWindowOutOfRange"
+    },
+    {
+      "code": 6035,
+      "name": "DepthInvalid"
+    },
+    {
+      "code": 6036,
+      "name": "TiersInvalid"
+    },
+    {
+      "code": 6037,
+      "name": "TooManyPending"
+    },
+    {
+      "code": 6038,
+      "name": "SessionBudgetTooLow"
+    },
+    {
+      "code": 6039,
+      "name": "EvidenceMismatch"
+    },
+    {
+      "code": 6040,
+      "name": "EvidenceRequired"
+    },
+    {
+      "code": 6041,
+      "name": "NothingOwed"
+    },
+    {
+      "code": 6042,
+      "name": "NotClosable"
+    },
+    {
+      "code": 6043,
+      "name": "VaultNotEmpty"
+    },
+    {
+      "code": 6044,
+      "name": "MessageTooLarge"
+    },
+    {
+      "code": 6045,
+      "name": "MessageMalformed"
+    },
+    {
+      "code": 6046,
+      "name": "OnionInvalid"
+    },
+    {
+      "code": 6047,
+      "name": "ContactsTooLong"
+    },
+    {
+      "code": 6048,
+      "name": "ConfigFrozen"
+    },
+    {
+      "code": 6049,
+      "name": "MathOverflow"
+    }
+  ],
+  "types": [
+    {
+      "name": "Aborted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "swap",
+            "type": "pubkey"
+          },
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "counter",
+            "type": "u8"
+          },
+          {
+            "name": "at",
+            "type": "i64"
+          },
+          {
+            "name": "new_state",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Claimed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "swap",
+            "type": "pubkey"
+          },
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "counter",
+            "type": "u8"
+          },
+          {
+            "name": "at",
+            "type": "i64"
+          },
+          {
+            "name": "secret",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "paid",
+            "type": "u64"
+          },
+          {
+            "name": "fee",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Config",
+      "docs": [
+        "PDA `[\"config\"]`, 256 bytes."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "docs": [
+              "`Pubkey::default()` = frozen."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "treasury_authority",
+            "docs": [
+              "May sweep the treasury."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "cluster_tag",
+            "docs": [
+              "Genesis hash of the cluster; binds signed objects."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "usdc_mint",
+            "docs": [
+              "Asset 1."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "split_mode",
+            "docs": [
+              "0 = the treasury half of a split goes to the treasury; 1 = burned."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "treasury_bump",
+            "type": "u8"
+          },
+          {
+            "name": "reserved",
+            "type": {
+              "array": [
+                "u8",
+                117
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ConfigChanged",
+      "docs": [
+        "Emitted by `set_treasury_authority`, `set_split_mode`, `transfer_admin` and `freeze_config`",
+        "with the values after the change (`admin` is the default key once frozen)."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "treasury_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "split_mode",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ConfigInitialized",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "treasury_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "cluster_tag",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "usdc_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "split_mode",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Contact",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "kind",
+            "docs": [
+              "0 website, 1 email, 2 Matrix, 3 Discord, 4 Telegram, 5 blob endpoint URL (HTTPS), 255 other."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "value",
+            "docs": [
+              "At most 96 bytes."
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ContactsChanged",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "count",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DepositReleased",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "swap",
+            "type": "pubkey"
+          },
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "counter",
+            "type": "u8"
+          },
+          {
+            "name": "at",
+            "type": "i64"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DepositSplit",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "swap",
+            "type": "pubkey"
+          },
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "counter",
+            "type": "u8"
+          },
+          {
+            "name": "at",
+            "type": "i64"
+          },
+          {
+            "name": "to_taker",
+            "type": "u64"
+          },
+          {
+            "name": "to_treasury",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DepositWithheld",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "swap",
+            "type": "pubkey"
+          },
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "counter",
+            "type": "u8"
+          },
+          {
+            "name": "at",
+            "type": "i64"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "txid",
+            "docs": [
+              "Zeros when no evidence was required."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "view",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "EncKeyRotated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "version",
+            "type": "u32"
+          },
+          {
+            "name": "key",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "prev_expires_at",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "EpochsBumped",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "approval_epoch",
+            "type": "u32"
+          },
+          {
+            "name": "quote_epoch",
+            "type": "u32"
+          },
+          {
+            "name": "at",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "EthBoard",
+      "docs": [
+        "PDA `[\"eth_board\", maker PDA]`, 1,408 bytes. Ethereum quotes published for discovery; opaque",
+        "to the program."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "slots",
+            "type": {
+              "array": [
+                {
+                  "defined": {
+                    "name": "EthQuoteSlot"
+                  }
+                },
+                4
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "EthQuoteRefresh",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "slot",
+            "type": "u8"
+          },
+          {
+            "name": "tier_price",
+            "type": {
+              "array": [
+                "u128",
+                3
+              ]
+            }
+          },
+          {
+            "name": "valid_until",
+            "type": "u64"
+          },
+          {
+            "name": "quote_id",
+            "type": "u64"
+          },
+          {
+            "name": "sig",
+            "type": {
+              "array": [
+                "u8",
+                65
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "EthQuoteSet",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "slot",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "EthQuoteSlot",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "used",
+            "type": "u8"
+          },
+          {
+            "name": "updated_at",
+            "type": "i64"
+          },
+          {
+            "name": "quote",
+            "docs": [
+              "The compact form of SPEC 2.10. Dynamic fields: `tierPrice` at 102..150, `validUntil` at",
+              "199..207, `quoteId` at 243..251."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                251
+              ]
+            }
+          },
+          {
+            "name": "sig",
+            "type": {
+              "array": [
+                "u8",
+                65
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "Evidence",
+      "docs": [
+        "The opening of a notice commitment, posted in clear."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "txid",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "view",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "EvidencePublished",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "swap",
+            "type": "pubkey"
+          },
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "counter",
+            "type": "u8"
+          },
+          {
+            "name": "at",
+            "type": "i64"
+          },
+          {
+            "name": "txid",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "view",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ExpiredUnnoticed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "swap",
+            "type": "pubkey"
+          },
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "counter",
+            "type": "u8"
+          },
+          {
+            "name": "at",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "InboxPolicyChanged",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "policy",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "KeySlot",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "index",
+            "type": "u8"
+          },
+          {
+            "name": "share",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "pok",
+            "docs": [
+              "Proof of knowledge, `ctx` = maker PDA."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                64
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "KeysRefilled",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "asset",
+            "type": "u8"
+          },
+          {
+            "name": "count",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "LinkChanged",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "old",
+            "type": {
+              "array": [
+                "u8",
+                20
+              ]
+            }
+          },
+          {
+            "name": "new",
+            "type": {
+              "array": [
+                "u8",
+                20
+              ]
+            }
+          },
+          {
+            "name": "effective_at",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "LockArgs",
+      "docs": [
+        "247 bytes, 248 with an approval."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "swap_nonce",
+            "type": {
+              "array": [
+                "u8",
+                16
+              ]
+            }
+          },
+          {
+            "name": "session_lamports",
+            "docs": [
+              "Forwarded to the session key."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "asset",
+            "type": "u8"
+          },
+          {
+            "name": "xmr",
+            "type": "u64"
+          },
+          {
+            "name": "max_pay",
+            "type": "u64"
+          },
+          {
+            "name": "expected_terms_hash",
+            "docs": [
+              "Ignored with a quote."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "min_seq",
+            "docs": [
+              "0 = no check; ignored with a quote."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "taker_spend_pub",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "taker_pok",
+            "docs": [
+              "`ctx` = swap PDA."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                64
+              ]
+            }
+          },
+          {
+            "name": "taker_view",
+            "docs": [
+              "`v_T`, in clear."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "taker_enc_key",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "maker_enc_version",
+            "type": "u32"
+          },
+          {
+            "name": "key_hint",
+            "docs": [
+              "Preferred pool slot; only a hint."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "approval_ix",
+            "docs": [
+              "Index of the Ed25519 instruction carrying an advance approval."
+            ],
+            "type": {
+              "option": "u8"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "Maker",
+      "docs": [
+        "PDA `[\"maker\", owner]`, 1,280 bytes. Fixed fields first; variable data last."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "owner",
+            "docs": [
+              "Offset 8. Cold key: registration, link, payout, operator."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "operator",
+            "docs": [
+              "Offset 40. Hot key: offers, approvals, notices, claims, messages."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "payout",
+            "docs": [
+              "Offset 72. Wallet that receives direction-A claims (tokens: its associated token account)."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "enc_key",
+            "docs": [
+              "Current X25519 key."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "enc_key_version",
+            "docs": [
+              "Starts at 1."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "prev_enc_key",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "prev_enc_key_expires_at",
+            "docs": [
+              "Chain time; 0 = none."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "approval_epoch",
+            "type": "u32"
+          },
+          {
+            "name": "quote_epoch",
+            "type": "u32"
+          },
+          {
+            "name": "paused",
+            "docs": [
+              "bit 0 set by the owner, bit 1 by the operator; nonzero = no new swaps."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "inbox_policy",
+            "docs": [
+              "0 = open; 1 = only takers with a swap (enforced by the daemon)."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "open_pending",
+            "type": "u16"
+          },
+          {
+            "name": "registered_slot",
+            "type": "u64"
+          },
+          {
+            "name": "registered_at",
+            "type": "i64"
+          },
+          {
+            "name": "eth_link",
+            "docs": [
+              "Linked Ethereum maker address; zeros = none."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                20
+              ]
+            }
+          },
+          {
+            "name": "eth_link_next",
+            "docs": [
+              "Pending change and when it takes effect; 0 = none."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                20
+              ]
+            }
+          },
+          {
+            "name": "eth_link_next_at",
+            "type": "i64"
+          },
+          {
+            "name": "counters",
+            "docs": [
+              "SPEC 3.7. Updates saturate."
+            ],
+            "type": {
+              "array": [
+                "u32",
+                40
+              ]
+            }
+          },
+          {
+            "name": "response_secs_sum",
+            "type": "u64"
+          },
+          {
+            "name": "volume",
+            "docs": [
+              "Indexed by asset."
+            ],
+            "type": {
+              "array": [
+                "u64",
+                2
+              ]
+            }
+          },
+          {
+            "name": "withheld_volume",
+            "type": {
+              "array": [
+                "u64",
+                2
+              ]
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "onion",
+            "docs": [
+              "v3 onion host (at most 62 bytes), or empty."
+            ],
+            "type": "string"
+          },
+          {
+            "name": "contacts",
+            "docs": [
+              "At most 6."
+            ],
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "Contact"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "MakerRegistered",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "operator",
+            "type": "pubkey"
+          },
+          {
+            "name": "payout",
+            "type": "pubkey"
+          },
+          {
+            "name": "enc_key",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "at",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "NoticePosted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "swap",
+            "type": "pubkey"
+          },
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "counter",
+            "type": "u8"
+          },
+          {
+            "name": "at",
+            "type": "i64"
+          },
+          {
+            "name": "commitment",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "Offer",
+      "docs": [
+        "PDA `[\"offer\", maker PDA, [asset], [direction]]`, 768 bytes."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "maker",
+            "docs": [
+              "Offset 8. Maker PDA."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "asset",
+            "docs": [
+              "Offset 40."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "direction",
+            "type": "u8"
+          },
+          {
+            "name": "enabled",
+            "type": "u8"
+          },
+          {
+            "name": "mode",
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "seq",
+            "docs": [
+              "+1 on every change."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "updated_at",
+            "type": "i64"
+          },
+          {
+            "name": "valid_secs",
+            "docs": [
+              "The offer is live while `now <= updated_at + valid_secs`."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "min_xmr",
+            "type": "u64"
+          },
+          {
+            "name": "max_xmr",
+            "type": "u64"
+          },
+          {
+            "name": "capacity_xmr",
+            "type": "u64"
+          },
+          {
+            "name": "price_above",
+            "docs": [
+              "Price tiers; `price_above[0] == 0`; price 0 = unused."
+            ],
+            "type": {
+              "array": [
+                "u64",
+                3
+              ]
+            }
+          },
+          {
+            "name": "prices",
+            "type": {
+              "array": [
+                "u64",
+                3
+              ]
+            }
+          },
+          {
+            "name": "depth_above",
+            "docs": [
+              "Depth tiers; `depth_above[0] == 0`; depth 0 = unused."
+            ],
+            "type": {
+              "array": [
+                "u64",
+                3
+              ]
+            }
+          },
+          {
+            "name": "depths",
+            "type": {
+              "array": [
+                "u8",
+                3
+              ]
+            }
+          },
+          {
+            "name": "dep_bps",
+            "type": "u16"
+          },
+          {
+            "name": "w_a",
+            "type": "u32"
+          },
+          {
+            "name": "w_n",
+            "type": "u32"
+          },
+          {
+            "name": "d_c",
+            "type": "u32"
+          },
+          {
+            "name": "w_c",
+            "type": "u32"
+          },
+          {
+            "name": "w_f",
+            "type": "u32"
+          },
+          {
+            "name": "terms_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "pool_filled",
+            "docs": [
+              "Bitmaps over the 16 slots."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "pool_used",
+            "type": "u16"
+          },
+          {
+            "name": "pool",
+            "docs": [
+              "Maker spend commitments (direction A only)."
+            ],
+            "type": {
+              "array": [
+                {
+                  "array": [
+                    "u8",
+                    32
+                  ]
+                },
+                16
+              ]
+            }
+          },
+          {
+            "name": "reserved",
+            "type": {
+              "array": [
+                "u8",
+                34
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "OfferRefresh",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "asset",
+            "type": "u8"
+          },
+          {
+            "name": "direction",
+            "type": "u8"
+          },
+          {
+            "name": "enabled",
+            "type": "bool"
+          },
+          {
+            "name": "prices",
+            "type": {
+              "array": [
+                "u64",
+                3
+              ]
+            }
+          },
+          {
+            "name": "capacity_xmr",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OfferSet",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "asset",
+            "type": "u8"
+          },
+          {
+            "name": "direction",
+            "type": "u8"
+          },
+          {
+            "name": "seq",
+            "type": "u64"
+          },
+          {
+            "name": "terms_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "OfferTerms",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mode",
+            "docs": [
+              "0 AUTO, 1 WINDOW, 2 ADVANCE."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "min_xmr",
+            "type": "u64"
+          },
+          {
+            "name": "max_xmr",
+            "type": "u64"
+          },
+          {
+            "name": "valid_secs",
+            "type": "u32"
+          },
+          {
+            "name": "price_above",
+            "type": {
+              "array": [
+                "u64",
+                3
+              ]
+            }
+          },
+          {
+            "name": "depth_above",
+            "type": {
+              "array": [
+                "u64",
+                3
+              ]
+            }
+          },
+          {
+            "name": "depths",
+            "type": {
+              "array": [
+                "u8",
+                3
+              ]
+            }
+          },
+          {
+            "name": "dep_bps",
+            "type": "u16"
+          },
+          {
+            "name": "w_a",
+            "type": "u32"
+          },
+          {
+            "name": "w_n",
+            "type": "u32"
+          },
+          {
+            "name": "d_c",
+            "type": "u32"
+          },
+          {
+            "name": "w_c",
+            "type": "u32"
+          },
+          {
+            "name": "w_f",
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OffersRefreshed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "count",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OnionChanged",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "onion",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OperatorChanged",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "operator",
+            "type": "pubkey"
+          },
+          {
+            "name": "approval_epoch",
+            "type": "u32"
+          },
+          {
+            "name": "quote_epoch",
+            "type": "u32"
+          },
+          {
+            "name": "at",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OwedWithdrawn",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "swap",
+            "type": "pubkey"
+          },
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "counter",
+            "type": "u8"
+          },
+          {
+            "name": "at",
+            "type": "i64"
+          },
+          {
+            "name": "who",
+            "type": "u8"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PausedChanged",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "paused",
+            "docs": [
+              "The `paused` bitfield after the change."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "at",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PayoutChanged",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "payout",
+            "type": "pubkey"
+          },
+          {
+            "name": "at",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PayoutParked",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "swap",
+            "type": "pubkey"
+          },
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "counter",
+            "type": "u8"
+          },
+          {
+            "name": "at",
+            "type": "i64"
+          },
+          {
+            "name": "who",
+            "docs": [
+              "0 taker, 1 maker, 2 treasury."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PendingCancelled",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "swap",
+            "type": "pubkey"
+          },
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "counter",
+            "type": "u8"
+          },
+          {
+            "name": "at",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PendingExpired",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "swap",
+            "type": "pubkey"
+          },
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "counter",
+            "type": "u8"
+          },
+          {
+            "name": "at",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Quote",
+      "docs": [
+        "PDA `[\"quote\", maker PDA, quote_id (u64 LE)]`, 192 bytes. A taker-bound quote, consumed and",
+        "closed by the taker's `lock` or `take`."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "maker",
+            "docs": [
+              "Offset 8. Maker PDA."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "taker",
+            "docs": [
+              "Offset 40."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "asset",
+            "type": "u8"
+          },
+          {
+            "name": "direction",
+            "type": "u8"
+          },
+          {
+            "name": "depth",
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "xmr",
+            "type": "u64"
+          },
+          {
+            "name": "amount",
+            "docs": [
+              "Exact: in A the taker pays `amount`, in B the maker escrows it."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "dep_bps",
+            "type": "u16"
+          },
+          {
+            "name": "w_n",
+            "type": "u32"
+          },
+          {
+            "name": "d_c",
+            "type": "u32"
+          },
+          {
+            "name": "w_c",
+            "type": "u32"
+          },
+          {
+            "name": "w_f",
+            "type": "u32"
+          },
+          {
+            "name": "maker_spend_pub",
+            "docs": [
+              "Direction A; zeros in B."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "expires_at",
+            "type": "i64"
+          },
+          {
+            "name": "epoch",
+            "type": "u32"
+          },
+          {
+            "name": "quote_id",
+            "type": "u64"
+          },
+          {
+            "name": "reserved",
+            "type": {
+              "array": [
+                "u8",
+                30
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "QuoteCancelled",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "quote_id",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "QuotePosted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "quote_id",
+            "type": "u64"
+          },
+          {
+            "name": "taker",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "QuoteTerms",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "quote_id",
+            "type": "u64"
+          },
+          {
+            "name": "taker",
+            "type": "pubkey"
+          },
+          {
+            "name": "asset",
+            "type": "u8"
+          },
+          {
+            "name": "direction",
+            "type": "u8"
+          },
+          {
+            "name": "depth",
+            "type": "u8"
+          },
+          {
+            "name": "xmr",
+            "type": "u64"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "dep_bps",
+            "type": "u16"
+          },
+          {
+            "name": "w_n",
+            "type": "u32"
+          },
+          {
+            "name": "d_c",
+            "type": "u32"
+          },
+          {
+            "name": "w_c",
+            "type": "u32"
+          },
+          {
+            "name": "w_f",
+            "type": "u32"
+          },
+          {
+            "name": "maker_spend_pub",
+            "docs": [
+              "Direction A; zeros in B."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "maker_pok",
+            "docs": [
+              "Direction A: proof of knowledge, `ctx` = maker PDA."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                64
+              ]
+            }
+          },
+          {
+            "name": "expires_at",
+            "docs": [
+              "At most 120 s after posting; valid while `now <= expires_at`."
+            ],
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ReadySet",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "swap",
+            "type": "pubkey"
+          },
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "counter",
+            "type": "u8"
+          },
+          {
+            "name": "at",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Refunded",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "swap",
+            "type": "pubkey"
+          },
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "counter",
+            "type": "u8"
+          },
+          {
+            "name": "at",
+            "type": "i64"
+          },
+          {
+            "name": "secret",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "deposit_held",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RefundedKeyless",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "swap",
+            "type": "pubkey"
+          },
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "counter",
+            "type": "u8"
+          },
+          {
+            "name": "at",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Swap",
+      "docs": [
+        "PDA `[\"swap\", taker, swap_nonce[16]]`, 736 bytes. Offsets in comments are frozen."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "taker",
+            "docs": [
+              "8"
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "maker",
+            "docs": [
+              "40. Maker PDA."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "state",
+            "docs": [
+              "72. SPEC 3.3."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "direction",
+            "docs": [
+              "73. 0 = A, 1 = B."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "asset",
+            "docs": [
+              "74"
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "mode",
+            "docs": [
+              "75. Effective mode: 0 auto, 1 window, 2 advance, 3 quote."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "outcome",
+            "docs": [
+              "76. Counter id; `0xff` while open."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "deposit_state",
+            "docs": [
+              "77. 0 none, 1 held, 2 withheld, 3 returned, 4 released by the maker, 5 split."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "depth",
+            "docs": [
+              "78"
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "flags",
+            "docs": [
+              "79. bit 0 notice on record; bit 1 evidence published; bit 2 secret revealed; bit 3 the",
+              "revealer was the locker; bit 4 late notice (direction B)."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "docs": [
+              "80"
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "vault_bump",
+            "docs": [
+              "81"
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "swap_nonce",
+            "docs": [
+              "82"
+            ],
+            "type": {
+              "array": [
+                "u8",
+                16
+              ]
+            }
+          },
+          {
+            "name": "session_key",
+            "docs": [
+              "98"
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "taker_enc_key",
+            "docs": [
+              "130. Taker's one-time X25519 key."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "maker_enc_version",
+            "docs": [
+              "162. Maker key version the swap's messages use."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "maker_enc_key",
+            "docs": [
+              "166. The maker's X25519 key of that version, copied from the Maker account."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "amount",
+            "docs": [
+              "198"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "deposit",
+            "type": "u64"
+          },
+          {
+            "name": "xmr",
+            "type": "u64"
+          },
+          {
+            "name": "price",
+            "type": "u64"
+          },
+          {
+            "name": "dep_bps",
+            "docs": [
+              "230"
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "fee_bps",
+            "type": "u16"
+          },
+          {
+            "name": "w_n",
+            "docs": [
+              "234"
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "d_c",
+            "type": "u32"
+          },
+          {
+            "name": "w_c",
+            "type": "u32"
+          },
+          {
+            "name": "taker_spend_pub",
+            "docs": [
+              "246"
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "maker_spend_pub",
+            "docs": [
+              "278. Zeros until known."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "locker_view",
+            "docs": [
+              "310. The locker's private view share, in clear."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "notice_commitment",
+            "docs": [
+              "342"
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "notice_ct",
+            "docs": [
+              "374"
+            ],
+            "type": {
+              "array": [
+                "u8",
+                104
+              ]
+            }
+          },
+          {
+            "name": "evidence_txid",
+            "docs": [
+              "478"
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "evidence_view",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "revealed",
+            "docs": [
+              "542. The revealed spend share."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "t_lock",
+            "docs": [
+              "574. 0 = not set."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "t_pending_deadline",
+            "type": "i64"
+          },
+          {
+            "name": "t_active",
+            "type": "i64"
+          },
+          {
+            "name": "t_note_deadline",
+            "type": "i64"
+          },
+          {
+            "name": "t_notice",
+            "type": "i64"
+          },
+          {
+            "name": "t_cut",
+            "type": "i64"
+          },
+          {
+            "name": "t_claim_open",
+            "type": "i64"
+          },
+          {
+            "name": "t_ready",
+            "type": "i64"
+          },
+          {
+            "name": "t_claim_deadline",
+            "type": "i64"
+          },
+          {
+            "name": "t_final",
+            "type": "i64"
+          },
+          {
+            "name": "t_refund",
+            "type": "i64"
+          },
+          {
+            "name": "t_settled",
+            "type": "i64"
+          },
+          {
+            "name": "owed_taker",
+            "docs": [
+              "670. Parked payouts still in escrow."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "owed_maker",
+            "type": "u64"
+          },
+          {
+            "name": "owed_treasury",
+            "type": "u64"
+          },
+          {
+            "name": "reserved",
+            "docs": [
+              "694"
+            ],
+            "type": {
+              "array": [
+                "u8",
+                42
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "SwapApproved",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "swap",
+            "type": "pubkey"
+          },
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "counter",
+            "type": "u8"
+          },
+          {
+            "name": "at",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SwapClosed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "swap",
+            "type": "pubkey"
+          },
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "counter",
+            "type": "u8"
+          },
+          {
+            "name": "at",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SwapOpened",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "swap",
+            "type": "pubkey"
+          },
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "counter",
+            "type": "u8"
+          },
+          {
+            "name": "at",
+            "type": "i64"
+          },
+          {
+            "name": "taker",
+            "type": "pubkey"
+          },
+          {
+            "name": "direction",
+            "type": "u8"
+          },
+          {
+            "name": "asset",
+            "type": "u8"
+          },
+          {
+            "name": "mode",
+            "type": "u8"
+          },
+          {
+            "name": "state",
+            "type": "u8"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "deposit",
+            "type": "u64"
+          },
+          {
+            "name": "xmr",
+            "type": "u64"
+          },
+          {
+            "name": "depth",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SwapRejected",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "swap",
+            "type": "pubkey"
+          },
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "counter",
+            "type": "u8"
+          },
+          {
+            "name": "at",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TakeArgs",
+      "docs": [
+        "214 bytes, 215 with an approval."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "swap_nonce",
+            "type": {
+              "array": [
+                "u8",
+                16
+              ]
+            }
+          },
+          {
+            "name": "session_lamports",
+            "type": "u64"
+          },
+          {
+            "name": "asset",
+            "type": "u8"
+          },
+          {
+            "name": "xmr",
+            "type": "u64"
+          },
+          {
+            "name": "min_receive",
+            "type": "u64"
+          },
+          {
+            "name": "expected_terms_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "min_seq",
+            "type": "u64"
+          },
+          {
+            "name": "taker_spend_pub",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "taker_pok",
+            "type": {
+              "array": [
+                "u8",
+                64
+              ]
+            }
+          },
+          {
+            "name": "taker_enc_key",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "maker_enc_version",
+            "type": "u32"
+          },
+          {
+            "name": "approval_ix",
+            "type": {
+              "option": "u8"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "Treasury",
+      "docs": [
+        "PDA `[\"treasury\"]`, 16 bytes. Holds SOL fees as lamports above rent; authority of the",
+        "treasury token vault."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "reserved",
+            "type": {
+              "array": [
+                "u8",
+                7
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "TreasurySwept",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "asset",
+            "type": "u8"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "destination",
+            "type": "pubkey"
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -7,18 +7,24 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
-    "./daemon-api": { "types": "./dist/daemon-api.d.ts", "default": "./dist/daemon-api.js" },
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./daemon-api": {
+      "types": "./dist/daemon-api.d.ts",
+      "default": "./dist/daemon-api.js"
+    },
     "./package.json": "./package.json"
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "prepare": "tsc -p tsconfig.json",
-    "test": "tsc -p tsconfig.json && vitest run"
-  },
-  "dependencies": {
-    "@noble/hashes": "2.4.0"
+    "test": "node scripts/generate.mjs --check && tsc -p tsconfig.json && vitest run",
+    "generate": "node scripts/generate.mjs"
   },
   "devDependencies": {
     "@coral-xyz/anchor": "0.32.1",
