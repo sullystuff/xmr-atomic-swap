@@ -1,7 +1,7 @@
 # Shared settings for the Monero regtest harness. Source this; do not execute.
 # Ports are deliberately far from Monero defaults (18080-18089, 28080-28089, 38080-38089)
 # so nothing already running on this machine is disturbed.
-export XMR_BIN="${XMR_BIN:-/home/sully/monero}"           # dir holding monerod + monero-wallet-rpc
+export XMR_BIN="${XMR_BIN:-$HOME/monero}"                 # dir holding monerod + monero-wallet-rpc 0.18.x
 export XMR_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Throwaway state (chains, wallets, logs, pidfiles) always lives under <repo>/.scratch/monero/state,
 # which is gitignored, whether the harness runs from tests/monero-regtest or from .scratch/monero.

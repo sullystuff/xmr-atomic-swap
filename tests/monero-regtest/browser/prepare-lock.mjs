@@ -4,17 +4,28 @@ import * as m from '../lib/monero.mjs';
 import { verifyLock } from '../lib/verify.mjs';
 import { daemonA, wallet, NODES, mine, fund, ensureFunded, XMR } from '../lib/harness.mjs';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-export async function prepareLock({ amount = 2n * XMR, conf = 10 } = {}) {
+/**
+ * @param dust  extra payments (piconero) to the SAME joint address, sent after the lock so they
+ *              land in the lock's block: what an attacker who knows the address can do.
+ */
+export async function prepareLock({ amount = 2n * XMR, conf = 10, dust = [] } = {}) {
   const maker = m.generateKeyHalf(), taker = m.generateKeyHalf();
   const joint = m.jointPublic({ spendPubA: maker.spendPub, spendPubB: taker.spendPub, viewPrivA: maker.viewPriv, viewPrivB: taker.viewPriv });
   const address = m.encodeAddress(joint.spendPub, joint.viewPub, 'regtest');
   await ensureFunded(); const restoreHeight = (await daemonA.info()).height - 1;
-  const lock = await fund(address, amount); await sleep(1500); if (conf) await mine(conf);
+  const lock = await fund(address, amount);
+  const dustTxids = []; for (const d of dust) dustTxids.push((await fund(address, d)).txid);
+  await sleep(1500); if (conf) await mine(conf);
   const v = await verifyLock({ nodes: NODES, txid: lock.txid, viewPriv: joint.viewPriv, spendPub: joint.spendPub, minAmount: amount, minConf: conf });
   if (conf && !v.ok) throw new Error('lock did not verify: ' + JSON.stringify(v.reasons));
   await wallet.openOrCreate('taker-dest'); const destination = await wallet.address(); await wallet.close();
   const lockHeight = conf ? (await daemonA.tx(lock.txid)).block_height : null;
-  return { lockHeight, address, viewKey: joint.viewPriv, spendPub: joint.spendPub, spendKey: m.jointSpendPriv(maker.spendPriv, taker.spendPriv), restoreHeight, destination, amount, txid: lock.txid };
+  if (conf) for (const t of dustTxids) if ((await daemonA.tx(t)).block_height !== lockHeight) throw new Error('dust did not land in the lock block');
+  return {
+    lockHeight, address, viewKey: joint.viewPriv, spendPub: joint.spendPub, spendKey: m.jointSpendPriv(maker.spendPriv, taker.spendPriv),
+    restoreHeight, destination, amount, txid: lock.txid, outputIndex: v.outputIndex, dustTxids,
+    halves: { maker, taker },
+  };
 }
 export async function destinationReceived(txids) {
   await mine(1); await wallet.openOrCreate('taker-dest'); await wallet.refresh();

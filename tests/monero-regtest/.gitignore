@@ -1,6 +1,3 @@
 node_modules/
 state/
-tools/
-browser/pkg/
 browser/dist/
-rust-sweep/target/

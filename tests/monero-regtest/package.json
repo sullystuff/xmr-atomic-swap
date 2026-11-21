@@ -2,24 +2,25 @@
   "name": "@xmrswap/monero-regtest",
   "private": true,
   "type": "module",
-  "description": "Regtest harness + prototype for the 2-of-2 joint-address XMR lock (derive, fund, verify by view key, sweep)",
+  "description": "Monero regtest harness: derive the 2-of-2 joint address, fund it, verify the lock by view key, sweep with swap-core (native and wasm)",
   "scripts": {
     "start": "./start.sh",
     "start:fresh": "./start.sh --fresh",
     "stop": "./stop.sh",
+    "build": "node build.mjs",
     "e2e": "node e2e.mjs",
     "edge": "node edge-cases.mjs",
     "deposit-watch": "node deposit-watch.mjs",
     "presplit": "node presplit-demo.mjs",
-    "build:rust": "cd rust-sweep && cargo build --release",
-    "build:wasm": "cd rust-sweep && cargo build --release --lib --target wasm32-unknown-unknown && cd .. && ${WASM_BINDGEN:-wasm-bindgen} --target web --out-dir browser/pkg rust-sweep/target/wasm32-unknown-unknown/release/xmr_joint_sweep.wasm",
     "e2e:rust": "node run-rust-sweep.mjs",
     "e2e:browser": "node browser/run-browser-sweep.mjs",
-    "test": "node e2e.mjs && node edge-cases.mjs && node deposit-watch.mjs && node presplit-demo.mjs && node run-rust-sweep.mjs && node browser/run-browser-sweep.mjs"
+    "record-vectors": "node record-vectors.mjs",
+    "test": "node build.mjs && node e2e.mjs && node edge-cases.mjs && node deposit-watch.mjs && node presplit-demo.mjs && node run-rust-sweep.mjs && node browser/run-browser-sweep.mjs"
   },
   "dependencies": {
     "@noble/curves": "2.4.0",
-    "@noble/hashes": "2.4.0"
+    "@noble/hashes": "2.4.0",
+    "@xmrswap/core-wasm": "workspace:*"
   },
   "devDependencies": {
     "esbuild": "0.25.10",
