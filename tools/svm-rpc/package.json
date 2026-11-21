@@ -1,0 +1,19 @@
+{
+  "name": "@xmrswap/svm-rpc",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "echo '@xmrswap/svm-rpc: not implemented yet (owned by WP4)' && exit 1",
+    "test": "echo '@xmrswap/svm-rpc: not implemented yet (owned by WP4)' && exit 1"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "7.0.2",
+    "tsx": "4.23.15",
+    "vitest": "5.1.1",
+    "@types/node": "22.20.5",
+    "@solana/web3.js": "1.98.4",
+    "@solana/spl-token": "0.4.15"
+  }
+}

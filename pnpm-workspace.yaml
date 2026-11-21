@@ -1,0 +1,7 @@
+packages:
+  - "packages/*"
+  - "apps/*"
+  - "tools/*"
+  - "tests/e2e"
+  - "tests/monero-regtest"
+  - "deploy"

@@ -10,3 +10,6 @@ dist/
 test-ledger/
 out/
 cache/
+*.tsbuildinfo
+# wasm-bindgen output of swap-core (built by `pnpm --filter @xmrswap/core-wasm build`)
+packages/core-wasm/pkg/

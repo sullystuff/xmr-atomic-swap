@@ -1,0 +1,29 @@
+{
+  "name": "@xmrswap/core-wasm",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "wasm-bindgen builds of crates/swap-core (web + nodejs targets) behind one typed wrapper",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./pkg/web/swap_core_bg.wasm": "./pkg/web/swap_core_bg.wasm",
+    "./pkg/web/swap_core.js": "./pkg/web/swap_core.js",
+    "./package.json": "./package.json"
+  },
+  "files": ["dist", "pkg"],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "build:ts": "tsc -p tsconfig.json",
+    "prepare": "tsc -p tsconfig.json",
+    "test": "vitest run && node test/browser.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "esbuild": "0.25.10",
+    "playwright-core": "1.56.1",
+    "typescript": "7.0.2",
+    "vitest": "5.1.1"
+  }
+}

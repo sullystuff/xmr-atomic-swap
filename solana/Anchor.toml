@@ -1,0 +1,13 @@
+[toolchain]
+anchor_version = "0.32.1"
+
+[workspace]
+members = ["program"]
+
+[programs.localnet]
+xmr_swap = "5SDDBJfrRbEehBjzKwZKRLdRNyqHi6sNynGwmmUW947u"
+
+# Never used: nothing in this repository deploys or sends a transaction (SPEC, hard rule).
+[provider]
+cluster = "localnet"
+wallet = "/dev/null"

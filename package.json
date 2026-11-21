@@ -1,0 +1,12 @@
+{
+  "name": "xmr-atomic-swap",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.15.0",
+  "engines": { "node": ">=22.21 <23", "pnpm": "9.15.0" },
+  "scripts": {
+    "vectors": "cargo run -p swap-core --bin gen-vectors -- interfaces/vectors",
+    "vectors:check": "cargo run -p swap-core --bin gen-vectors -- --check interfaces/vectors"
+  }
+}

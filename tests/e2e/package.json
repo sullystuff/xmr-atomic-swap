@@ -1,0 +1,25 @@
+{
+  "name": "@xmrswap/e2e",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "echo '@xmrswap/e2e: not implemented yet (owned by WP11)' && exit 1",
+    "test": "echo '@xmrswap/e2e: not implemented yet (owned by WP11)' && exit 1"
+  },
+  "dependencies": {
+    "@xmrswap/core-wasm": "workspace:*",
+    "@xmrswap/protocol": "workspace:*",
+    "@xmrswap/sdk": "workspace:*",
+    "@xmrswap/daemon": "workspace:*",
+    "@xmrswap/relay": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2",
+    "tsx": "4.23.15",
+    "vitest": "5.1.1",
+    "@types/node": "22.20.5",
+    "playwright-core": "1.56.1",
+    "esbuild": "0.25.10"
+  }
+}

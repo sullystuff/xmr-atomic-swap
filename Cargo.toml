@@ -1,0 +1,17 @@
+# Core Rust workspace. `solana/program`, `solana/tests` and `tools/svm-rpc` are separate
+# workspaces with their own lockfiles (SPEC 1.1): Anchor 0.32.1 sits on Solana 2.x and the SBF
+# toolchain's cargo 1.84, LiteSVM 0.16.0 on Agave 4.2.2, and the core crate on neither.
+[workspace]
+resolver = "2"
+members = ["crates/swap-core"]
+exclude = ["solana/program", "solana/tests", "tools/svm-rpc", "docs/research/prototypes"]
+
+# Tests run the cross-curve proof and scrypt; unoptimised dependencies make them minutes long.
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = "debuginfo"

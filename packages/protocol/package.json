@@ -1,0 +1,30 @@
+{
+  "name": "@xmrswap/protocol",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Frozen TypeScript types, constants, account and event codecs and daemon-API types",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./daemon-api": { "types": "./dist/daemon-api.d.ts", "default": "./dist/daemon-api.js" },
+    "./package.json": "./package.json"
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepare": "tsc -p tsconfig.json",
+    "test": "tsc -p tsconfig.json && vitest run"
+  },
+  "dependencies": {
+    "@noble/hashes": "2.4.0"
+  },
+  "devDependencies": {
+    "@coral-xyz/anchor": "0.32.1",
+    "@types/node": "22.20.5",
+    "typescript": "7.0.2",
+    "viem": "2.58.4",
+    "vitest": "5.1.1"
+  }
+}
