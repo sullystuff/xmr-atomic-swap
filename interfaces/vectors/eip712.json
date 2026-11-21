@@ -1,0 +1,2986 @@
+{
+  "any_direction": 255,
+  "any_token": "0xffffffffffffffffffffffffffffffffffffffff",
+  "approval_type": "Approval(address maker,address taker,address token,uint8 direction,uint64 maxXmr,uint64 notBefore,uint64 validUntil,uint32 epoch,bytes32 approvalId)",
+  "approval_type_hash": "0x6a011fedd9a048a0d601d9ffb67283b6b706782fc0291875b93d3521c799de3f",
+  "cases": [
+    {
+      "input": {
+        "typed_data": {
+          "domain": {
+            "chainId": 31337,
+            "name": "XmrAtomicSwap",
+            "verifyingContract": "0xe7501885e3c726ef74694299b7cd49d65e8ed897",
+            "version": "1"
+          },
+          "message": {
+            "approvalMode": 0,
+            "approvalWindow": 120,
+            "claimDelay": 10800,
+            "claimWindow": 5400,
+            "depositBps": 100,
+            "depth": [
+              2,
+              10,
+              25
+            ],
+            "depthXmr": [
+              "0",
+              "1000000000000",
+              "50000000000000"
+            ],
+            "direction": 0,
+            "epoch": 3,
+            "finalWindow": 604800,
+            "keyRoot": "0x7a9de06df5f005c5a4303ba0b53f39ee536296d3d55d06abaeec08c690d28dee",
+            "maker": "0x0fbfe9b14731dddd51b145d6b23104e8bf7f676b",
+            "maxXmr": "100000000000000",
+            "minXmr": "100000000000",
+            "noticeWindow": 1800,
+            "quoteId": "42",
+            "taker": "0x0000000000000000000000000000000000000000",
+            "tierPrice": [
+              "61000000000000000",
+              "60500000000000000",
+              "60000000000000000"
+            ],
+            "tierXmr": [
+              "0",
+              "1000000000000",
+              "50000000000000"
+            ],
+            "token": "0x0000000000000000000000000000000000000000",
+            "validUntil": "1800000150"
+          },
+          "primaryType": "Quote",
+          "types": {
+            "EIP712Domain": [
+              {
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "name": "version",
+                "type": "string"
+              },
+              {
+                "name": "chainId",
+                "type": "uint256"
+              },
+              {
+                "name": "verifyingContract",
+                "type": "address"
+              }
+            ],
+            "Quote": [
+              {
+                "name": "maker",
+                "type": "address"
+              },
+              {
+                "name": "taker",
+                "type": "address"
+              },
+              {
+                "name": "token",
+                "type": "address"
+              },
+              {
+                "name": "direction",
+                "type": "uint8"
+              },
+              {
+                "name": "approvalMode",
+                "type": "uint8"
+              },
+              {
+                "name": "minXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "maxXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "tierXmr",
+                "type": "uint64[3]"
+              },
+              {
+                "name": "tierPrice",
+                "type": "uint256[3]"
+              },
+              {
+                "name": "depthXmr",
+                "type": "uint64[3]"
+              },
+              {
+                "name": "depth",
+                "type": "uint8[3]"
+              },
+              {
+                "name": "depositBps",
+                "type": "uint16"
+              },
+              {
+                "name": "approvalWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "noticeWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "claimDelay",
+                "type": "uint32"
+              },
+              {
+                "name": "claimWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "finalWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "validUntil",
+                "type": "uint64"
+              },
+              {
+                "name": "epoch",
+                "type": "uint32"
+              },
+              {
+                "name": "keyRoot",
+                "type": "bytes32"
+              },
+              {
+                "name": "quoteId",
+                "type": "uint64"
+              }
+            ]
+          }
+        }
+      },
+      "name": "quote-public-eth-a",
+      "output": {
+        "compact": "0fbfe9b14731dddd51b145d6b23104e8bf7f676b00000000000000000000000000000000000000000000000000000000000000000000000000000000000000e876481700000000407a10f35a000000000000000000000010a5d4e800000000203d88792d000000804c432db7d80000000000000000000040e9f06df0d60000000000000000000000869eae29d500000000000000000000000000000000000010a5d4e800000000203d88792d0000020a1964007800000008070000302a000018150000803a090096d2496b00000000030000007a9de06df5f005c5a4303ba0b53f39ee536296d3d55d06abaeec08c690d28dee2a00000000000000",
+        "compact_signed": "0fbfe9b14731dddd51b145d6b23104e8bf7f676b00000000000000000000000000000000000000000000000000000000000000000000000000000000000000e876481700000000407a10f35a000000000000000000000010a5d4e800000000203d88792d000000804c432db7d80000000000000000000040e9f06df0d60000000000000000000000869eae29d500000000000000000000000000000000000010a5d4e800000000203d88792d0000020a1964007800000008070000302a000018150000803a090096d2496b00000000030000007a9de06df5f005c5a4303ba0b53f39ee536296d3d55d06abaeec08c690d28dee2a0000000000000056267b96fbc59394d89d971cfe78f5eb99e452b2be4c0906d9227daa5a6ef902061e7afd3c65a2eaad97e42e95c2b825e6ed1cd64777e5cd6b019c2db00a5e5a1b",
+        "digest": "0x950ee417e3d45f6ccb2d92c58a98fae8d20803022d552d06ff9eaf79c64667ac",
+        "signature": "0x56267b96fbc59394d89d971cfe78f5eb99e452b2be4c0906d9227daa5a6ef902061e7afd3c65a2eaad97e42e95c2b825e6ed1cd64777e5cd6b019c2db00a5e5a1b",
+        "signer": "0x19e76488e19f8ea6a4d6d87c28ff9080352ea347",
+        "struct_hash": "0x83abc536f659bc92b9dba08aecc507690d593337e870b281d097c18cec6a3507"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "typed_data": {
+          "domain": {
+            "chainId": 31337,
+            "name": "XmrAtomicSwap",
+            "verifyingContract": "0xe7501885e3c726ef74694299b7cd49d65e8ed897",
+            "version": "1"
+          },
+          "message": {
+            "approvalMode": 1,
+            "approvalWindow": 120,
+            "claimDelay": 10800,
+            "claimWindow": 5400,
+            "depositBps": 100,
+            "depth": [
+              25,
+              0,
+              0
+            ],
+            "depthXmr": [
+              "0",
+              "0",
+              "0"
+            ],
+            "direction": 0,
+            "epoch": 3,
+            "finalWindow": 604800,
+            "keyRoot": "0x7a9de06df5f005c5a4303ba0b53f39ee536296d3d55d06abaeec08c690d28dee",
+            "maker": "0x0fbfe9b14731dddd51b145d6b23104e8bf7f676b",
+            "maxXmr": "100000000000000",
+            "minXmr": "100000000000",
+            "noticeWindow": 1800,
+            "quoteId": "43",
+            "taker": "0x0f8183aefdf068dd8489b6edbf4e07965cf29246",
+            "tierPrice": [
+              "165250000",
+              "0",
+              "0"
+            ],
+            "tierXmr": [
+              "0",
+              "0",
+              "0"
+            ],
+            "token": "0xf9ab76450f884b429b2c128ac26fca8c2efdd5f5",
+            "validUntil": "1800000150"
+          },
+          "primaryType": "Quote",
+          "types": {
+            "EIP712Domain": [
+              {
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "name": "version",
+                "type": "string"
+              },
+              {
+                "name": "chainId",
+                "type": "uint256"
+              },
+              {
+                "name": "verifyingContract",
+                "type": "address"
+              }
+            ],
+            "Quote": [
+              {
+                "name": "maker",
+                "type": "address"
+              },
+              {
+                "name": "taker",
+                "type": "address"
+              },
+              {
+                "name": "token",
+                "type": "address"
+              },
+              {
+                "name": "direction",
+                "type": "uint8"
+              },
+              {
+                "name": "approvalMode",
+                "type": "uint8"
+              },
+              {
+                "name": "minXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "maxXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "tierXmr",
+                "type": "uint64[3]"
+              },
+              {
+                "name": "tierPrice",
+                "type": "uint256[3]"
+              },
+              {
+                "name": "depthXmr",
+                "type": "uint64[3]"
+              },
+              {
+                "name": "depth",
+                "type": "uint8[3]"
+              },
+              {
+                "name": "depositBps",
+                "type": "uint16"
+              },
+              {
+                "name": "approvalWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "noticeWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "claimDelay",
+                "type": "uint32"
+              },
+              {
+                "name": "claimWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "finalWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "validUntil",
+                "type": "uint64"
+              },
+              {
+                "name": "epoch",
+                "type": "uint32"
+              },
+              {
+                "name": "keyRoot",
+                "type": "bytes32"
+              },
+              {
+                "name": "quoteId",
+                "type": "uint64"
+              }
+            ]
+          }
+        }
+      },
+      "name": "quote-bound-usdc-a",
+      "output": {
+        "compact": "0fbfe9b14731dddd51b145d6b23104e8bf7f676b0f8183aefdf068dd8489b6edbf4e07965cf29246f9ab76450f884b429b2c128ac26fca8c2efdd5f5000100e876481700000000407a10f35a0000000000000000000000000000000000000000000000000000d083d909000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000019000064007800000008070000302a000018150000803a090096d2496b00000000030000007a9de06df5f005c5a4303ba0b53f39ee536296d3d55d06abaeec08c690d28dee2b00000000000000",
+        "compact_signed": "0fbfe9b14731dddd51b145d6b23104e8bf7f676b0f8183aefdf068dd8489b6edbf4e07965cf29246f9ab76450f884b429b2c128ac26fca8c2efdd5f5000100e876481700000000407a10f35a0000000000000000000000000000000000000000000000000000d083d909000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000019000064007800000008070000302a000018150000803a090096d2496b00000000030000007a9de06df5f005c5a4303ba0b53f39ee536296d3d55d06abaeec08c690d28dee2b00000000000000586e1ba8d4b082d0fdbc2501f3a7010d7108a801a07b70e9dd7392ef235f2e866a434c537e36168804138b3b408e46d9f18521255dca432a3723c524a2d3db711b",
+        "digest": "0xb43714b03492641416a4d413ff9a10971f8903a936ae3c1f743f2466094de5ed",
+        "signature": "0x586e1ba8d4b082d0fdbc2501f3a7010d7108a801a07b70e9dd7392ef235f2e866a434c537e36168804138b3b408e46d9f18521255dca432a3723c524a2d3db711b",
+        "signer": "0x19e76488e19f8ea6a4d6d87c28ff9080352ea347",
+        "struct_hash": "0x97d687ed204d8d087684bb0b4a7358291a77d5ffdeb0f0c918d2b8aa91469916"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "typed_data": {
+          "domain": {
+            "chainId": 31337,
+            "name": "XmrAtomicSwap",
+            "verifyingContract": "0xe7501885e3c726ef74694299b7cd49d65e8ed897",
+            "version": "1"
+          },
+          "message": {
+            "approvalMode": 2,
+            "approvalWindow": 120,
+            "claimDelay": 10800,
+            "claimWindow": 5400,
+            "depositBps": 100,
+            "depth": [
+              2,
+              10,
+              25
+            ],
+            "depthXmr": [
+              "0",
+              "1000000000000",
+              "50000000000000"
+            ],
+            "direction": 1,
+            "epoch": 3,
+            "finalWindow": 604800,
+            "keyRoot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+            "maker": "0x0fbfe9b14731dddd51b145d6b23104e8bf7f676b",
+            "maxXmr": "100000000000000",
+            "minXmr": "100000000000",
+            "noticeWindow": 1800,
+            "quoteId": "44",
+            "taker": "0x0000000000000000000000000000000000000000",
+            "tierPrice": [
+              "61000000000000000",
+              "60500000000000000",
+              "60000000000000000"
+            ],
+            "tierXmr": [
+              "0",
+              "1000000000000",
+              "50000000000000"
+            ],
+            "token": "0x0000000000000000000000000000000000000000",
+            "validUntil": "1800000150"
+          },
+          "primaryType": "Quote",
+          "types": {
+            "EIP712Domain": [
+              {
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "name": "version",
+                "type": "string"
+              },
+              {
+                "name": "chainId",
+                "type": "uint256"
+              },
+              {
+                "name": "verifyingContract",
+                "type": "address"
+              }
+            ],
+            "Quote": [
+              {
+                "name": "maker",
+                "type": "address"
+              },
+              {
+                "name": "taker",
+                "type": "address"
+              },
+              {
+                "name": "token",
+                "type": "address"
+              },
+              {
+                "name": "direction",
+                "type": "uint8"
+              },
+              {
+                "name": "approvalMode",
+                "type": "uint8"
+              },
+              {
+                "name": "minXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "maxXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "tierXmr",
+                "type": "uint64[3]"
+              },
+              {
+                "name": "tierPrice",
+                "type": "uint256[3]"
+              },
+              {
+                "name": "depthXmr",
+                "type": "uint64[3]"
+              },
+              {
+                "name": "depth",
+                "type": "uint8[3]"
+              },
+              {
+                "name": "depositBps",
+                "type": "uint16"
+              },
+              {
+                "name": "approvalWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "noticeWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "claimDelay",
+                "type": "uint32"
+              },
+              {
+                "name": "claimWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "finalWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "validUntil",
+                "type": "uint64"
+              },
+              {
+                "name": "epoch",
+                "type": "uint32"
+              },
+              {
+                "name": "keyRoot",
+                "type": "bytes32"
+              },
+              {
+                "name": "quoteId",
+                "type": "uint64"
+              }
+            ]
+          }
+        }
+      },
+      "name": "quote-public-eth-b",
+      "output": {
+        "compact": "0fbfe9b14731dddd51b145d6b23104e8bf7f676b00000000000000000000000000000000000000000000000000000000000000000000000000000000010200e876481700000000407a10f35a000000000000000000000010a5d4e800000000203d88792d000000804c432db7d80000000000000000000040e9f06df0d60000000000000000000000869eae29d500000000000000000000000000000000000010a5d4e800000000203d88792d0000020a1964007800000008070000302a000018150000803a090096d2496b000000000300000000000000000000000000000000000000000000000000000000000000000000002c00000000000000",
+        "compact_signed": "0fbfe9b14731dddd51b145d6b23104e8bf7f676b00000000000000000000000000000000000000000000000000000000000000000000000000000000010200e876481700000000407a10f35a000000000000000000000010a5d4e800000000203d88792d000000804c432db7d80000000000000000000040e9f06df0d60000000000000000000000869eae29d500000000000000000000000000000000000010a5d4e800000000203d88792d0000020a1964007800000008070000302a000018150000803a090096d2496b000000000300000000000000000000000000000000000000000000000000000000000000000000002c0000000000000056ddaadcbd9f9729d96d098b077cf62c03f6b00a57c4116fa280c8e46f3e60341fed014c46ac1f345af3a1d1e9404f21ed1e7beb7e1a244b80d562f1a20634561b",
+        "digest": "0xffe0c234ffc3916ac365a89992a9a27f411583665d395000e78c4d9b6a53f17d",
+        "signature": "0x56ddaadcbd9f9729d96d098b077cf62c03f6b00a57c4116fa280c8e46f3e60341fed014c46ac1f345af3a1d1e9404f21ed1e7beb7e1a244b80d562f1a20634561b",
+        "signer": "0x19e76488e19f8ea6a4d6d87c28ff9080352ea347",
+        "struct_hash": "0x2242be0068cb50abb68e0b07db0705305afef44b1bd5ad8bdc3bd108d33451d9"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "typed_data": {
+          "domain": {
+            "chainId": 31337,
+            "name": "XmrAtomicSwap",
+            "verifyingContract": "0xe7501885e3c726ef74694299b7cd49d65e8ed897",
+            "version": "1"
+          },
+          "message": {
+            "approvalMode": 2,
+            "approvalWindow": 4294967295,
+            "claimDelay": 4294967295,
+            "claimWindow": 4294967295,
+            "depositBps": 65535,
+            "depth": [
+              255,
+              254,
+              1
+            ],
+            "depthXmr": [
+              "0",
+              "18446744073709551614",
+              "18446744073709551615"
+            ],
+            "direction": 1,
+            "epoch": 4294967295,
+            "finalWindow": 4294967295,
+            "keyRoot": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "maker": "0xffffffffffffffffffffffffffffffffffffffff",
+            "maxXmr": "18446744073709551615",
+            "minXmr": "18446744073709551615",
+            "noticeWindow": 4294967295,
+            "quoteId": "18446744073709551615",
+            "taker": "0xffffffffffffffffffffffffffffffffffffffff",
+            "tierPrice": [
+              "340282366920938463463374607431768211455",
+              "340282366920938463463374607431768211454",
+              "1"
+            ],
+            "tierXmr": [
+              "0",
+              "18446744073709551614",
+              "18446744073709551615"
+            ],
+            "token": "0xffffffffffffffffffffffffffffffffffffffff",
+            "validUntil": "18446744073709551615"
+          },
+          "primaryType": "Quote",
+          "types": {
+            "EIP712Domain": [
+              {
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "name": "version",
+                "type": "string"
+              },
+              {
+                "name": "chainId",
+                "type": "uint256"
+              },
+              {
+                "name": "verifyingContract",
+                "type": "address"
+              }
+            ],
+            "Quote": [
+              {
+                "name": "maker",
+                "type": "address"
+              },
+              {
+                "name": "taker",
+                "type": "address"
+              },
+              {
+                "name": "token",
+                "type": "address"
+              },
+              {
+                "name": "direction",
+                "type": "uint8"
+              },
+              {
+                "name": "approvalMode",
+                "type": "uint8"
+              },
+              {
+                "name": "minXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "maxXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "tierXmr",
+                "type": "uint64[3]"
+              },
+              {
+                "name": "tierPrice",
+                "type": "uint256[3]"
+              },
+              {
+                "name": "depthXmr",
+                "type": "uint64[3]"
+              },
+              {
+                "name": "depth",
+                "type": "uint8[3]"
+              },
+              {
+                "name": "depositBps",
+                "type": "uint16"
+              },
+              {
+                "name": "approvalWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "noticeWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "claimDelay",
+                "type": "uint32"
+              },
+              {
+                "name": "claimWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "finalWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "validUntil",
+                "type": "uint64"
+              },
+              {
+                "name": "epoch",
+                "type": "uint32"
+              },
+              {
+                "name": "keyRoot",
+                "type": "bytes32"
+              },
+              {
+                "name": "quoteId",
+                "type": "uint64"
+              }
+            ]
+          }
+        }
+      },
+      "name": "quote-extremes",
+      "output": {
+        "compact": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0102ffffffffffffffffffffffffffffffff0000000000000000fefffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffffffffffffffffffffffffff010000000000000000000000000000000000000000000000fefffffffffffffffffffffffffffffffffe01ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "compact_signed": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0102ffffffffffffffffffffffffffffffff0000000000000000fefffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffffffffffffffffffffffffff010000000000000000000000000000000000000000000000fefffffffffffffffffffffffffffffffffe01ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffd0057023bf8bf4b884785cd90088a3d91bd7abebab74a5da915b6b84245caaa61d8f5a0a879670e58bb8a8ca5ef2a45f6b5bae4ec5f1451c38629281258068011b",
+        "digest": "0xec557f203d3e6dd69a1376a02fd5535a981681dd104e2e5466a9af00b4abf5e5",
+        "signature": "0xd0057023bf8bf4b884785cd90088a3d91bd7abebab74a5da915b6b84245caaa61d8f5a0a879670e58bb8a8ca5ef2a45f6b5bae4ec5f1451c38629281258068011b",
+        "signer": "0x19e76488e19f8ea6a4d6d87c28ff9080352ea347",
+        "struct_hash": "0x5a51d1b0e812c111858263b58fe05a75efcb357c4283ec458481e29d2f673ce5"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "now": "1800000150",
+        "signature": "0x56267b96fbc59394d89d971cfe78f5eb99e452b2be4c0906d9227daa5a6ef902061e7afd3c65a2eaad97e42e95c2b825e6ed1cd64777e5cd6b019c2db00a5e5a1b",
+        "typed_data": {
+          "domain": {
+            "chainId": 31337,
+            "name": "XmrAtomicSwap",
+            "verifyingContract": "0xe7501885e3c726ef74694299b7cd49d65e8ed897",
+            "version": "1"
+          },
+          "message": {
+            "approvalMode": 0,
+            "approvalWindow": 120,
+            "claimDelay": 10800,
+            "claimWindow": 5400,
+            "depositBps": 100,
+            "depth": [
+              2,
+              10,
+              25
+            ],
+            "depthXmr": [
+              "0",
+              "1000000000000",
+              "50000000000000"
+            ],
+            "direction": 0,
+            "epoch": 3,
+            "finalWindow": 604800,
+            "keyRoot": "0x7a9de06df5f005c5a4303ba0b53f39ee536296d3d55d06abaeec08c690d28dee",
+            "maker": "0x0fbfe9b14731dddd51b145d6b23104e8bf7f676b",
+            "maxXmr": "100000000000000",
+            "minXmr": "100000000000",
+            "noticeWindow": 1800,
+            "quoteId": "42",
+            "taker": "0x0000000000000000000000000000000000000000",
+            "tierPrice": [
+              "61000000000000000",
+              "60500000000000000",
+              "60000000000000000"
+            ],
+            "tierXmr": [
+              "0",
+              "1000000000000",
+              "50000000000000"
+            ],
+            "token": "0x0000000000000000000000000000000000000000",
+            "validUntil": "1800000150"
+          },
+          "primaryType": "Quote",
+          "types": {
+            "EIP712Domain": [
+              {
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "name": "version",
+                "type": "string"
+              },
+              {
+                "name": "chainId",
+                "type": "uint256"
+              },
+              {
+                "name": "verifyingContract",
+                "type": "address"
+              }
+            ],
+            "Quote": [
+              {
+                "name": "maker",
+                "type": "address"
+              },
+              {
+                "name": "taker",
+                "type": "address"
+              },
+              {
+                "name": "token",
+                "type": "address"
+              },
+              {
+                "name": "direction",
+                "type": "uint8"
+              },
+              {
+                "name": "approvalMode",
+                "type": "uint8"
+              },
+              {
+                "name": "minXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "maxXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "tierXmr",
+                "type": "uint64[3]"
+              },
+              {
+                "name": "tierPrice",
+                "type": "uint256[3]"
+              },
+              {
+                "name": "depthXmr",
+                "type": "uint64[3]"
+              },
+              {
+                "name": "depth",
+                "type": "uint8[3]"
+              },
+              {
+                "name": "depositBps",
+                "type": "uint16"
+              },
+              {
+                "name": "approvalWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "noticeWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "claimDelay",
+                "type": "uint32"
+              },
+              {
+                "name": "claimWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "finalWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "validUntil",
+                "type": "uint64"
+              },
+              {
+                "name": "epoch",
+                "type": "uint32"
+              },
+              {
+                "name": "keyRoot",
+                "type": "bytes32"
+              },
+              {
+                "name": "quoteId",
+                "type": "uint64"
+              }
+            ]
+          }
+        }
+      },
+      "name": "quote-at-valid-until",
+      "output": {
+        "digest": "0x950ee417e3d45f6ccb2d92c58a98fae8d20803022d552d06ff9eaf79c64667ac",
+        "signer": "0x19e76488e19f8ea6a4d6d87c28ff9080352ea347"
+      },
+      "valid": true
+    },
+    {
+      "error": "Expired",
+      "input": {
+        "now": "1800000151",
+        "signature": "0x56267b96fbc59394d89d971cfe78f5eb99e452b2be4c0906d9227daa5a6ef902061e7afd3c65a2eaad97e42e95c2b825e6ed1cd64777e5cd6b019c2db00a5e5a1b",
+        "typed_data": {
+          "domain": {
+            "chainId": 31337,
+            "name": "XmrAtomicSwap",
+            "verifyingContract": "0xe7501885e3c726ef74694299b7cd49d65e8ed897",
+            "version": "1"
+          },
+          "message": {
+            "approvalMode": 0,
+            "approvalWindow": 120,
+            "claimDelay": 10800,
+            "claimWindow": 5400,
+            "depositBps": 100,
+            "depth": [
+              2,
+              10,
+              25
+            ],
+            "depthXmr": [
+              "0",
+              "1000000000000",
+              "50000000000000"
+            ],
+            "direction": 0,
+            "epoch": 3,
+            "finalWindow": 604800,
+            "keyRoot": "0x7a9de06df5f005c5a4303ba0b53f39ee536296d3d55d06abaeec08c690d28dee",
+            "maker": "0x0fbfe9b14731dddd51b145d6b23104e8bf7f676b",
+            "maxXmr": "100000000000000",
+            "minXmr": "100000000000",
+            "noticeWindow": 1800,
+            "quoteId": "42",
+            "taker": "0x0000000000000000000000000000000000000000",
+            "tierPrice": [
+              "61000000000000000",
+              "60500000000000000",
+              "60000000000000000"
+            ],
+            "tierXmr": [
+              "0",
+              "1000000000000",
+              "50000000000000"
+            ],
+            "token": "0x0000000000000000000000000000000000000000",
+            "validUntil": "1800000150"
+          },
+          "primaryType": "Quote",
+          "types": {
+            "EIP712Domain": [
+              {
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "name": "version",
+                "type": "string"
+              },
+              {
+                "name": "chainId",
+                "type": "uint256"
+              },
+              {
+                "name": "verifyingContract",
+                "type": "address"
+              }
+            ],
+            "Quote": [
+              {
+                "name": "maker",
+                "type": "address"
+              },
+              {
+                "name": "taker",
+                "type": "address"
+              },
+              {
+                "name": "token",
+                "type": "address"
+              },
+              {
+                "name": "direction",
+                "type": "uint8"
+              },
+              {
+                "name": "approvalMode",
+                "type": "uint8"
+              },
+              {
+                "name": "minXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "maxXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "tierXmr",
+                "type": "uint64[3]"
+              },
+              {
+                "name": "tierPrice",
+                "type": "uint256[3]"
+              },
+              {
+                "name": "depthXmr",
+                "type": "uint64[3]"
+              },
+              {
+                "name": "depth",
+                "type": "uint8[3]"
+              },
+              {
+                "name": "depositBps",
+                "type": "uint16"
+              },
+              {
+                "name": "approvalWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "noticeWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "claimDelay",
+                "type": "uint32"
+              },
+              {
+                "name": "claimWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "finalWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "validUntil",
+                "type": "uint64"
+              },
+              {
+                "name": "epoch",
+                "type": "uint32"
+              },
+              {
+                "name": "keyRoot",
+                "type": "bytes32"
+              },
+              {
+                "name": "quoteId",
+                "type": "uint64"
+              }
+            ]
+          }
+        }
+      },
+      "name": "quote-at-valid-until-plus-1",
+      "valid": false
+    },
+    {
+      "error": "BadSigner",
+      "input": {
+        "digest": "0x54580ddf7a3e8c78af4aee4d2b9787dd52e41f99036ea58b958b0701dc4e36c7",
+        "expected_signer": "0x19e76488e19f8ea6a4d6d87c28ff9080352ea347",
+        "signature": "0x56267b96fbc59394d89d971cfe78f5eb99e452b2be4c0906d9227daa5a6ef902061e7afd3c65a2eaad97e42e95c2b825e6ed1cd64777e5cd6b019c2db00a5e5a1b",
+        "typed_data": {
+          "domain": {
+            "chainId": 1,
+            "name": "XmrAtomicSwap",
+            "verifyingContract": "0xe7501885e3c726ef74694299b7cd49d65e8ed897",
+            "version": "1"
+          },
+          "message": {
+            "approvalMode": 0,
+            "approvalWindow": 120,
+            "claimDelay": 10800,
+            "claimWindow": 5400,
+            "depositBps": 100,
+            "depth": [
+              2,
+              10,
+              25
+            ],
+            "depthXmr": [
+              "0",
+              "1000000000000",
+              "50000000000000"
+            ],
+            "direction": 0,
+            "epoch": 3,
+            "finalWindow": 604800,
+            "keyRoot": "0x7a9de06df5f005c5a4303ba0b53f39ee536296d3d55d06abaeec08c690d28dee",
+            "maker": "0x0fbfe9b14731dddd51b145d6b23104e8bf7f676b",
+            "maxXmr": "100000000000000",
+            "minXmr": "100000000000",
+            "noticeWindow": 1800,
+            "quoteId": "42",
+            "taker": "0x0000000000000000000000000000000000000000",
+            "tierPrice": [
+              "61000000000000000",
+              "60500000000000000",
+              "60000000000000000"
+            ],
+            "tierXmr": [
+              "0",
+              "1000000000000",
+              "50000000000000"
+            ],
+            "token": "0x0000000000000000000000000000000000000000",
+            "validUntil": "1800000150"
+          },
+          "primaryType": "Quote",
+          "types": {
+            "EIP712Domain": [
+              {
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "name": "version",
+                "type": "string"
+              },
+              {
+                "name": "chainId",
+                "type": "uint256"
+              },
+              {
+                "name": "verifyingContract",
+                "type": "address"
+              }
+            ],
+            "Quote": [
+              {
+                "name": "maker",
+                "type": "address"
+              },
+              {
+                "name": "taker",
+                "type": "address"
+              },
+              {
+                "name": "token",
+                "type": "address"
+              },
+              {
+                "name": "direction",
+                "type": "uint8"
+              },
+              {
+                "name": "approvalMode",
+                "type": "uint8"
+              },
+              {
+                "name": "minXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "maxXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "tierXmr",
+                "type": "uint64[3]"
+              },
+              {
+                "name": "tierPrice",
+                "type": "uint256[3]"
+              },
+              {
+                "name": "depthXmr",
+                "type": "uint64[3]"
+              },
+              {
+                "name": "depth",
+                "type": "uint8[3]"
+              },
+              {
+                "name": "depositBps",
+                "type": "uint16"
+              },
+              {
+                "name": "approvalWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "noticeWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "claimDelay",
+                "type": "uint32"
+              },
+              {
+                "name": "claimWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "finalWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "validUntil",
+                "type": "uint64"
+              },
+              {
+                "name": "epoch",
+                "type": "uint32"
+              },
+              {
+                "name": "keyRoot",
+                "type": "bytes32"
+              },
+              {
+                "name": "quoteId",
+                "type": "uint64"
+              }
+            ]
+          }
+        }
+      },
+      "name": "quote-replayed-on-another-chain",
+      "valid": false
+    },
+    {
+      "error": "BadSigner",
+      "input": {
+        "digest": "0xd504e01c7decca81435b404835cd011c6521ffe8656b17929c69fd45fea58ddf",
+        "expected_signer": "0x19e76488e19f8ea6a4d6d87c28ff9080352ea347",
+        "signature": "0x56267b96fbc59394d89d971cfe78f5eb99e452b2be4c0906d9227daa5a6ef902061e7afd3c65a2eaad97e42e95c2b825e6ed1cd64777e5cd6b019c2db00a5e5a1b",
+        "typed_data": {
+          "domain": {
+            "chainId": 31337,
+            "name": "XmrAtomicSwap",
+            "verifyingContract": "0xe45dc83b9da8924974ea13a8898f58a601ee9481",
+            "version": "1"
+          },
+          "message": {
+            "approvalMode": 0,
+            "approvalWindow": 120,
+            "claimDelay": 10800,
+            "claimWindow": 5400,
+            "depositBps": 100,
+            "depth": [
+              2,
+              10,
+              25
+            ],
+            "depthXmr": [
+              "0",
+              "1000000000000",
+              "50000000000000"
+            ],
+            "direction": 0,
+            "epoch": 3,
+            "finalWindow": 604800,
+            "keyRoot": "0x7a9de06df5f005c5a4303ba0b53f39ee536296d3d55d06abaeec08c690d28dee",
+            "maker": "0x0fbfe9b14731dddd51b145d6b23104e8bf7f676b",
+            "maxXmr": "100000000000000",
+            "minXmr": "100000000000",
+            "noticeWindow": 1800,
+            "quoteId": "42",
+            "taker": "0x0000000000000000000000000000000000000000",
+            "tierPrice": [
+              "61000000000000000",
+              "60500000000000000",
+              "60000000000000000"
+            ],
+            "tierXmr": [
+              "0",
+              "1000000000000",
+              "50000000000000"
+            ],
+            "token": "0x0000000000000000000000000000000000000000",
+            "validUntil": "1800000150"
+          },
+          "primaryType": "Quote",
+          "types": {
+            "EIP712Domain": [
+              {
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "name": "version",
+                "type": "string"
+              },
+              {
+                "name": "chainId",
+                "type": "uint256"
+              },
+              {
+                "name": "verifyingContract",
+                "type": "address"
+              }
+            ],
+            "Quote": [
+              {
+                "name": "maker",
+                "type": "address"
+              },
+              {
+                "name": "taker",
+                "type": "address"
+              },
+              {
+                "name": "token",
+                "type": "address"
+              },
+              {
+                "name": "direction",
+                "type": "uint8"
+              },
+              {
+                "name": "approvalMode",
+                "type": "uint8"
+              },
+              {
+                "name": "minXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "maxXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "tierXmr",
+                "type": "uint64[3]"
+              },
+              {
+                "name": "tierPrice",
+                "type": "uint256[3]"
+              },
+              {
+                "name": "depthXmr",
+                "type": "uint64[3]"
+              },
+              {
+                "name": "depth",
+                "type": "uint8[3]"
+              },
+              {
+                "name": "depositBps",
+                "type": "uint16"
+              },
+              {
+                "name": "approvalWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "noticeWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "claimDelay",
+                "type": "uint32"
+              },
+              {
+                "name": "claimWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "finalWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "validUntil",
+                "type": "uint64"
+              },
+              {
+                "name": "epoch",
+                "type": "uint32"
+              },
+              {
+                "name": "keyRoot",
+                "type": "bytes32"
+              },
+              {
+                "name": "quoteId",
+                "type": "uint64"
+              }
+            ]
+          }
+        }
+      },
+      "name": "quote-replayed-on-another-contract",
+      "valid": false
+    },
+    {
+      "error": "BadSigner",
+      "input": {
+        "digest": "0x967018fa12490da495af05b3060ebc9d53b77c91bcb74e6908824c7141afb945",
+        "expected_signer": "0x19e76488e19f8ea6a4d6d87c28ff9080352ea347",
+        "signature": "0x56267b96fbc59394d89d971cfe78f5eb99e452b2be4c0906d9227daa5a6ef902061e7afd3c65a2eaad97e42e95c2b825e6ed1cd64777e5cd6b019c2db00a5e5a1b",
+        "typed_data": {
+          "domain": {
+            "chainId": 31337,
+            "name": "XmrAtomicSwap",
+            "verifyingContract": "0xe7501885e3c726ef74694299b7cd49d65e8ed897",
+            "version": "1"
+          },
+          "message": {
+            "approvalMode": 0,
+            "approvalWindow": 120,
+            "claimDelay": 10800,
+            "claimWindow": 5400,
+            "depositBps": 100,
+            "depth": [
+              2,
+              10,
+              25
+            ],
+            "depthXmr": [
+              "0",
+              "1000000000000",
+              "50000000000000"
+            ],
+            "direction": 0,
+            "epoch": 3,
+            "finalWindow": 604800,
+            "keyRoot": "0x7a9de06df5f005c5a4303ba0b53f39ee536296d3d55d06abaeec08c690d28dee",
+            "maker": "0x0fbfe9b14731dddd51b145d6b23104e8bf7f676b",
+            "maxXmr": "100000000000000",
+            "minXmr": "100000000000",
+            "noticeWindow": 1800,
+            "quoteId": "42",
+            "taker": "0x0000000000000000000000000000000000000000",
+            "tierPrice": [
+              "60999999999999999",
+              "60500000000000000",
+              "60000000000000000"
+            ],
+            "tierXmr": [
+              "0",
+              "1000000000000",
+              "50000000000000"
+            ],
+            "token": "0x0000000000000000000000000000000000000000",
+            "validUntil": "1800000150"
+          },
+          "primaryType": "Quote",
+          "types": {
+            "EIP712Domain": [
+              {
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "name": "version",
+                "type": "string"
+              },
+              {
+                "name": "chainId",
+                "type": "uint256"
+              },
+              {
+                "name": "verifyingContract",
+                "type": "address"
+              }
+            ],
+            "Quote": [
+              {
+                "name": "maker",
+                "type": "address"
+              },
+              {
+                "name": "taker",
+                "type": "address"
+              },
+              {
+                "name": "token",
+                "type": "address"
+              },
+              {
+                "name": "direction",
+                "type": "uint8"
+              },
+              {
+                "name": "approvalMode",
+                "type": "uint8"
+              },
+              {
+                "name": "minXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "maxXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "tierXmr",
+                "type": "uint64[3]"
+              },
+              {
+                "name": "tierPrice",
+                "type": "uint256[3]"
+              },
+              {
+                "name": "depthXmr",
+                "type": "uint64[3]"
+              },
+              {
+                "name": "depth",
+                "type": "uint8[3]"
+              },
+              {
+                "name": "depositBps",
+                "type": "uint16"
+              },
+              {
+                "name": "approvalWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "noticeWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "claimDelay",
+                "type": "uint32"
+              },
+              {
+                "name": "claimWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "finalWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "validUntil",
+                "type": "uint64"
+              },
+              {
+                "name": "epoch",
+                "type": "uint32"
+              },
+              {
+                "name": "keyRoot",
+                "type": "bytes32"
+              },
+              {
+                "name": "quoteId",
+                "type": "uint64"
+              }
+            ]
+          }
+        }
+      },
+      "name": "quote-tampered-price",
+      "valid": false
+    },
+    {
+      "error": "BadSigner",
+      "input": {
+        "digest": "0x950ee417e3d45f6ccb2d92c58a98fae8d20803022d552d06ff9eaf79c64667ac",
+        "expected_signer": "0x19e76488e19f8ea6a4d6d87c28ff9080352ea347",
+        "signature": "0x56267b96fbc59394d89d971cfe78f5eb99e452b2be4c0906d9227daa5a6ef902f9e18502c39a5d1552681bd16a3d47d8d3c1c01067d0ba6e54d0c25f202be2e71c",
+        "typed_data": {
+          "domain": {
+            "chainId": 31337,
+            "name": "XmrAtomicSwap",
+            "verifyingContract": "0xe7501885e3c726ef74694299b7cd49d65e8ed897",
+            "version": "1"
+          },
+          "message": {
+            "approvalMode": 0,
+            "approvalWindow": 120,
+            "claimDelay": 10800,
+            "claimWindow": 5400,
+            "depositBps": 100,
+            "depth": [
+              2,
+              10,
+              25
+            ],
+            "depthXmr": [
+              "0",
+              "1000000000000",
+              "50000000000000"
+            ],
+            "direction": 0,
+            "epoch": 3,
+            "finalWindow": 604800,
+            "keyRoot": "0x7a9de06df5f005c5a4303ba0b53f39ee536296d3d55d06abaeec08c690d28dee",
+            "maker": "0x0fbfe9b14731dddd51b145d6b23104e8bf7f676b",
+            "maxXmr": "100000000000000",
+            "minXmr": "100000000000",
+            "noticeWindow": 1800,
+            "quoteId": "42",
+            "taker": "0x0000000000000000000000000000000000000000",
+            "tierPrice": [
+              "61000000000000000",
+              "60500000000000000",
+              "60000000000000000"
+            ],
+            "tierXmr": [
+              "0",
+              "1000000000000",
+              "50000000000000"
+            ],
+            "token": "0x0000000000000000000000000000000000000000",
+            "validUntil": "1800000150"
+          },
+          "primaryType": "Quote",
+          "types": {
+            "EIP712Domain": [
+              {
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "name": "version",
+                "type": "string"
+              },
+              {
+                "name": "chainId",
+                "type": "uint256"
+              },
+              {
+                "name": "verifyingContract",
+                "type": "address"
+              }
+            ],
+            "Quote": [
+              {
+                "name": "maker",
+                "type": "address"
+              },
+              {
+                "name": "taker",
+                "type": "address"
+              },
+              {
+                "name": "token",
+                "type": "address"
+              },
+              {
+                "name": "direction",
+                "type": "uint8"
+              },
+              {
+                "name": "approvalMode",
+                "type": "uint8"
+              },
+              {
+                "name": "minXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "maxXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "tierXmr",
+                "type": "uint64[3]"
+              },
+              {
+                "name": "tierPrice",
+                "type": "uint256[3]"
+              },
+              {
+                "name": "depthXmr",
+                "type": "uint64[3]"
+              },
+              {
+                "name": "depth",
+                "type": "uint8[3]"
+              },
+              {
+                "name": "depositBps",
+                "type": "uint16"
+              },
+              {
+                "name": "approvalWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "noticeWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "claimDelay",
+                "type": "uint32"
+              },
+              {
+                "name": "claimWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "finalWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "validUntil",
+                "type": "uint64"
+              },
+              {
+                "name": "epoch",
+                "type": "uint32"
+              },
+              {
+                "name": "keyRoot",
+                "type": "bytes32"
+              },
+              {
+                "name": "quoteId",
+                "type": "uint64"
+              }
+            ]
+          }
+        }
+      },
+      "name": "quote-high-s-signature",
+      "valid": false
+    },
+    {
+      "input": {
+        "typed_data": {
+          "domain": {
+            "chainId": 31337,
+            "name": "XmrAtomicSwap",
+            "verifyingContract": "0xe7501885e3c726ef74694299b7cd49d65e8ed897",
+            "version": "1"
+          },
+          "message": {
+            "approvalId": "0x94234fd54b471b920cf450016a6c7841f340f6a901e9ba2a6534ce4d3801dc5e",
+            "direction": 255,
+            "epoch": 2,
+            "maker": "0x0fbfe9b14731dddd51b145d6b23104e8bf7f676b",
+            "maxXmr": "5000000000000",
+            "notBefore": "1800000000",
+            "taker": "0x0f8183aefdf068dd8489b6edbf4e07965cf29246",
+            "token": "0xffffffffffffffffffffffffffffffffffffffff",
+            "validUntil": "1800086400"
+          },
+          "primaryType": "Approval",
+          "types": {
+            "Approval": [
+              {
+                "name": "maker",
+                "type": "address"
+              },
+              {
+                "name": "taker",
+                "type": "address"
+              },
+              {
+                "name": "token",
+                "type": "address"
+              },
+              {
+                "name": "direction",
+                "type": "uint8"
+              },
+              {
+                "name": "maxXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "notBefore",
+                "type": "uint64"
+              },
+              {
+                "name": "validUntil",
+                "type": "uint64"
+              },
+              {
+                "name": "epoch",
+                "type": "uint32"
+              },
+              {
+                "name": "approvalId",
+                "type": "bytes32"
+              }
+            ],
+            "EIP712Domain": [
+              {
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "name": "version",
+                "type": "string"
+              },
+              {
+                "name": "chainId",
+                "type": "uint256"
+              },
+              {
+                "name": "verifyingContract",
+                "type": "address"
+              }
+            ]
+          }
+        }
+      },
+      "name": "approval-any",
+      "output": {
+        "digest": "0x1ea866d302296524662cf99081b80bc4203c9fde002d863a2b059b81f5a124b0",
+        "signature": "0x3b3725c418286f094428f7ef4d75cd455509ded524fe104c3fabf434a7d2f9601296dbd2b6a62007113a3868a1ced587a26993879c9555dcab5af41970bd8a2a1c",
+        "signer": "0x19e76488e19f8ea6a4d6d87c28ff9080352ea347",
+        "struct_hash": "0x5fd4369fbf89c3ac6428114b6650246187b211732f8968b1f2a0a7f12b78e698"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "typed_data": {
+          "domain": {
+            "chainId": 31337,
+            "name": "XmrAtomicSwap",
+            "verifyingContract": "0xe7501885e3c726ef74694299b7cd49d65e8ed897",
+            "version": "1"
+          },
+          "message": {
+            "approvalId": "0x9209fe99f75bfa4466953f6031a49850ba242cb51e79509e619b33e1f75abcd5",
+            "direction": 0,
+            "epoch": 2,
+            "maker": "0x0fbfe9b14731dddd51b145d6b23104e8bf7f676b",
+            "maxXmr": "5000000000000",
+            "notBefore": "1800000000",
+            "taker": "0x0f8183aefdf068dd8489b6edbf4e07965cf29246",
+            "token": "0xf9ab76450f884b429b2c128ac26fca8c2efdd5f5",
+            "validUntil": "1800086400"
+          },
+          "primaryType": "Approval",
+          "types": {
+            "Approval": [
+              {
+                "name": "maker",
+                "type": "address"
+              },
+              {
+                "name": "taker",
+                "type": "address"
+              },
+              {
+                "name": "token",
+                "type": "address"
+              },
+              {
+                "name": "direction",
+                "type": "uint8"
+              },
+              {
+                "name": "maxXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "notBefore",
+                "type": "uint64"
+              },
+              {
+                "name": "validUntil",
+                "type": "uint64"
+              },
+              {
+                "name": "epoch",
+                "type": "uint32"
+              },
+              {
+                "name": "approvalId",
+                "type": "bytes32"
+              }
+            ],
+            "EIP712Domain": [
+              {
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "name": "version",
+                "type": "string"
+              },
+              {
+                "name": "chainId",
+                "type": "uint256"
+              },
+              {
+                "name": "verifyingContract",
+                "type": "address"
+              }
+            ]
+          }
+        }
+      },
+      "name": "approval-usdc-a",
+      "output": {
+        "digest": "0x3f6970595a05b126e3656344f3f00dfdd8af56af0f9c89352bae0eef347d5a68",
+        "signature": "0x5726b989d184acd82c49049c9b21ac7b9863bb5812e40202f40af2d387d04f36565555646f665c624dc717dd0983ef376e9a29667b7bdf446f841f5066e6cbb61b",
+        "signer": "0x19e76488e19f8ea6a4d6d87c28ff9080352ea347",
+        "struct_hash": "0x86631c623e8b88d57ce4579eee63290cca819af9d8834effd4c493b977e59cdb"
+      },
+      "valid": true
+    },
+    {
+      "error": "Expired",
+      "input": {
+        "lock": {
+          "approval_epoch": 2,
+          "direction": 0,
+          "now": "1799999999",
+          "sender": "0x0f8183aefdf068dd8489b6edbf4e07965cf29246",
+          "token": "0xf9ab76450f884b429b2c128ac26fca8c2efdd5f5",
+          "xmr": "1"
+        },
+        "signature": "0x3b3725c418286f094428f7ef4d75cd455509ded524fe104c3fabf434a7d2f9601296dbd2b6a62007113a3868a1ced587a26993879c9555dcab5af41970bd8a2a1c",
+        "typed_data": {
+          "domain": {
+            "chainId": 31337,
+            "name": "XmrAtomicSwap",
+            "verifyingContract": "0xe7501885e3c726ef74694299b7cd49d65e8ed897",
+            "version": "1"
+          },
+          "message": {
+            "approvalId": "0x94234fd54b471b920cf450016a6c7841f340f6a901e9ba2a6534ce4d3801dc5e",
+            "direction": 255,
+            "epoch": 2,
+            "maker": "0x0fbfe9b14731dddd51b145d6b23104e8bf7f676b",
+            "maxXmr": "5000000000000",
+            "notBefore": "1800000000",
+            "taker": "0x0f8183aefdf068dd8489b6edbf4e07965cf29246",
+            "token": "0xffffffffffffffffffffffffffffffffffffffff",
+            "validUntil": "1800086400"
+          },
+          "primaryType": "Approval",
+          "types": {
+            "Approval": [
+              {
+                "name": "maker",
+                "type": "address"
+              },
+              {
+                "name": "taker",
+                "type": "address"
+              },
+              {
+                "name": "token",
+                "type": "address"
+              },
+              {
+                "name": "direction",
+                "type": "uint8"
+              },
+              {
+                "name": "maxXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "notBefore",
+                "type": "uint64"
+              },
+              {
+                "name": "validUntil",
+                "type": "uint64"
+              },
+              {
+                "name": "epoch",
+                "type": "uint32"
+              },
+              {
+                "name": "approvalId",
+                "type": "bytes32"
+              }
+            ],
+            "EIP712Domain": [
+              {
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "name": "version",
+                "type": "string"
+              },
+              {
+                "name": "chainId",
+                "type": "uint256"
+              },
+              {
+                "name": "verifyingContract",
+                "type": "address"
+              }
+            ]
+          }
+        }
+      },
+      "name": "approval-at-not-before-minus-1",
+      "valid": false
+    },
+    {
+      "input": {
+        "lock": {
+          "approval_epoch": 2,
+          "direction": 0,
+          "now": "1800000000",
+          "sender": "0x0f8183aefdf068dd8489b6edbf4e07965cf29246",
+          "token": "0xf9ab76450f884b429b2c128ac26fca8c2efdd5f5",
+          "xmr": "1"
+        },
+        "signature": "0x3b3725c418286f094428f7ef4d75cd455509ded524fe104c3fabf434a7d2f9601296dbd2b6a62007113a3868a1ced587a26993879c9555dcab5af41970bd8a2a1c",
+        "typed_data": {
+          "domain": {
+            "chainId": 31337,
+            "name": "XmrAtomicSwap",
+            "verifyingContract": "0xe7501885e3c726ef74694299b7cd49d65e8ed897",
+            "version": "1"
+          },
+          "message": {
+            "approvalId": "0x94234fd54b471b920cf450016a6c7841f340f6a901e9ba2a6534ce4d3801dc5e",
+            "direction": 255,
+            "epoch": 2,
+            "maker": "0x0fbfe9b14731dddd51b145d6b23104e8bf7f676b",
+            "maxXmr": "5000000000000",
+            "notBefore": "1800000000",
+            "taker": "0x0f8183aefdf068dd8489b6edbf4e07965cf29246",
+            "token": "0xffffffffffffffffffffffffffffffffffffffff",
+            "validUntil": "1800086400"
+          },
+          "primaryType": "Approval",
+          "types": {
+            "Approval": [
+              {
+                "name": "maker",
+                "type": "address"
+              },
+              {
+                "name": "taker",
+                "type": "address"
+              },
+              {
+                "name": "token",
+                "type": "address"
+              },
+              {
+                "name": "direction",
+                "type": "uint8"
+              },
+              {
+                "name": "maxXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "notBefore",
+                "type": "uint64"
+              },
+              {
+                "name": "validUntil",
+                "type": "uint64"
+              },
+              {
+                "name": "epoch",
+                "type": "uint32"
+              },
+              {
+                "name": "approvalId",
+                "type": "bytes32"
+              }
+            ],
+            "EIP712Domain": [
+              {
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "name": "version",
+                "type": "string"
+              },
+              {
+                "name": "chainId",
+                "type": "uint256"
+              },
+              {
+                "name": "verifyingContract",
+                "type": "address"
+              }
+            ]
+          }
+        }
+      },
+      "name": "approval-at-not-before",
+      "output": {
+        "digest": "0x1ea866d302296524662cf99081b80bc4203c9fde002d863a2b059b81f5a124b0",
+        "signer": "0x19e76488e19f8ea6a4d6d87c28ff9080352ea347"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "lock": {
+          "approval_epoch": 2,
+          "direction": 1,
+          "now": "1800086400",
+          "sender": "0x0f8183aefdf068dd8489b6edbf4e07965cf29246",
+          "token": "0x0000000000000000000000000000000000000000",
+          "xmr": "1"
+        },
+        "signature": "0x3b3725c418286f094428f7ef4d75cd455509ded524fe104c3fabf434a7d2f9601296dbd2b6a62007113a3868a1ced587a26993879c9555dcab5af41970bd8a2a1c",
+        "typed_data": {
+          "domain": {
+            "chainId": 31337,
+            "name": "XmrAtomicSwap",
+            "verifyingContract": "0xe7501885e3c726ef74694299b7cd49d65e8ed897",
+            "version": "1"
+          },
+          "message": {
+            "approvalId": "0x94234fd54b471b920cf450016a6c7841f340f6a901e9ba2a6534ce4d3801dc5e",
+            "direction": 255,
+            "epoch": 2,
+            "maker": "0x0fbfe9b14731dddd51b145d6b23104e8bf7f676b",
+            "maxXmr": "5000000000000",
+            "notBefore": "1800000000",
+            "taker": "0x0f8183aefdf068dd8489b6edbf4e07965cf29246",
+            "token": "0xffffffffffffffffffffffffffffffffffffffff",
+            "validUntil": "1800086400"
+          },
+          "primaryType": "Approval",
+          "types": {
+            "Approval": [
+              {
+                "name": "maker",
+                "type": "address"
+              },
+              {
+                "name": "taker",
+                "type": "address"
+              },
+              {
+                "name": "token",
+                "type": "address"
+              },
+              {
+                "name": "direction",
+                "type": "uint8"
+              },
+              {
+                "name": "maxXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "notBefore",
+                "type": "uint64"
+              },
+              {
+                "name": "validUntil",
+                "type": "uint64"
+              },
+              {
+                "name": "epoch",
+                "type": "uint32"
+              },
+              {
+                "name": "approvalId",
+                "type": "bytes32"
+              }
+            ],
+            "EIP712Domain": [
+              {
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "name": "version",
+                "type": "string"
+              },
+              {
+                "name": "chainId",
+                "type": "uint256"
+              },
+              {
+                "name": "verifyingContract",
+                "type": "address"
+              }
+            ]
+          }
+        }
+      },
+      "name": "approval-at-valid-until",
+      "output": {
+        "digest": "0x1ea866d302296524662cf99081b80bc4203c9fde002d863a2b059b81f5a124b0",
+        "signer": "0x19e76488e19f8ea6a4d6d87c28ff9080352ea347"
+      },
+      "valid": true
+    },
+    {
+      "error": "Expired",
+      "input": {
+        "lock": {
+          "approval_epoch": 2,
+          "direction": 0,
+          "now": "1800086401",
+          "sender": "0x0f8183aefdf068dd8489b6edbf4e07965cf29246",
+          "token": "0xf9ab76450f884b429b2c128ac26fca8c2efdd5f5",
+          "xmr": "1"
+        },
+        "signature": "0x3b3725c418286f094428f7ef4d75cd455509ded524fe104c3fabf434a7d2f9601296dbd2b6a62007113a3868a1ced587a26993879c9555dcab5af41970bd8a2a1c",
+        "typed_data": {
+          "domain": {
+            "chainId": 31337,
+            "name": "XmrAtomicSwap",
+            "verifyingContract": "0xe7501885e3c726ef74694299b7cd49d65e8ed897",
+            "version": "1"
+          },
+          "message": {
+            "approvalId": "0x94234fd54b471b920cf450016a6c7841f340f6a901e9ba2a6534ce4d3801dc5e",
+            "direction": 255,
+            "epoch": 2,
+            "maker": "0x0fbfe9b14731dddd51b145d6b23104e8bf7f676b",
+            "maxXmr": "5000000000000",
+            "notBefore": "1800000000",
+            "taker": "0x0f8183aefdf068dd8489b6edbf4e07965cf29246",
+            "token": "0xffffffffffffffffffffffffffffffffffffffff",
+            "validUntil": "1800086400"
+          },
+          "primaryType": "Approval",
+          "types": {
+            "Approval": [
+              {
+                "name": "maker",
+                "type": "address"
+              },
+              {
+                "name": "taker",
+                "type": "address"
+              },
+              {
+                "name": "token",
+                "type": "address"
+              },
+              {
+                "name": "direction",
+                "type": "uint8"
+              },
+              {
+                "name": "maxXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "notBefore",
+                "type": "uint64"
+              },
+              {
+                "name": "validUntil",
+                "type": "uint64"
+              },
+              {
+                "name": "epoch",
+                "type": "uint32"
+              },
+              {
+                "name": "approvalId",
+                "type": "bytes32"
+              }
+            ],
+            "EIP712Domain": [
+              {
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "name": "version",
+                "type": "string"
+              },
+              {
+                "name": "chainId",
+                "type": "uint256"
+              },
+              {
+                "name": "verifyingContract",
+                "type": "address"
+              }
+            ]
+          }
+        }
+      },
+      "name": "approval-at-valid-until-plus-1",
+      "valid": false
+    },
+    {
+      "input": {
+        "lock": {
+          "approval_epoch": 2,
+          "direction": 0,
+          "now": "1800000005",
+          "sender": "0x0f8183aefdf068dd8489b6edbf4e07965cf29246",
+          "token": "0xf9ab76450f884b429b2c128ac26fca8c2efdd5f5",
+          "xmr": "5000000000000"
+        },
+        "signature": "0x3b3725c418286f094428f7ef4d75cd455509ded524fe104c3fabf434a7d2f9601296dbd2b6a62007113a3868a1ced587a26993879c9555dcab5af41970bd8a2a1c",
+        "typed_data": {
+          "domain": {
+            "chainId": 31337,
+            "name": "XmrAtomicSwap",
+            "verifyingContract": "0xe7501885e3c726ef74694299b7cd49d65e8ed897",
+            "version": "1"
+          },
+          "message": {
+            "approvalId": "0x94234fd54b471b920cf450016a6c7841f340f6a901e9ba2a6534ce4d3801dc5e",
+            "direction": 255,
+            "epoch": 2,
+            "maker": "0x0fbfe9b14731dddd51b145d6b23104e8bf7f676b",
+            "maxXmr": "5000000000000",
+            "notBefore": "1800000000",
+            "taker": "0x0f8183aefdf068dd8489b6edbf4e07965cf29246",
+            "token": "0xffffffffffffffffffffffffffffffffffffffff",
+            "validUntil": "1800086400"
+          },
+          "primaryType": "Approval",
+          "types": {
+            "Approval": [
+              {
+                "name": "maker",
+                "type": "address"
+              },
+              {
+                "name": "taker",
+                "type": "address"
+              },
+              {
+                "name": "token",
+                "type": "address"
+              },
+              {
+                "name": "direction",
+                "type": "uint8"
+              },
+              {
+                "name": "maxXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "notBefore",
+                "type": "uint64"
+              },
+              {
+                "name": "validUntil",
+                "type": "uint64"
+              },
+              {
+                "name": "epoch",
+                "type": "uint32"
+              },
+              {
+                "name": "approvalId",
+                "type": "bytes32"
+              }
+            ],
+            "EIP712Domain": [
+              {
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "name": "version",
+                "type": "string"
+              },
+              {
+                "name": "chainId",
+                "type": "uint256"
+              },
+              {
+                "name": "verifyingContract",
+                "type": "address"
+              }
+            ]
+          }
+        }
+      },
+      "name": "approval-at-max-xmr",
+      "output": {
+        "digest": "0x1ea866d302296524662cf99081b80bc4203c9fde002d863a2b059b81f5a124b0",
+        "signer": "0x19e76488e19f8ea6a4d6d87c28ff9080352ea347"
+      },
+      "valid": true
+    },
+    {
+      "error": "AmountOutOfRange",
+      "input": {
+        "lock": {
+          "approval_epoch": 2,
+          "direction": 0,
+          "now": "1800000005",
+          "sender": "0x0f8183aefdf068dd8489b6edbf4e07965cf29246",
+          "token": "0xf9ab76450f884b429b2c128ac26fca8c2efdd5f5",
+          "xmr": "5000000000001"
+        },
+        "signature": "0x3b3725c418286f094428f7ef4d75cd455509ded524fe104c3fabf434a7d2f9601296dbd2b6a62007113a3868a1ced587a26993879c9555dcab5af41970bd8a2a1c",
+        "typed_data": {
+          "domain": {
+            "chainId": 31337,
+            "name": "XmrAtomicSwap",
+            "verifyingContract": "0xe7501885e3c726ef74694299b7cd49d65e8ed897",
+            "version": "1"
+          },
+          "message": {
+            "approvalId": "0x94234fd54b471b920cf450016a6c7841f340f6a901e9ba2a6534ce4d3801dc5e",
+            "direction": 255,
+            "epoch": 2,
+            "maker": "0x0fbfe9b14731dddd51b145d6b23104e8bf7f676b",
+            "maxXmr": "5000000000000",
+            "notBefore": "1800000000",
+            "taker": "0x0f8183aefdf068dd8489b6edbf4e07965cf29246",
+            "token": "0xffffffffffffffffffffffffffffffffffffffff",
+            "validUntil": "1800086400"
+          },
+          "primaryType": "Approval",
+          "types": {
+            "Approval": [
+              {
+                "name": "maker",
+                "type": "address"
+              },
+              {
+                "name": "taker",
+                "type": "address"
+              },
+              {
+                "name": "token",
+                "type": "address"
+              },
+              {
+                "name": "direction",
+                "type": "uint8"
+              },
+              {
+                "name": "maxXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "notBefore",
+                "type": "uint64"
+              },
+              {
+                "name": "validUntil",
+                "type": "uint64"
+              },
+              {
+                "name": "epoch",
+                "type": "uint32"
+              },
+              {
+                "name": "approvalId",
+                "type": "bytes32"
+              }
+            ],
+            "EIP712Domain": [
+              {
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "name": "version",
+                "type": "string"
+              },
+              {
+                "name": "chainId",
+                "type": "uint256"
+              },
+              {
+                "name": "verifyingContract",
+                "type": "address"
+              }
+            ]
+          }
+        }
+      },
+      "name": "approval-over-max-xmr",
+      "valid": false
+    },
+    {
+      "error": "WrongParty",
+      "input": {
+        "lock": {
+          "approval_epoch": 2,
+          "direction": 0,
+          "now": "1800000005",
+          "sender": "0x2d19b44db83a18bbb955df066af59d9eeefd3b94",
+          "token": "0xf9ab76450f884b429b2c128ac26fca8c2efdd5f5",
+          "xmr": "1"
+        },
+        "signature": "0x3b3725c418286f094428f7ef4d75cd455509ded524fe104c3fabf434a7d2f9601296dbd2b6a62007113a3868a1ced587a26993879c9555dcab5af41970bd8a2a1c",
+        "typed_data": {
+          "domain": {
+            "chainId": 31337,
+            "name": "XmrAtomicSwap",
+            "verifyingContract": "0xe7501885e3c726ef74694299b7cd49d65e8ed897",
+            "version": "1"
+          },
+          "message": {
+            "approvalId": "0x94234fd54b471b920cf450016a6c7841f340f6a901e9ba2a6534ce4d3801dc5e",
+            "direction": 255,
+            "epoch": 2,
+            "maker": "0x0fbfe9b14731dddd51b145d6b23104e8bf7f676b",
+            "maxXmr": "5000000000000",
+            "notBefore": "1800000000",
+            "taker": "0x0f8183aefdf068dd8489b6edbf4e07965cf29246",
+            "token": "0xffffffffffffffffffffffffffffffffffffffff",
+            "validUntil": "1800086400"
+          },
+          "primaryType": "Approval",
+          "types": {
+            "Approval": [
+              {
+                "name": "maker",
+                "type": "address"
+              },
+              {
+                "name": "taker",
+                "type": "address"
+              },
+              {
+                "name": "token",
+                "type": "address"
+              },
+              {
+                "name": "direction",
+                "type": "uint8"
+              },
+              {
+                "name": "maxXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "notBefore",
+                "type": "uint64"
+              },
+              {
+                "name": "validUntil",
+                "type": "uint64"
+              },
+              {
+                "name": "epoch",
+                "type": "uint32"
+              },
+              {
+                "name": "approvalId",
+                "type": "bytes32"
+              }
+            ],
+            "EIP712Domain": [
+              {
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "name": "version",
+                "type": "string"
+              },
+              {
+                "name": "chainId",
+                "type": "uint256"
+              },
+              {
+                "name": "verifyingContract",
+                "type": "address"
+              }
+            ]
+          }
+        }
+      },
+      "name": "approval-wrong-taker",
+      "valid": false
+    },
+    {
+      "error": "StaleEpoch",
+      "input": {
+        "lock": {
+          "approval_epoch": 3,
+          "direction": 0,
+          "now": "1800000005",
+          "sender": "0x0f8183aefdf068dd8489b6edbf4e07965cf29246",
+          "token": "0xf9ab76450f884b429b2c128ac26fca8c2efdd5f5",
+          "xmr": "1"
+        },
+        "signature": "0x3b3725c418286f094428f7ef4d75cd455509ded524fe104c3fabf434a7d2f9601296dbd2b6a62007113a3868a1ced587a26993879c9555dcab5af41970bd8a2a1c",
+        "typed_data": {
+          "domain": {
+            "chainId": 31337,
+            "name": "XmrAtomicSwap",
+            "verifyingContract": "0xe7501885e3c726ef74694299b7cd49d65e8ed897",
+            "version": "1"
+          },
+          "message": {
+            "approvalId": "0x94234fd54b471b920cf450016a6c7841f340f6a901e9ba2a6534ce4d3801dc5e",
+            "direction": 255,
+            "epoch": 2,
+            "maker": "0x0fbfe9b14731dddd51b145d6b23104e8bf7f676b",
+            "maxXmr": "5000000000000",
+            "notBefore": "1800000000",
+            "taker": "0x0f8183aefdf068dd8489b6edbf4e07965cf29246",
+            "token": "0xffffffffffffffffffffffffffffffffffffffff",
+            "validUntil": "1800086400"
+          },
+          "primaryType": "Approval",
+          "types": {
+            "Approval": [
+              {
+                "name": "maker",
+                "type": "address"
+              },
+              {
+                "name": "taker",
+                "type": "address"
+              },
+              {
+                "name": "token",
+                "type": "address"
+              },
+              {
+                "name": "direction",
+                "type": "uint8"
+              },
+              {
+                "name": "maxXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "notBefore",
+                "type": "uint64"
+              },
+              {
+                "name": "validUntil",
+                "type": "uint64"
+              },
+              {
+                "name": "epoch",
+                "type": "uint32"
+              },
+              {
+                "name": "approvalId",
+                "type": "bytes32"
+              }
+            ],
+            "EIP712Domain": [
+              {
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "name": "version",
+                "type": "string"
+              },
+              {
+                "name": "chainId",
+                "type": "uint256"
+              },
+              {
+                "name": "verifyingContract",
+                "type": "address"
+              }
+            ]
+          }
+        }
+      },
+      "name": "approval-stale-epoch",
+      "valid": false
+    },
+    {
+      "input": {
+        "lock": {
+          "approval_epoch": 2,
+          "direction": 1,
+          "now": "1800000005",
+          "sender": "0x0f8183aefdf068dd8489b6edbf4e07965cf29246",
+          "token": "0x0000000000000000000000000000000000000000",
+          "xmr": "1"
+        },
+        "signature": "0x3b3725c418286f094428f7ef4d75cd455509ded524fe104c3fabf434a7d2f9601296dbd2b6a62007113a3868a1ced587a26993879c9555dcab5af41970bd8a2a1c",
+        "typed_data": {
+          "domain": {
+            "chainId": 31337,
+            "name": "XmrAtomicSwap",
+            "verifyingContract": "0xe7501885e3c726ef74694299b7cd49d65e8ed897",
+            "version": "1"
+          },
+          "message": {
+            "approvalId": "0x94234fd54b471b920cf450016a6c7841f340f6a901e9ba2a6534ce4d3801dc5e",
+            "direction": 255,
+            "epoch": 2,
+            "maker": "0x0fbfe9b14731dddd51b145d6b23104e8bf7f676b",
+            "maxXmr": "5000000000000",
+            "notBefore": "1800000000",
+            "taker": "0x0f8183aefdf068dd8489b6edbf4e07965cf29246",
+            "token": "0xffffffffffffffffffffffffffffffffffffffff",
+            "validUntil": "1800086400"
+          },
+          "primaryType": "Approval",
+          "types": {
+            "Approval": [
+              {
+                "name": "maker",
+                "type": "address"
+              },
+              {
+                "name": "taker",
+                "type": "address"
+              },
+              {
+                "name": "token",
+                "type": "address"
+              },
+              {
+                "name": "direction",
+                "type": "uint8"
+              },
+              {
+                "name": "maxXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "notBefore",
+                "type": "uint64"
+              },
+              {
+                "name": "validUntil",
+                "type": "uint64"
+              },
+              {
+                "name": "epoch",
+                "type": "uint32"
+              },
+              {
+                "name": "approvalId",
+                "type": "bytes32"
+              }
+            ],
+            "EIP712Domain": [
+              {
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "name": "version",
+                "type": "string"
+              },
+              {
+                "name": "chainId",
+                "type": "uint256"
+              },
+              {
+                "name": "verifyingContract",
+                "type": "address"
+              }
+            ]
+          }
+        }
+      },
+      "name": "approval-wildcards-eth-b",
+      "output": {
+        "digest": "0x1ea866d302296524662cf99081b80bc4203c9fde002d863a2b059b81f5a124b0",
+        "signer": "0x19e76488e19f8ea6a4d6d87c28ff9080352ea347"
+      },
+      "valid": true
+    },
+    {
+      "error": "TokenNotAllowed",
+      "input": {
+        "lock": {
+          "approval_epoch": 2,
+          "direction": 0,
+          "now": "1800000005",
+          "sender": "0x0f8183aefdf068dd8489b6edbf4e07965cf29246",
+          "token": "0x0000000000000000000000000000000000000000",
+          "xmr": "1"
+        },
+        "signature": "0x5726b989d184acd82c49049c9b21ac7b9863bb5812e40202f40af2d387d04f36565555646f665c624dc717dd0983ef376e9a29667b7bdf446f841f5066e6cbb61b",
+        "typed_data": {
+          "domain": {
+            "chainId": 31337,
+            "name": "XmrAtomicSwap",
+            "verifyingContract": "0xe7501885e3c726ef74694299b7cd49d65e8ed897",
+            "version": "1"
+          },
+          "message": {
+            "approvalId": "0x9209fe99f75bfa4466953f6031a49850ba242cb51e79509e619b33e1f75abcd5",
+            "direction": 0,
+            "epoch": 2,
+            "maker": "0x0fbfe9b14731dddd51b145d6b23104e8bf7f676b",
+            "maxXmr": "5000000000000",
+            "notBefore": "1800000000",
+            "taker": "0x0f8183aefdf068dd8489b6edbf4e07965cf29246",
+            "token": "0xf9ab76450f884b429b2c128ac26fca8c2efdd5f5",
+            "validUntil": "1800086400"
+          },
+          "primaryType": "Approval",
+          "types": {
+            "Approval": [
+              {
+                "name": "maker",
+                "type": "address"
+              },
+              {
+                "name": "taker",
+                "type": "address"
+              },
+              {
+                "name": "token",
+                "type": "address"
+              },
+              {
+                "name": "direction",
+                "type": "uint8"
+              },
+              {
+                "name": "maxXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "notBefore",
+                "type": "uint64"
+              },
+              {
+                "name": "validUntil",
+                "type": "uint64"
+              },
+              {
+                "name": "epoch",
+                "type": "uint32"
+              },
+              {
+                "name": "approvalId",
+                "type": "bytes32"
+              }
+            ],
+            "EIP712Domain": [
+              {
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "name": "version",
+                "type": "string"
+              },
+              {
+                "name": "chainId",
+                "type": "uint256"
+              },
+              {
+                "name": "verifyingContract",
+                "type": "address"
+              }
+            ]
+          }
+        }
+      },
+      "name": "approval-narrow-wrong-token",
+      "valid": false
+    },
+    {
+      "error": "WrongDirection",
+      "input": {
+        "lock": {
+          "approval_epoch": 2,
+          "direction": 1,
+          "now": "1800000005",
+          "sender": "0x0f8183aefdf068dd8489b6edbf4e07965cf29246",
+          "token": "0xf9ab76450f884b429b2c128ac26fca8c2efdd5f5",
+          "xmr": "1"
+        },
+        "signature": "0x5726b989d184acd82c49049c9b21ac7b9863bb5812e40202f40af2d387d04f36565555646f665c624dc717dd0983ef376e9a29667b7bdf446f841f5066e6cbb61b",
+        "typed_data": {
+          "domain": {
+            "chainId": 31337,
+            "name": "XmrAtomicSwap",
+            "verifyingContract": "0xe7501885e3c726ef74694299b7cd49d65e8ed897",
+            "version": "1"
+          },
+          "message": {
+            "approvalId": "0x9209fe99f75bfa4466953f6031a49850ba242cb51e79509e619b33e1f75abcd5",
+            "direction": 0,
+            "epoch": 2,
+            "maker": "0x0fbfe9b14731dddd51b145d6b23104e8bf7f676b",
+            "maxXmr": "5000000000000",
+            "notBefore": "1800000000",
+            "taker": "0x0f8183aefdf068dd8489b6edbf4e07965cf29246",
+            "token": "0xf9ab76450f884b429b2c128ac26fca8c2efdd5f5",
+            "validUntil": "1800086400"
+          },
+          "primaryType": "Approval",
+          "types": {
+            "Approval": [
+              {
+                "name": "maker",
+                "type": "address"
+              },
+              {
+                "name": "taker",
+                "type": "address"
+              },
+              {
+                "name": "token",
+                "type": "address"
+              },
+              {
+                "name": "direction",
+                "type": "uint8"
+              },
+              {
+                "name": "maxXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "notBefore",
+                "type": "uint64"
+              },
+              {
+                "name": "validUntil",
+                "type": "uint64"
+              },
+              {
+                "name": "epoch",
+                "type": "uint32"
+              },
+              {
+                "name": "approvalId",
+                "type": "bytes32"
+              }
+            ],
+            "EIP712Domain": [
+              {
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "name": "version",
+                "type": "string"
+              },
+              {
+                "name": "chainId",
+                "type": "uint256"
+              },
+              {
+                "name": "verifyingContract",
+                "type": "address"
+              }
+            ]
+          }
+        }
+      },
+      "name": "approval-narrow-wrong-direction",
+      "valid": false
+    },
+    {
+      "input": {
+        "swap_nonce": "0x34096982e615809779759c6c257678b4",
+        "taker": "0x0f8183aefdf068dd8489b6edbf4e07965cf29246"
+      },
+      "name": "swap-id",
+      "output": {
+        "swap_id": "0xdac1bc67decf7425ed75bb6942b3d82307110a955d341fde89eb790ab30f3305"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "amount": "122000000000000000",
+        "deposit": "1220000000000000",
+        "direction": 0,
+        "key_leaf": "0x4f6eb7467136e583c1243b2902fb268bc14df3c72e845dd640ae04b5c73707a3",
+        "maker_enc_key": "0xc32087fe7fed77f41c403d5bc77232222fe44a6cee4e9626e84d64d09349073f",
+        "swap_id": "0xdac1bc67decf7425ed75bb6942b3d82307110a955d341fde89eb790ab30f3305",
+        "t_lock": "1800000000",
+        "taker_enc_key": "0x6b484c14b3a2e4bb031cfd189ba30a4ebadde3ddff7b51158b816fdf9b247d13",
+        "taker_key": "0x08f5cbc4564871f0ca60c9a36f99baadcbfea448",
+        "taker_key2": "0xa19f0f910d085afdfc10f9dd276097a093ddae40",
+        "taker_spend_pub": "0x424241bbac19ccf5bcb8636fe7f51fe0738b996452fbdaedf2656ed6633f35c8",
+        "taker_view": "0x8667bd36a74696d44928b6fe91f6dbf37b2e4dd19efadc6eaec7df00f6a62605",
+        "token": "0x0000000000000000000000000000000000000000",
+        "xmr": "2000000000000"
+      },
+      "name": "open-hash-direction-a",
+      "output": {
+        "open_hash": "0x0676cd0beb49d5c448c5c675e18d1da064489adf2ace1dc56de895f10e646bad"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "amount": "330500000",
+        "deposit": "3305000",
+        "direction": 1,
+        "key_leaf": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "maker_enc_key": "0xc32087fe7fed77f41c403d5bc77232222fe44a6cee4e9626e84d64d09349073f",
+        "swap_id": "0xdac1bc67decf7425ed75bb6942b3d82307110a955d341fde89eb790ab30f3305",
+        "t_lock": "1800000000",
+        "taker_enc_key": "0x6b484c14b3a2e4bb031cfd189ba30a4ebadde3ddff7b51158b816fdf9b247d13",
+        "taker_key": "0x08f5cbc4564871f0ca60c9a36f99baadcbfea448",
+        "taker_key2": "0xa19f0f910d085afdfc10f9dd276097a093ddae40",
+        "taker_spend_pub": "0x424241bbac19ccf5bcb8636fe7f51fe0738b996452fbdaedf2656ed6633f35c8",
+        "taker_view": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "token": "0xf9ab76450f884b429b2c128ac26fca8c2efdd5f5",
+        "xmr": "2000000000000"
+      },
+      "name": "open-hash-direction-b",
+      "output": {
+        "open_hash": "0x2c5a2fdf0bc6e59d0fd2bfabd5d37d00f2f0174a6fb734d80a4a392eda7fac3c"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "amount": "122000000000000000",
+        "deposit": "1220000000000000",
+        "direction": 0,
+        "key_leaf": "0x4f6eb7467136e583c1243b2902fb268bc14df3c72e845dd640ae04b5c73707a3",
+        "maker_enc_key": "0xc32087fe7fed77f41c403d5bc77232222fe44a6cee4e9626e84d64d09349073f",
+        "swap_id": "0xdac1bc67decf7425ed75bb6942b3d82307110a955d341fde89eb790ab30f3305",
+        "t_lock": "1800000000",
+        "taker_enc_key": "0x6b484c14b3a2e4bb031cfd189ba30a4ebadde3ddff7b51158b816fdf9b247d13",
+        "taker_key": "0xd075df23bc2b6104941b698b779f421864fd17d0",
+        "taker_key2": "0x69ec919ff8b39cef5eea1e5a0c5f3ea25a6e96bb",
+        "taker_spend_pub": "0x28a473a2ca36bf8cfc4d3183dabcae1b1285fe0a8e3d9e3580a588157656784b",
+        "taker_view": "0x8667bd36a74696d44928b6fe91f6dbf37b2e4dd19efadc6eaec7df00f6a62605",
+        "token": "0x0000000000000000000000000000000000000000",
+        "xmr": "2000000000000"
+      },
+      "name": "open-hash-replaced-lock-same-id",
+      "output": {
+        "open_hash": "0x071451a2db344a1b951c52af695721bdc69691db43d64757782ca45991958c6a"
+      },
+      "valid": true
+    }
+  ],
+  "compact_len": 251,
+  "domain": {
+    "chainId": 31337,
+    "name": "XmrAtomicSwap",
+    "verifyingContract": "0xe7501885e3c726ef74694299b7cd49d65e8ed897",
+    "version": "1"
+  },
+  "domain_separator": "0xf16faaa22cb08dc90926c400170a60301dbdcb3430136d4f905c8f799fa25044",
+  "format": "xmrswap-vectors/1",
+  "operator": "0x19e76488e19f8ea6a4d6d87c28ff9080352ea347",
+  "operator_private_key": "0x25c0f7a73d052fa587d093e769a22d70d45efacf98ffd877553122c7e82f57e6",
+  "quote_type": "Quote(address maker,address taker,address token,uint8 direction,uint8 approvalMode,uint64 minXmr,uint64 maxXmr,uint64[3] tierXmr,uint256[3] tierPrice,uint64[3] depthXmr,uint8[3] depth,uint16 depositBps,uint32 approvalWindow,uint32 noticeWindow,uint32 claimDelay,uint32 claimWindow,uint32 finalWindow,uint64 validUntil,uint32 epoch,bytes32 keyRoot,uint64 quoteId)",
+  "quote_type_hash": "0xbbaa88f19d79db179edb8c0e0e584639d3b44fd19bfe90f15bafc1b883ce2712",
+  "signature_format": "r || s || v, 65 bytes, low-s, v in {27, 28}; RFC 6979 nonce",
+  "suite": "eip712"
+}

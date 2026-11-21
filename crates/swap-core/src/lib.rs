@@ -43,6 +43,7 @@ pub mod sign;
 pub mod solana;
 pub mod sweep;
 pub mod twin;
+pub mod vectors;
 
 #[cfg(target_arch = "wasm32")]
 mod wasm;

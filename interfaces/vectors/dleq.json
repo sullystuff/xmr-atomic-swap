@@ -1,0 +1,104 @@
+{
+  "cases": [
+    {
+      "input": {
+        "file": "dleq/valid-1.bin",
+        "length": 56679,
+        "s": "d7d659c34195b275ce2e43fa5a7e1c9a51827614fd75cc8ba65eaded00d98d01",
+        "secret_uint256": "018dd900edad5ea68bcc75fd147682519a1c7e5afa432ece75b29541c359d6d7",
+        "sha256": "b83c0caa778aaf7608af9b24fb8236c6b9fd33302678fca506081d5e84e5e617"
+      },
+      "name": "valid-1",
+      "output": {
+        "key_addr": "ffa6531bd1fc26ca2985b2b5099efebf0266722e",
+        "key_addr2": "01cb50dfdd5f505d70e84a471378a74b7b2c2520",
+        "secp_compressed": "027343c0d0d6879a0801d01bb901cb74310b98cd1ea976f964c0970c2eb441b3a7",
+        "spend_pub": "61019391df8171cb97f2a2ecc796a951068ec3e873b8731e46cf88af15e2e91d"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "file": "dleq/valid-2.bin",
+        "length": 56679,
+        "s": "ca2b2678638523f5272a568980df029cfc8e91482151f0f80f3f14c307498004",
+        "secret_uint256": "04804907c3143f0ff8f0512148918efc9c02df8089562a27f523856378262bca",
+        "sha256": "d18ffdcc3f8d21b9b507c640c8205bf3a00d892d17d64b53119834b2aaf2a1c3"
+      },
+      "name": "valid-2",
+      "output": {
+        "key_addr": "279e80564c7ef3962019f5b30b05533afaa90b03",
+        "key_addr2": "289cb77eca43f169d0dbc294c858328501b077d2",
+        "secp_compressed": "0306f6c38d425ac6aebf1a5ce41c506596c893608a72f4f963d42376ef21e92259",
+        "spend_pub": "fae07357b812ba6d565da3fd00b18e71d0332625afedcf54f63e9973f205ca30"
+      },
+      "valid": true
+    },
+    {
+      "error": "DleqInvalid",
+      "input": {
+        "file": "dleq/flipped-bit.bin",
+        "length": 56679,
+        "sha256": "79efb0abbb42133628367d960cf43f0ca69857eb758c113682c6e85f80e27e24"
+      },
+      "name": "flipped-bit",
+      "valid": false
+    },
+    {
+      "error": "DleqInvalid",
+      "input": {
+        "file": "dleq/wrong-key.bin",
+        "length": 56679,
+        "sha256": "a8ec412cba6cad509424a8f90ad2527ee96f97786c2cadf99bd045373f747090"
+      },
+      "name": "wrong-key",
+      "valid": false
+    },
+    {
+      "error": "DleqInvalid",
+      "input": {
+        "file": "dleq/wrong-ed25519-key.bin",
+        "length": 56679,
+        "sha256": "593cf91261c2dd78f28389bb17c910a02047dcc34372fd6b59d9f3d645938642"
+      },
+      "name": "wrong-ed25519-key",
+      "valid": false
+    },
+    {
+      "error": "DleqMalformed",
+      "input": {
+        "file": "dleq/trailing-byte.bin",
+        "length": 56680,
+        "sha256": "052f1740915d5ce85ff546643c6f12c689472f5573d71e50c971a756fd224d31"
+      },
+      "name": "trailing-byte",
+      "valid": false
+    },
+    {
+      "error": "DleqTooLarge",
+      "input": {
+        "file": "dleq/oversize.bin",
+        "length": 60001,
+        "sha256": "d12facf07018a00bbd31c5d9dedd301e118fa07a0998c25f5a5a6a15335f0540"
+      },
+      "name": "oversize",
+      "valid": false
+    },
+    {
+      "error": "DleqBadVersion",
+      "input": {
+        "file": "dleq/wrong-version.bin",
+        "length": 56679,
+        "sha256": "c52fd118d761875587fe2a24d2a1f6cf6f11fae628e6c9c5c40e84fd427669b5"
+      },
+      "name": "wrong-version",
+      "valid": false
+    }
+  ],
+  "ed_h": "8b655970153799af2aeadc9ff1add0ea6c7251d54154cfa92c173a0dd39c1f94",
+  "format": "xmrswap-vectors/1",
+  "layout": "0x01 || S[32] || P_compressed[33] || proof (bincode 2 standard)",
+  "max_blob": 60000,
+  "secp_h": "0250929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0",
+  "suite": "dleq"
+}

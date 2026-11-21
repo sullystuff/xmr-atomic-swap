@@ -1,0 +1,1172 @@
+{
+  "cases": [
+    {
+      "input": {
+        "chain": "solana",
+        "op": "pay",
+        "price": "150000000",
+        "xmr": "1000000000000"
+      },
+      "name": "pay-one-xmr-solana",
+      "output": {
+        "amount": "150000000"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "receive",
+        "price": "150000000",
+        "xmr": "1000000000000"
+      },
+      "name": "receive-one-xmr-solana",
+      "output": {
+        "amount": "150000000"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "pay",
+        "price": "150000000",
+        "xmr": "1000000000000"
+      },
+      "name": "pay-one-xmr-ethereum",
+      "output": {
+        "amount": "150000000"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "receive",
+        "price": "150000000",
+        "xmr": "1000000000000"
+      },
+      "name": "receive-one-xmr-ethereum",
+      "output": {
+        "amount": "150000000"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "pay",
+        "price": "1",
+        "xmr": "1"
+      },
+      "name": "pay-one-piconero-at-price-one-solana",
+      "output": {
+        "amount": "1"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "receive",
+        "price": "1",
+        "xmr": "1"
+      },
+      "name": "receive-one-piconero-at-price-one-solana",
+      "output": {
+        "amount": "0"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "pay",
+        "price": "1",
+        "xmr": "1"
+      },
+      "name": "pay-one-piconero-at-price-one-ethereum",
+      "output": {
+        "amount": "1"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "receive",
+        "price": "1",
+        "xmr": "1"
+      },
+      "name": "receive-one-piconero-at-price-one-ethereum",
+      "output": {
+        "amount": "0"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "pay",
+        "price": "3",
+        "xmr": "333333333333"
+      },
+      "name": "pay-third-of-an-xmr-solana",
+      "output": {
+        "amount": "1"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "receive",
+        "price": "3",
+        "xmr": "333333333333"
+      },
+      "name": "receive-third-of-an-xmr-solana",
+      "output": {
+        "amount": "0"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "pay",
+        "price": "3",
+        "xmr": "333333333333"
+      },
+      "name": "pay-third-of-an-xmr-ethereum",
+      "output": {
+        "amount": "1"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "receive",
+        "price": "3",
+        "xmr": "333333333333"
+      },
+      "name": "receive-third-of-an-xmr-ethereum",
+      "output": {
+        "amount": "0"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "pay",
+        "price": "3000000000000",
+        "xmr": "333333333333"
+      },
+      "name": "pay-exact-division-solana",
+      "output": {
+        "amount": "999999999999"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "receive",
+        "price": "3000000000000",
+        "xmr": "333333333333"
+      },
+      "name": "receive-exact-division-solana",
+      "output": {
+        "amount": "999999999999"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "pay",
+        "price": "3000000000000",
+        "xmr": "333333333333"
+      },
+      "name": "pay-exact-division-ethereum",
+      "output": {
+        "amount": "999999999999"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "receive",
+        "price": "3000000000000",
+        "xmr": "333333333333"
+      },
+      "name": "receive-exact-division-ethereum",
+      "output": {
+        "amount": "999999999999"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "pay",
+        "price": "150000000",
+        "xmr": "0"
+      },
+      "name": "pay-zero-xmr-solana",
+      "output": {
+        "amount": "0"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "receive",
+        "price": "150000000",
+        "xmr": "0"
+      },
+      "name": "receive-zero-xmr-solana",
+      "output": {
+        "amount": "0"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "pay",
+        "price": "150000000",
+        "xmr": "0"
+      },
+      "name": "pay-zero-xmr-ethereum",
+      "output": {
+        "amount": "0"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "receive",
+        "price": "150000000",
+        "xmr": "0"
+      },
+      "name": "receive-zero-xmr-ethereum",
+      "output": {
+        "amount": "0"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "pay",
+        "price": "1512345678",
+        "xmr": "2500000000000"
+      },
+      "name": "pay-typical-sol-solana",
+      "output": {
+        "amount": "3780864195"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "receive",
+        "price": "1512345678",
+        "xmr": "2500000000000"
+      },
+      "name": "receive-typical-sol-solana",
+      "output": {
+        "amount": "3780864195"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "pay",
+        "price": "1512345678",
+        "xmr": "2500000000000"
+      },
+      "name": "pay-typical-sol-ethereum",
+      "output": {
+        "amount": "3780864195"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "receive",
+        "price": "1512345678",
+        "xmr": "2500000000000"
+      },
+      "name": "receive-typical-sol-ethereum",
+      "output": {
+        "amount": "3780864195"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "pay",
+        "price": "165250000",
+        "xmr": "2500000000000"
+      },
+      "name": "pay-typical-usdc-solana",
+      "output": {
+        "amount": "413125000"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "receive",
+        "price": "165250000",
+        "xmr": "2500000000000"
+      },
+      "name": "receive-typical-usdc-solana",
+      "output": {
+        "amount": "413125000"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "pay",
+        "price": "165250000",
+        "xmr": "2500000000000"
+      },
+      "name": "pay-typical-usdc-ethereum",
+      "output": {
+        "amount": "413125000"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "receive",
+        "price": "165250000",
+        "xmr": "2500000000000"
+      },
+      "name": "receive-typical-usdc-ethereum",
+      "output": {
+        "amount": "413125000"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "pay",
+        "price": "61234567890123456",
+        "xmr": "2500000000000"
+      },
+      "name": "pay-typical-eth-solana",
+      "output": {
+        "amount": "153086419725308640"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "receive",
+        "price": "61234567890123456",
+        "xmr": "2500000000000"
+      },
+      "name": "receive-typical-eth-solana",
+      "output": {
+        "amount": "153086419725308640"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "pay",
+        "price": "61234567890123456",
+        "xmr": "2500000000000"
+      },
+      "name": "pay-typical-eth-ethereum",
+      "output": {
+        "amount": "153086419725308640"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "receive",
+        "price": "61234567890123456",
+        "xmr": "2500000000000"
+      },
+      "name": "receive-typical-eth-ethereum",
+      "output": {
+        "amount": "153086419725308640"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "pay",
+        "price": "1000000000000",
+        "xmr": "18446744073709551615"
+      },
+      "name": "pay-u64-max-at-10^12-solana",
+      "output": {
+        "amount": "18446744073709551615"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "receive",
+        "price": "1000000000000",
+        "xmr": "18446744073709551615"
+      },
+      "name": "receive-u64-max-at-10^12-solana",
+      "output": {
+        "amount": "18446744073709551615"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "pay",
+        "price": "1000000000000",
+        "xmr": "18446744073709551615"
+      },
+      "name": "pay-u64-max-at-10^12-ethereum",
+      "output": {
+        "amount": "18446744073709551615"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "receive",
+        "price": "1000000000000",
+        "xmr": "18446744073709551615"
+      },
+      "name": "receive-u64-max-at-10^12-ethereum",
+      "output": {
+        "amount": "18446744073709551615"
+      },
+      "valid": true
+    },
+    {
+      "error": "MathOverflow",
+      "input": {
+        "chain": "solana",
+        "op": "pay",
+        "price": "1000000000001",
+        "xmr": "18446744073709551615"
+      },
+      "name": "pay-u64-max-just-over-solana-solana",
+      "valid": false
+    },
+    {
+      "error": "MathOverflow",
+      "input": {
+        "chain": "solana",
+        "op": "receive",
+        "price": "1000000000001",
+        "xmr": "18446744073709551615"
+      },
+      "name": "receive-u64-max-just-over-solana-solana",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "pay",
+        "price": "1000000000001",
+        "xmr": "18446744073709551615"
+      },
+      "name": "pay-u64-max-just-over-solana-ethereum",
+      "output": {
+        "amount": "18446744073727998360"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "receive",
+        "price": "1000000000001",
+        "xmr": "18446744073709551615"
+      },
+      "name": "receive-u64-max-just-over-solana-ethereum",
+      "output": {
+        "amount": "18446744073727998359"
+      },
+      "valid": true
+    },
+    {
+      "error": "MathOverflow",
+      "input": {
+        "chain": "solana",
+        "op": "pay",
+        "price": "2000000000000",
+        "xmr": "18446744073709551615"
+      },
+      "name": "pay-u64-max-times-two-solana",
+      "valid": false
+    },
+    {
+      "error": "MathOverflow",
+      "input": {
+        "chain": "solana",
+        "op": "receive",
+        "price": "2000000000000",
+        "xmr": "18446744073709551615"
+      },
+      "name": "receive-u64-max-times-two-solana",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "pay",
+        "price": "2000000000000",
+        "xmr": "18446744073709551615"
+      },
+      "name": "pay-u64-max-times-two-ethereum",
+      "output": {
+        "amount": "36893488147419103230"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "receive",
+        "price": "2000000000000",
+        "xmr": "18446744073709551615"
+      },
+      "name": "receive-u64-max-times-two-ethereum",
+      "output": {
+        "amount": "36893488147419103230"
+      },
+      "valid": true
+    },
+    {
+      "error": "MathOverflow",
+      "input": {
+        "chain": "solana",
+        "op": "pay",
+        "price": "1267650600228229401496703205376",
+        "xmr": "18446744073709551615"
+      },
+      "name": "pay-wide-intermediate-solana",
+      "valid": false
+    },
+    {
+      "error": "MathOverflow",
+      "input": {
+        "chain": "solana",
+        "op": "receive",
+        "price": "1267650600228229401496703205376",
+        "xmr": "18446744073709551615"
+      },
+      "name": "receive-wide-intermediate-solana",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "pay",
+        "price": "1267650600228229401496703205376",
+        "xmr": "18446744073709551615"
+      },
+      "name": "pay-wide-intermediate-ethereum",
+      "output": {
+        "amount": "23384026197294446689991306723232298913"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "receive",
+        "price": "1267650600228229401496703205376",
+        "xmr": "18446744073709551615"
+      },
+      "name": "receive-wide-intermediate-ethereum",
+      "output": {
+        "amount": "23384026197294446689991306723232298912"
+      },
+      "valid": true
+    },
+    {
+      "error": "MathOverflow",
+      "input": {
+        "chain": "solana",
+        "op": "pay",
+        "price": "340282366920938463463374607431768",
+        "xmr": "18446744073709551615"
+      },
+      "name": "pay-above-u128-solana",
+      "valid": false
+    },
+    {
+      "error": "MathOverflow",
+      "input": {
+        "chain": "solana",
+        "op": "receive",
+        "price": "340282366920938463463374607431768",
+        "xmr": "18446744073709551615"
+      },
+      "name": "receive-above-u128-solana",
+      "valid": false
+    },
+    {
+      "error": "MathOverflow",
+      "input": {
+        "chain": "ethereum",
+        "op": "pay",
+        "price": "340282366920938463463374607431768",
+        "xmr": "18446744073709551615"
+      },
+      "name": "pay-above-u128-ethereum",
+      "valid": false
+    },
+    {
+      "error": "MathOverflow",
+      "input": {
+        "chain": "ethereum",
+        "op": "receive",
+        "price": "340282366920938463463374607431768",
+        "xmr": "18446744073709551615"
+      },
+      "name": "receive-above-u128-ethereum",
+      "valid": false
+    },
+    {
+      "input": {
+        "amount": "1000000",
+        "bps": 500,
+        "op": "bps"
+      },
+      "name": "bps-1000000-500",
+      "output": {
+        "result": "50000"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "amount": "19999",
+        "bps": 500,
+        "op": "bps"
+      },
+      "name": "bps-19999-500",
+      "output": {
+        "result": "999"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "amount": "1999",
+        "bps": 5,
+        "op": "bps"
+      },
+      "name": "bps-1999-5",
+      "output": {
+        "result": "0"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "amount": "2000",
+        "bps": 5,
+        "op": "bps"
+      },
+      "name": "bps-2000-5",
+      "output": {
+        "result": "1"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "amount": "0",
+        "bps": 500,
+        "op": "bps"
+      },
+      "name": "bps-0-500",
+      "output": {
+        "result": "0"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "amount": "1",
+        "bps": 1,
+        "op": "bps"
+      },
+      "name": "bps-1-1",
+      "output": {
+        "result": "0"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "amount": "18446744073709551615",
+        "bps": 500,
+        "op": "bps"
+      },
+      "name": "bps-18446744073709551615-500",
+      "output": {
+        "result": "922337203685477580"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "amount": "340282366920938463463374607431768211455",
+        "bps": 500,
+        "op": "bps"
+      },
+      "name": "bps-340282366920938463463374607431768211455-500",
+      "output": {
+        "result": "17014118346046923173168730371588410572"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "amount": "340282366920938463463374607431768211455",
+        "bps": 5,
+        "op": "bps"
+      },
+      "name": "bps-340282366920938463463374607431768211455-5",
+      "output": {
+        "result": "170141183460469231731687303715884105"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "amount": "123456789012345678",
+        "bps": 137,
+        "op": "bps"
+      },
+      "name": "bps-123456789012345678-137",
+      "output": {
+        "result": "1691358009469135"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "deposit": "0",
+        "op": "split"
+      },
+      "name": "split-0",
+      "output": {
+        "to_taker": "0",
+        "to_treasury": "0"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "deposit": "1",
+        "op": "split"
+      },
+      "name": "split-1",
+      "output": {
+        "to_taker": "1",
+        "to_treasury": "0"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "deposit": "2",
+        "op": "split"
+      },
+      "name": "split-2",
+      "output": {
+        "to_taker": "1",
+        "to_treasury": "1"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "deposit": "7",
+        "op": "split"
+      },
+      "name": "split-7",
+      "output": {
+        "to_taker": "4",
+        "to_treasury": "3"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "deposit": "8",
+        "op": "split"
+      },
+      "name": "split-8",
+      "output": {
+        "to_taker": "4",
+        "to_treasury": "4"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "deposit": "15000001",
+        "op": "split"
+      },
+      "name": "split-15000001",
+      "output": {
+        "to_taker": "7500001",
+        "to_treasury": "7500000"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "deposit": "18446744073709551615",
+        "op": "split"
+      },
+      "name": "split-18446744073709551615",
+      "output": {
+        "to_taker": "9223372036854775808",
+        "to_treasury": "9223372036854775807"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "deposit": "340282366920938463463374607431768211455",
+        "op": "split"
+      },
+      "name": "split-340282366920938463463374607431768211455",
+      "output": {
+        "to_taker": "170141183460469231731687303715884105728",
+        "to_treasury": "170141183460469231731687303715884105727"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "above": [
+          "0",
+          "1000000000000",
+          "50000000000000"
+        ],
+        "op": "tier",
+        "values": [
+          "2",
+          "10",
+          "25"
+        ],
+        "xmr": "0"
+      },
+      "name": "tier-three-zero",
+      "output": {
+        "value": "2"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "above": [
+          "0",
+          "1000000000000",
+          "50000000000000"
+        ],
+        "op": "tier",
+        "values": [
+          "2",
+          "10",
+          "25"
+        ],
+        "xmr": "999999999999"
+      },
+      "name": "tier-three-below-tier-1",
+      "output": {
+        "value": "2"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "above": [
+          "0",
+          "1000000000000",
+          "50000000000000"
+        ],
+        "op": "tier",
+        "values": [
+          "2",
+          "10",
+          "25"
+        ],
+        "xmr": "1000000000000"
+      },
+      "name": "tier-three-at-tier-1",
+      "output": {
+        "value": "10"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "above": [
+          "0",
+          "1000000000000",
+          "50000000000000"
+        ],
+        "op": "tier",
+        "values": [
+          "2",
+          "10",
+          "25"
+        ],
+        "xmr": "49999999999999"
+      },
+      "name": "tier-three-below-tier-2",
+      "output": {
+        "value": "10"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "above": [
+          "0",
+          "1000000000000",
+          "50000000000000"
+        ],
+        "op": "tier",
+        "values": [
+          "2",
+          "10",
+          "25"
+        ],
+        "xmr": "50000000000000"
+      },
+      "name": "tier-three-at-tier-2",
+      "output": {
+        "value": "25"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "above": [
+          "0",
+          "1000000000000",
+          "50000000000000"
+        ],
+        "op": "tier",
+        "values": [
+          "2",
+          "10",
+          "25"
+        ],
+        "xmr": "18446744073709551615"
+      },
+      "name": "tier-three-max",
+      "output": {
+        "value": "25"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "above": [
+          "0",
+          "5",
+          "0"
+        ],
+        "op": "tier",
+        "values": [
+          "7",
+          "9",
+          "0"
+        ],
+        "xmr": "18446744073709551615"
+      },
+      "name": "tier-two-used",
+      "output": {
+        "value": "9"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "above": [
+          "0",
+          "0",
+          "0"
+        ],
+        "op": "tier",
+        "values": [
+          "7",
+          "0",
+          "0"
+        ],
+        "xmr": "4"
+      },
+      "name": "tier-one-used",
+      "output": {
+        "value": "7"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "above": [
+          "0",
+          "5",
+          "9"
+        ],
+        "op": "tier",
+        "values": [
+          "1",
+          "2",
+          "0"
+        ],
+        "xmr": "9"
+      },
+      "name": "tier-unused-threshold-ignored",
+      "output": {
+        "value": "2"
+      },
+      "valid": true
+    },
+    {
+      "error": "TiersInvalid",
+      "input": {
+        "above": [
+          "1",
+          "5",
+          "9"
+        ],
+        "op": "tier",
+        "values": [
+          "1",
+          "2",
+          "3"
+        ],
+        "xmr": "9"
+      },
+      "name": "tier-first-threshold-nonzero",
+      "valid": false
+    },
+    {
+      "error": "TiersInvalid",
+      "input": {
+        "above": [
+          "0",
+          "5",
+          "9"
+        ],
+        "op": "tier",
+        "values": [
+          "0",
+          "2",
+          "3"
+        ],
+        "xmr": "9"
+      },
+      "name": "tier-zero-unused",
+      "valid": false
+    },
+    {
+      "error": "TiersInvalid",
+      "input": {
+        "above": [
+          "0",
+          "0",
+          "9"
+        ],
+        "op": "tier",
+        "values": [
+          "1",
+          "0",
+          "3"
+        ],
+        "xmr": "9"
+      },
+      "name": "tier-gap",
+      "valid": false
+    },
+    {
+      "error": "TiersInvalid",
+      "input": {
+        "above": [
+          "0",
+          "5",
+          "5"
+        ],
+        "op": "tier",
+        "values": [
+          "1",
+          "2",
+          "3"
+        ],
+        "xmr": "9"
+      },
+      "name": "tier-equal-thresholds",
+      "valid": false
+    },
+    {
+      "error": "TiersInvalid",
+      "input": {
+        "above": [
+          "0",
+          "5",
+          "4"
+        ],
+        "op": "tier",
+        "values": [
+          "1",
+          "2",
+          "3"
+        ],
+        "xmr": "9"
+      },
+      "name": "tier-decreasing-thresholds",
+      "valid": false
+    }
+  ],
+  "format": "xmrswap-vectors/1",
+  "rules": {
+    "bps": "floor(amount * bps / 10^4): the deposit and the fee",
+    "max_amount": {
+      "ethereum": "340282366920938463463374607431768211455",
+      "solana": "18446744073709551615"
+    },
+    "pay": "direction A: ceil(xmr * price / 10^12)",
+    "receive": "direction B: floor(xmr * price / 10^12)",
+    "split": "ceil(D / 2) to the taker, floor(D / 2) to the treasury"
+  },
+  "suite": "amounts"
+}

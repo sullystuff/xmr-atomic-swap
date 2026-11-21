@@ -24,7 +24,7 @@ use monero_wallet::{
   ed25519::{Point, Scalar},
   interface::prelude::*,
   ringct::RctType,
-  send::{Change, SignableTransaction},
+  send::{Change, SendError, SignableTransaction},
   OutputWithDecoys, Scanner, ViewPair, WalletOutput,
 };
 use rand_core::{OsRng, RngCore};
@@ -234,7 +234,12 @@ pub async fn sweep_joint<D: MoneroDaemonRpc>(daemon: &D, p: SweepParams) -> Resu
       fee_rate,
     )
   };
-  let fee = build(1).map_err(|e| SweepError::Build(format!("{e:?}")))?.necessary_fee();
+  let fee = match build(1) {
+    Ok(tx) => tx.necessary_fee(),
+    // The output is smaller than the fee plus one piconero: the builder already knows the fee.
+    Err(SendError::NotEnoughFunds { necessary_fee: Some(fee), .. }) => fee,
+    Err(e) => return Err(SweepError::Build(format!("{e:?}"))),
+  };
   // The fee comes from a rate the node chose: cap it before anything is signed.
   if fee > p.max_fee {
     return Err(SweepError::FeeAboveCap { fee, max_fee: p.max_fee });

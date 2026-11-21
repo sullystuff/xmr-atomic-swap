@@ -1,0 +1,149 @@
+{
+  "cases": [
+    {
+      "input": {
+        "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630",
+        "txid": "ce1de0ce1cc8d0d17e463ccb7b477617f4eb39c3943ce123f7f6aba7d4f11ee9",
+        "view": "802c5a100d3efa6be050aab875f9c31bf4fa7fe4b1505cf67e64a94a3588d709"
+      },
+      "name": "commitment",
+      "output": {
+        "commitment": "71afafe44ffea12685801874ad4ae5f266c62ba031bf6867e98e6064ccf9e632"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "nonce": "41fdfb0285ba7a8cf97de23448fb7abc96e7641e5e5d58cc",
+        "sealed_by": "maker",
+        "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630",
+        "txid": "ce1de0ce1cc8d0d17e463ccb7b477617f4eb39c3943ce123f7f6aba7d4f11ee9",
+        "view": "802c5a100d3efa6be050aab875f9c31bf4fa7fe4b1505cf67e64a94a3588d709"
+      },
+      "name": "seal-direction-a",
+      "output": {
+        "ciphertext": "41fdfb0285ba7a8cf97de23448fb7abc96e7641e5e5d58cc52a8311b7bcc3e98b1c025e3e75109e6170654610ad57b13191d5cb9f256a5f73140844cd02d3824b1f4000a3dbdaa981d8407bf8a9a194e556d7e2079eb12634668dd29a1beb0c08b886bee47169a69",
+        "commitment": "71afafe44ffea12685801874ad4ae5f266c62ba031bf6867e98e6064ccf9e632"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "nonce": "41fdfb0285ba7a8cf97de23448fb7abc96e7641e5e5d58cc",
+        "sealed_by": "taker",
+        "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630",
+        "txid": "ce1de0ce1cc8d0d17e463ccb7b477617f4eb39c3943ce123f7f6aba7d4f11ee9",
+        "view": "802c5a100d3efa6be050aab875f9c31bf4fa7fe4b1505cf67e64a94a3588d709"
+      },
+      "name": "seal-direction-b",
+      "output": {
+        "ciphertext": "41fdfb0285ba7a8cf97de23448fb7abc96e7641e5e5d58cc52a8311b7bcc3e98b1c025e3e75109e6170654610ad57b13191d5cb9f256a5f73140844cd02d3824b1f4000a3dbdaa981d8407bf8a9a194e556d7e2079eb12634668dd29a1beb0c08b886bee47169a69",
+        "commitment": "71afafe44ffea12685801874ad4ae5f266c62ba031bf6867e98e6064ccf9e632"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "nonce": "2c2e9712e864d830014aa9668247662c99a6651d4c2b58fb",
+        "sealed_by": "taker",
+        "swap_ref": "8fe5d1e4ed6140fdb92cb5cf0974fcdcbe305bb6e6a677c5b5914ae100386113",
+        "txid": "b49c1e7897ad1943ba1c317d457c111780af88afb8a6370ba2854af234d1d910",
+        "view": "2aa888eb0d32e1e3142fb789ef20225bf1d69ad5673ec22cdef4009fc0656102"
+      },
+      "name": "seal-second-swap",
+      "output": {
+        "ciphertext": "2c2e9712e864d830014aa9668247662c99a6651d4c2b58fb4f7dfd66512cc24fbaaa9df541c70eefbce0855d3b56dc97f11c9eb158ac1e723633de933e67f0e4c0b04526d8bcd1c1a25ce8318fc8bcc527126233f461c3647c491524540c9a29cbd6e343f6437c74",
+        "commitment": "3bebd72cb8b1afe433048a6aab4ef8d78b4d86c1c71772a7d37d7ab086443fc6"
+      },
+      "valid": true
+    },
+    {
+      "error": "NoticeDecrypt",
+      "input": {
+        "ciphertext": "41fdfb0285ba7a8cf97de23448fb7abc96e7641e5e5d58cc52a8311b7bcc3e98b1c025e3e75109e6170654610ad57b13191d5cb9f256a5f73140844cd12d3824b1f4000a3dbdaa981d8407bf8a9a194e556d7e2079eb12634668dd29a1beb0c08b886bee47169a69",
+        "commitment": "71afafe44ffea12685801874ad4ae5f266c62ba031bf6867e98e6064ccf9e632",
+        "opened_by": "taker",
+        "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630"
+      },
+      "name": "tampered-ciphertext",
+      "valid": false
+    },
+    {
+      "error": "NoticeDecrypt",
+      "input": {
+        "ciphertext": "41fdfb0285ba7a8cf97de23448fb7abc96e7641e5e5d58cc52a8311b7bcc3e98b1c025e3e75109e6170654610ad57b13191d5cb9f256a5f73140844cd02d3824b1f4000a3dbdaa981d8407bf8a9a194e556d7e2079eb12634668dd29a1beb0c08b886bee47169ae9",
+        "commitment": "71afafe44ffea12685801874ad4ae5f266c62ba031bf6867e98e6064ccf9e632",
+        "opened_by": "taker",
+        "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630"
+      },
+      "name": "tampered-tag",
+      "valid": false
+    },
+    {
+      "error": "NoticeDecrypt",
+      "input": {
+        "ciphertext": "40fdfb0285ba7a8cf97de23448fb7abc96e7641e5e5d58cc52a8311b7bcc3e98b1c025e3e75109e6170654610ad57b13191d5cb9f256a5f73140844cd02d3824b1f4000a3dbdaa981d8407bf8a9a194e556d7e2079eb12634668dd29a1beb0c08b886bee47169a69",
+        "commitment": "71afafe44ffea12685801874ad4ae5f266c62ba031bf6867e98e6064ccf9e632",
+        "opened_by": "taker",
+        "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630"
+      },
+      "name": "tampered-nonce",
+      "valid": false
+    },
+    {
+      "error": "NoticeDecrypt",
+      "input": {
+        "ciphertext": "41fdfb0285ba7a8cf97de23448fb7abc96e7641e5e5d58cc52a8311b7bcc3e98b1c025e3e75109e6170654610ad57b13191d5cb9f256a5f73140844cd02d3824b1f4000a3dbdaa981d8407bf8a9a194e556d7e2079eb12634668dd29a1beb0c08b886bee47169a69",
+        "commitment": "71afafe44ffea12685801874ad4ae5f266c62ba031bf6867e98e6064ccf9e632",
+        "opened_by": "taker",
+        "swap_ref": "8fe5d1e4ed6140fdb92cb5cf0974fcdcbe305bb6e6a677c5b5914ae100386113"
+      },
+      "name": "wrong-swap-ref",
+      "valid": false
+    },
+    {
+      "error": "NoticeCommitmentMismatch",
+      "input": {
+        "ciphertext": "41fdfb0285ba7a8cf97de23448fb7abc96e7641e5e5d58cc57614e04eb03a0a8a7691aee7bc61879e0ae6749f091fc2e20783a917087fb913140844cd02d3824b1f4000a3dbdaa981d8407bf8a9a194e556d7e2079eb1263876ba7ce5115c47f357c974f1878a59d",
+        "commitment": "71afafe44ffea12685801874ad4ae5f266c62ba031bf6867e98e6064ccf9e632",
+        "opened_by": "taker",
+        "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630"
+      },
+      "name": "does-not-open-commitment",
+      "valid": false
+    },
+    {
+      "error": "NoticeCommitmentMismatch",
+      "input": {
+        "ciphertext": "41fdfb0285ba7a8cf97de23448fb7abc96e7641e5e5d58cc52a8311b7bcc3e98b1c025e3e75109e6170654610ad57b13191d5cb9f256a5f7c4abae180a33afa13858398eb2d344f391298b6662c19cdbf4ca38a0635251684d3904899961c213711619d7c0fb8d5a",
+        "commitment": "71afafe44ffea12685801874ad4ae5f266c62ba031bf6867e98e6064ccf9e632",
+        "opened_by": "taker",
+        "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630"
+      },
+      "name": "does-not-open-commitment-view",
+      "valid": false
+    },
+    {
+      "error": "BadLength",
+      "input": {
+        "ciphertext": "41fdfb0285ba7a8cf97de23448fb7abc96e7641e5e5d58cc52a8311b7bcc3e98b1c025e3e75109e6170654610ad57b13191d5cb9f256a5f73140844cd02d3824b1f4000a3dbdaa981d8407bf8a9a194e556d7e2079eb12634668dd29a1beb0c08b886bee47169a",
+        "commitment": "71afafe44ffea12685801874ad4ae5f266c62ba031bf6867e98e6064ccf9e632",
+        "opened_by": "taker",
+        "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630"
+      },
+      "name": "truncated",
+      "valid": false
+    }
+  ],
+  "ciphertext_len": 104,
+  "format": "xmrswap-vectors/1",
+  "keys": {
+    "maker_pub": "fb4a655dbc5cb5a5208acccde359496120129cbd34cc5725927eb05fe7d87f68",
+    "maker_secret": "93fc2a9ef9211dcf3181f4618d13331bb7c877626e634970a2395eb3368f9ed8",
+    "operator_pub": "65e66106813d8b548a92b0e401cf5769f6cef7f0d5e3114f961031d36c6eae65",
+    "operator_seed": "16b7e8bf0ce108ac045aa65dc99a649db1f6809da285fdddd415be3c3f8503ef",
+    "taker_pub": "044e91a3b6d4f27af44361825394a9b8ccf1cbffa118a757c8bd91cc4663da51",
+    "taker_secret": "8324dec2844d3d0bb80079e2deb35ee4c758aae88775cec2bc8872cad6bce793"
+  },
+  "suite": "notice"
+}

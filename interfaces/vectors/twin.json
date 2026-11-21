@@ -1,0 +1,210 @@
+{
+  "cases": [
+    {
+      "input": {
+        "s": "0100000000000000000000000000000000000000000000000000000000000000",
+        "secret_uint256": "0000000000000000000000000000000000000000000000000000000000000001"
+      },
+      "name": "one",
+      "output": {
+        "key_addr": "7e5f4552091a69125d5dfcb7b8c2659029395bdf",
+        "key_addr2": "c620eebd7fb5f13a1f5a4226c52919d04f558005",
+        "secp_compressed": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "s": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0f",
+        "secret_uint256": "0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "name": "max-2^252-minus-1",
+      "output": {
+        "key_addr": "ad30adc7451c1dace34c5d1f328f8a74a4947534",
+        "key_addr2": "7f276132c1e3469bf311ae4d330a019e5ff70898",
+        "secp_compressed": "0336074b50b9c9d54e613b096847420b486e4c8ff6c7b4e67b12f562da25615569"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "s": "645ffeea644831fd9c28458c8196b59d7f8dae0a1f4b1ee6031c9476ebb4f80c",
+        "secret_uint256": "0cf8b4eb76941c03e61e4b1f0aae8d7f9db596818c45289cfd314864eafe5f64"
+      },
+      "name": "random-0",
+      "output": {
+        "key_addr": "c766d635651650436101a66e35cec63f50468164",
+        "key_addr2": "253487e8518af144b87b87a40da7374a5889206e",
+        "secp_compressed": "038b9b5cb5af743fe58d58ed7f4b3f48908e6f87ee5c978e0c0c3b0a1f0b082b96"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "s": "16193827e54738504bc87df5b0d67bfef3141c997fb1900ae8a4af7c96fd1c09",
+        "secret_uint256": "091cfd967cafa4e80a90b17f991c14f3fe7bd6b0f57dc84b503847e527381916"
+      },
+      "name": "random-1",
+      "output": {
+        "key_addr": "4711c3e7c0b83a16594f45e50a033207026520f3",
+        "key_addr2": "615b6ede9ce6cf7bdf84859bb89b3ea9a47ad238",
+        "secp_compressed": "03a7f8df348247da65909b4765804897d97ce176c4ccdfd23d6915ec9a2c0b806e"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "s": "e86ef3b78de549dfdc2a9052ebfb232b84f76c09382ca51bec51e27bc52aa106",
+        "secret_uint256": "06a12ac57be251ec1ba52c38096cf7842b23fbeb52902adcdf49e58db7f36ee8"
+      },
+      "name": "random-2",
+      "output": {
+        "key_addr": "9c8f95ed60cb8497979fde1f27b7b4653f21b3e8",
+        "key_addr2": "4e807c18d0d1b9ea1c25bf33164ee40597955d79",
+        "secp_compressed": "02963f86ac30e5f64e1de60f01d9be9599fe93095517ae7b5ebea543f0d17a8ee7"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "s": "9985a9feb0f34b474a2f5d54c98cd08ec4fe334d189bd39c15b307d6ee9bbc09",
+        "secret_uint256": "09bc9beed607b3159cd39b184d33fec48ed08cc9545d2f4a474bf3b0fea98599"
+      },
+      "name": "random-3",
+      "output": {
+        "key_addr": "4c675d4535b05079d2c92d6022241485eedeadff",
+        "key_addr2": "c740a2f251fa798fd2c6a9b481b9d170e7d8478f",
+        "secp_compressed": "0257cfc7a7ce1fd758653db44bd27d22e89db4b272ce44050d6915c16f22e0b58e"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "s": "3fd90b691dcb7e0ea8a501588e03e85d16fab3b72d30e30eb38e02a3954a880c",
+        "secret_uint256": "0c884a95a3028eb30ee3302db7b3fa165de8038e5801a5a80e7ecb1d690bd93f"
+      },
+      "name": "random-4",
+      "output": {
+        "key_addr": "8575ec4550770c7dd3b39c4e01fc5964c51444e9",
+        "key_addr2": "b3d434aa176dd97f2b9c987d884a7baf44c74afb",
+        "secp_compressed": "0277d04209c69ffa0d76a2121bace67833ebec52a48a3ca994cc2f34ecea298d75"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "s": "d7b288dd196f8a8bec2afc96ddacd391f27c0509e58fcbb63f44e0e579ae8b03",
+        "secret_uint256": "038bae79e5e0443fb6cb8fe509057cf291d3acdd96fc2aec8b8a6f19dd88b2d7"
+      },
+      "name": "random-5",
+      "output": {
+        "key_addr": "dd1e88b6f032a3f2730d78da91068470b094ed31",
+        "key_addr2": "c63faa280f8d8e6e4c0b69cdab9e06a5285c6209",
+        "secp_compressed": "03116bad9a873d8e772f9f7f656341c988603ef9e752cf207f5afc76034e2a1cf5"
+      },
+      "valid": true
+    },
+    {
+      "error": "ScalarOutOfRange",
+      "input": {
+        "s": "0000000000000000000000000000000000000000000000000000000000000000",
+        "secret_uint256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "name": "zero",
+      "valid": false
+    },
+    {
+      "error": "ScalarOutOfRange",
+      "input": {
+        "s": "0000000000000000000000000000000000000000000000000000000000000010",
+        "secret_uint256": "1000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "name": "2^252",
+      "valid": false
+    },
+    {
+      "error": "ScalarOutOfRange",
+      "input": {
+        "s": "edd3f55c1a631258d69cf7a2def9de1400000000000000000000000000000010",
+        "secret_uint256": "1000000000000000000000000000000014def9dea2f79cd65812631a5cf5d3ed"
+      },
+      "name": "l",
+      "valid": false
+    },
+    {
+      "error": "ScalarOutOfRange",
+      "input": {
+        "s": "414136d08c5ed2bf3ba048afe6dcaebafeffffffffffffffffffffffffffffff",
+        "secret_uint256": "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141"
+      },
+      "name": "n",
+      "valid": false
+    },
+    {
+      "error": "ScalarOutOfRange",
+      "input": {
+        "s": "424136d08c5ed2bf3ba048afe6dcaebafeffffffffffffffffffffffffffffff",
+        "secret_uint256": "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364142"
+      },
+      "name": "n-plus-1",
+      "valid": false
+    },
+    {
+      "error": "ScalarOutOfRange",
+      "input": {
+        "s": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "secret_uint256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "name": "2^256-minus-1",
+      "valid": false
+    },
+    {
+      "error": "ScalarMismatch",
+      "input": {
+        "key_addr": "c766d635651650436101a66e35cec63f50468164",
+        "key_addr2": "253487e8518af144b87b87a40da7374a5889206e",
+        "s": "16193827e54738504bc87df5b0d67bfef3141c997fb1900ae8a4af7c96fd1c09",
+        "secret_uint256": "091cfd967cafa4e80a90b17f991c14f3fe7bd6b0f57dc84b503847e527381916"
+      },
+      "name": "mismatch-both",
+      "valid": false
+    },
+    {
+      "error": "ScalarMismatch",
+      "input": {
+        "key_addr": "c766d635651650436101a66e35cec63f50468164",
+        "key_addr2": "615b6ede9ce6cf7bdf84859bb89b3ea9a47ad238",
+        "s": "645ffeea644831fd9c28458c8196b59d7f8dae0a1f4b1ee6031c9476ebb4f80c",
+        "secret_uint256": "0cf8b4eb76941c03e61e4b1f0aae8d7f9db596818c45289cfd314864eafe5f64"
+      },
+      "name": "mismatch-second-only",
+      "valid": false
+    },
+    {
+      "error": "ScalarMismatch",
+      "input": {
+        "key_addr": "4711c3e7c0b83a16594f45e50a033207026520f3",
+        "key_addr2": "253487e8518af144b87b87a40da7374a5889206e",
+        "s": "645ffeea644831fd9c28458c8196b59d7f8dae0a1f4b1ee6031c9476ebb4f80c",
+        "secret_uint256": "0cf8b4eb76941c03e61e4b1f0aae8d7f9db596818c45289cfd314864eafe5f64"
+      },
+      "name": "mismatch-first-only",
+      "valid": false
+    },
+    {
+      "error": "ScalarMismatch",
+      "input": {
+        "key_addr": "0000000000000000000000000000000000000000",
+        "key_addr2": "253487e8518af144b87b87a40da7374a5889206e",
+        "s": "645ffeea644831fd9c28458c8196b59d7f8dae0a1f4b1ee6031c9476ebb4f80c",
+        "secret_uint256": "0cf8b4eb76941c03e61e4b1f0aae8d7f9db596818c45289cfd314864eafe5f64"
+      },
+      "name": "zero-commitment",
+      "valid": false
+    }
+  ],
+  "format": "xmrswap-vectors/1",
+  "suite": "twin",
+  "t2": "ce9b14ee8f684ed20a8d03e126f8d1881fa813bd8b39e1328d6a80ace9c131ce",
+  "t2_tag": "xmr-atomic-swap/twin-key/2"
+}

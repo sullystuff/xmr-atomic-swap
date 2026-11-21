@@ -1,0 +1,1505 @@
+//! Vector suites for SPEC 3 and 4.2: terms, amounts, deadlines, transitions.
+//!
+//! `transitions.json` is the executable form of the state machine. It is generated from the
+//! reference model, per chain, in two parts:
+//!
+//! * `rows`: every row of SPEC 3.4 to 3.6, each at the first and last second of its window and
+//!   one second either side of every boundary, plus wrong-caller, wrong-secret and wrong-state
+//!   cases. A row is replayed by running its `open` call, then its `setup` steps, then `step`.
+//! * `sequences`: multi-step scripts with absolute times. Every step lists the expected result,
+//!   the whole swap record (state, every `t_*` field, flags, parked balances), the payouts paid
+//!   and parked, and all of the maker's counters.
+
+use serde_json::{json, Map, Value};
+
+use super::{d, err_case, h, ok_case, suite, suite_lines, VectorFile};
+use crate::{
+  amounts::{
+    self, check_bounds, deadlines as derive_deadlines, delta_cut, min_claim_delay, min_claim_window, min_final_window,
+    pending_window, tier_value, Chain, ChainConsts, EventTimes, Pending, SwapParams, ETHEREUM, SOLANA,
+  },
+  model::{
+    apply, counter, flag, mode, Call, Direction, Effects, Env, Evidence, MakerRecord, ModelError, OpenArgs, Party,
+    RejectReason, Role, State, SwapState,
+  },
+  solana::{terms_hash, terms_preimage, OfferTermsHashInput},
+};
+
+// ------------------------------------------------------------------ terms
+
+pub fn terms() -> VectorFile {
+  let base = OfferTermsHashInput {
+    asset: 0,
+    direction: 0,
+    mode: 0,
+    dep_bps: 100,
+    fee_bps: SOLANA.fee_bps,
+    w_a: 60,
+    w_n: 600,
+    d_c: 6_060,
+    w_c: 1_800,
+    w_f: 604_800,
+    depth_above: [0, 1_000_000_000_000, 50_000_000_000_000],
+    depths: [2, 10, 25],
+  };
+  let variants: Vec<(&str, OfferTermsHashInput)> = vec![
+    ("sol-a-auto", base.clone()),
+    ("usdc-a-window", OfferTermsHashInput { asset: 1, mode: 1, ..base.clone() }),
+    ("sol-b-advance", OfferTermsHashInput { direction: 1, mode: 2, dep_bps: 500, ..base.clone() }),
+    ("one-depth-tier", OfferTermsHashInput { depth_above: [0, 0, 0], depths: [10, 0, 0], d_c: 5_400, ..base.clone() }),
+    ("no-deposit", OfferTermsHashInput { dep_bps: 0, ..base.clone() }),
+    ("claim-delay-one-second-longer", OfferTermsHashInput { d_c: base.d_c + 1, ..base.clone() }),
+    (
+      "extremes",
+      OfferTermsHashInput {
+        asset: 1,
+        direction: 1,
+        mode: 2,
+        dep_bps: u16::MAX,
+        fee_bps: u16::MAX,
+        w_a: u32::MAX,
+        w_n: u32::MAX,
+        d_c: u32::MAX,
+        w_c: u32::MAX,
+        w_f: u32::MAX,
+        depth_above: [0, u64::MAX - 1, u64::MAX],
+        depths: [255, 254, 253],
+      },
+    ),
+  ];
+  let mut cases = Vec::new();
+  let mut seen = std::collections::BTreeSet::new();
+  for (name, t) in variants {
+    let hash = terms_hash(&t);
+    assert!(seen.insert(hash), "{name}: terms hash collides with another case");
+    cases.push(ok_case(
+      name,
+      json!({
+        "asset": t.asset, "direction": t.direction, "mode": t.mode, "dep_bps": t.dep_bps, "fee_bps": t.fee_bps,
+        "w_a": t.w_a, "w_n": t.w_n, "d_c": t.d_c, "w_c": t.w_c, "w_f": t.w_f,
+        "depth_above": t.depth_above.map(d), "depths": t.depths,
+      }),
+      json!({ "preimage": h(terms_preimage(&t)), "terms_hash": h(terms_hash(&t)) }),
+    ));
+  }
+  suite(
+    "terms",
+    cases,
+    vec![("layout", json!("SHA256(DS(\"terms\") || asset u8 || direction u8 || mode u8 || dep_bps u16 || fee_bps u16 || w_a || w_n || d_c || w_c || w_f (u32 each) || 3 x (depth_above u64 || depth u8)), little-endian"))],
+  )
+}
+
+// ------------------------------------------------------------------ amounts
+
+pub fn amounts() -> VectorFile {
+  let mut cases = Vec::new();
+  let xmr1 = 1_000_000_000_000u64;
+  // (name, xmr, price): every case is evaluated as pay (ceil) and receive (floor) on both chains.
+  let prices: Vec<(&str, u64, u128)> = vec![
+    ("one-xmr", xmr1, 150_000_000),
+    ("one-piconero-at-price-one", 1, 1),
+    ("third-of-an-xmr", 333_333_333_333, 3),
+    ("exact-division", 333_333_333_333, 3_000_000_000_000),
+    ("zero-xmr", 0, 150_000_000),
+    ("typical-sol", 2_500_000_000_000, 1_512_345_678),
+    ("typical-usdc", 2_500_000_000_000, 165_250_000),
+    ("typical-eth", 2_500_000_000_000, 61_234_567_890_123_456),
+    ("u64-max-at-10^12", u64::MAX, 1_000_000_000_000),
+    ("u64-max-just-over-solana", u64::MAX, 1_000_000_000_001),
+    ("u64-max-times-two", u64::MAX, 2_000_000_000_000),
+    ("wide-intermediate", u64::MAX, 1u128 << 100),
+    ("above-u128", u64::MAX, u128::MAX / 1_000_000),
+  ];
+  for (name, xmr, price) in &prices {
+    for chain in [Chain::Solana, Chain::Ethereum] {
+      for (op, f) in [
+        ("pay", amounts::pay_amount as fn(u64, u128, &ChainConsts) -> crate::error::Result<u128>),
+        ("receive", amounts::receive_amount),
+      ] {
+        let input = json!({ "op": op, "chain": chain.name(), "xmr": d(xmr), "price": d(price) });
+        let case_name = format!("{op}-{name}-{}", chain.name());
+        match f(*xmr, *price, chain.consts()) {
+          Ok(amount) => cases.push(ok_case(&case_name, input, json!({ "amount": d(amount) }))),
+          Err(e) => cases.push(err_case(&case_name, input, &e.to_string())),
+        }
+      }
+    }
+  }
+  for (amount, bps) in [(1_000_000u128, 500u16), (19_999, 500), (1_999, 5), (2_000, 5), (0, 500), (1, 1), (u64::MAX as u128, 500), (u128::MAX, 500), (u128::MAX, 5), (123_456_789_012_345_678, 137)] {
+    cases.push(ok_case(
+      &format!("bps-{amount}-{bps}"),
+      json!({ "op": "bps", "amount": d(amount), "bps": bps }),
+      json!({ "result": d(amounts::bps_of(amount, bps)) }),
+    ));
+  }
+  for deposit in [0u128, 1, 2, 7, 8, 15_000_001, u64::MAX as u128, u128::MAX] {
+    let (taker, treasury) = amounts::split_of(deposit);
+    cases.push(ok_case(
+      &format!("split-{deposit}"),
+      json!({ "op": "split", "deposit": d(deposit) }),
+      json!({ "to_taker": d(taker), "to_treasury": d(treasury) }),
+    ));
+  }
+  // Tiers: "the highest used tier with xmr >= tier threshold"; value 0 = unused; unused trail.
+  let tier_case = |cases: &mut Vec<Value>, name: &str, xmr: u64, above: [u64; 3], values: [u64; 3]| {
+    let input = json!({ "op": "tier", "xmr": d(xmr), "above": above.map(d), "values": values.map(d) });
+    match tier_value(xmr, &above, &values) {
+      Some(v) => cases.push(ok_case(name, input, json!({ "value": d(v) }))),
+      None => cases.push(err_case(name, input, "TiersInvalid")),
+    }
+  };
+  let above = [0, xmr1, 50 * xmr1];
+  for (name, xmr) in [("zero", 0), ("below-tier-1", xmr1 - 1), ("at-tier-1", xmr1), ("below-tier-2", 50 * xmr1 - 1), ("at-tier-2", 50 * xmr1), ("max", u64::MAX)] {
+    tier_case(&mut cases, &format!("tier-three-{name}"), xmr, above, [2, 10, 25]);
+  }
+  tier_case(&mut cases, "tier-two-used", u64::MAX, [0, 5, 0], [7, 9, 0]);
+  tier_case(&mut cases, "tier-one-used", 4, [0, 0, 0], [7, 0, 0]);
+  tier_case(&mut cases, "tier-unused-threshold-ignored", 9, [0, 5, 9], [1, 2, 0]);
+  tier_case(&mut cases, "tier-first-threshold-nonzero", 9, [1, 5, 9], [1, 2, 3]);
+  tier_case(&mut cases, "tier-zero-unused", 9, [0, 5, 9], [0, 2, 3]);
+  tier_case(&mut cases, "tier-gap", 9, [0, 0, 9], [1, 0, 3]);
+  tier_case(&mut cases, "tier-equal-thresholds", 9, [0, 5, 5], [1, 2, 3]);
+  tier_case(&mut cases, "tier-decreasing-thresholds", 9, [0, 5, 4], [1, 2, 3]);
+  suite(
+    "amounts",
+    cases,
+    vec![(
+      "rules",
+      json!({
+        "pay": "direction A: ceil(xmr * price / 10^12)",
+        "receive": "direction B: floor(xmr * price / 10^12)",
+        "bps": "floor(amount * bps / 10^4): the deposit and the fee",
+        "split": "ceil(D / 2) to the taker, floor(D / 2) to the treasury",
+        "max_amount": { "solana": d(SOLANA.max_amount), "ethereum": d(ETHEREUM.max_amount) },
+      }),
+    )],
+  )
+}
+
+// ------------------------------------------------------------------ deadlines
+
+fn consts_json(c: &ChainConsts) -> Value {
+  json!({
+    "FEE_BPS": c.fee_bps, "MAX_DEPOSIT_BPS": c.max_deposit_bps, "HOLD_SECS": c.hold_secs, "SPLIT_SECS": c.split_secs,
+    "EXPIRY_SECS": c.expiry_secs, "BLOCK_ALLOWANCE_SECS": c.block_allowance_secs, "CUT_MARGIN_SECS": c.cut_margin_secs,
+    "MARGIN_SECS": c.margin_secs, "FINALITY_SECS": c.finality_secs, "MIN_NOTICE_SECS": c.min_notice_secs,
+    "MAX_NOTICE_SECS": c.max_notice_secs, "MIN_CLAIM_DELAY_SECS": c.min_claim_delay_secs,
+    "MIN_APPROVAL_SECS": amounts::MIN_APPROVAL_SECS, "MAX_APPROVAL_SECS": c.max_approval_secs,
+    "MAX_FINAL_SECS": c.max_final_secs, "READY_MIN_SECS_PER_CONF": c.ready_min_secs_per_conf,
+    "CLOSE_GRACE_SECS": c.close_grace_secs, "LINK_DELAY_SECS": c.link_delay_secs, "MAX_OPEN_PENDING": c.max_open_pending,
+    "EXPLICIT_APPROVE": c.explicit_approve, "OPEN_SECRET_CALLS": c.open_secret_calls, "LAPSE_IS_FAULT": c.lapse_is_fault,
+  })
+}
+fn params_json(p: &SwapParams) -> Value {
+  json!({ "w_a": p.w_a, "w_n": p.w_n, "d_c": p.d_c, "w_c": p.w_c, "w_f": p.w_f, "depth": p.depth, "dep_bps": p.dep_bps })
+}
+fn pending_name(p: Pending) -> &'static str {
+  match p {
+    Pending::None => "none",
+    Pending::ApprovalWindow => "approval",
+    Pending::FundingWindow => "funding",
+  }
+}
+
+/// Per-chain parameters used across the suites: the daemon defaults at depth 10.
+pub(crate) fn canonical(chain: Chain) -> SwapParams {
+  match chain {
+    Chain::Solana => SwapParams { w_a: 60, w_n: 600, d_c: 5_400, w_c: 1_800, w_f: 604_800, depth: 10, dep_bps: 100 },
+    Chain::Ethereum => SwapParams { w_a: 120, w_n: 1_800, d_c: 10_800, w_c: 5_400, w_f: 604_800, depth: 10, dep_bps: 100 },
+  }
+}
+pub(crate) fn canonical_amount(chain: Chain) -> u128 {
+  match chain {
+    Chain::Solana => 1_500_000_000,              // 1.5 SOL: D = 15,000,000, fee = 750,000
+    Chain::Ethereum => 122_000_000_000_000_000,  // 0.122 ETH: D = 1.22e15, fee = 6.1e13
+  }
+}
+pub(crate) const T0: i64 = 1_800_000_000;
+
+pub fn deadlines() -> VectorFile {
+  let mut cases = Vec::new();
+  for chain in [Chain::Solana, Chain::Ethereum] {
+    let c = chain.consts();
+    let ok = canonical(chain);
+    let mut bounds = |name: &str, p: SwapParams, pending: Pending| {
+      let input = json!({ "op": "bounds", "chain": chain.name(), "pending": pending_name(pending), "params": params_json(&p) });
+      let name = format!("{}-{name}", chain.name());
+      match check_bounds(&p, pending, c) {
+        Ok(()) => cases.push(ok_case(
+          &name,
+          input,
+          json!({
+            "w_p": pending_window(&p, pending),
+            "delta_cut": delta_cut(p.depth, c),
+            "min_claim_delay": min_claim_delay(p.depth, c),
+            "min_claim_window": min_claim_window(c),
+            "min_final_window": min_final_window(&p, pending_window(&p, pending)),
+          }),
+        )),
+        Err(e) => cases.push(err_case(&name, input, ModelError::Bound(e).name())),
+      }
+    };
+    use Pending::*;
+    bounds("defaults-active", ok, None);
+    bounds("defaults-approval", ok, ApprovalWindow);
+    bounds("defaults-funding", ok, FundingWindow);
+    // Each bound at its edge and one step past it.
+    bounds("deposit-at-cap", SwapParams { dep_bps: c.max_deposit_bps, ..ok }, None);
+    bounds("deposit-over-cap", SwapParams { dep_bps: c.max_deposit_bps + 1, ..ok }, None);
+    bounds("approval-window-30", SwapParams { w_a: 30, ..ok }, ApprovalWindow);
+    bounds("approval-window-29", SwapParams { w_a: 29, ..ok }, ApprovalWindow);
+    bounds("approval-window-at-cap", SwapParams { w_a: c.max_approval_secs, ..ok }, ApprovalWindow);
+    bounds("approval-window-over-cap", SwapParams { w_a: c.max_approval_secs + 1, ..ok }, ApprovalWindow);
+    bounds("approval-window-unchecked-when-active", SwapParams { w_a: 0, ..ok }, None);
+    bounds("approval-window-unchecked-when-funding", SwapParams { w_a: 0, ..ok }, FundingWindow);
+    bounds("notice-window-at-floor", SwapParams { w_n: c.min_notice_secs, ..ok }, None);
+    bounds("notice-window-below-floor", SwapParams { w_n: c.min_notice_secs - 1, ..ok }, None);
+    bounds("notice-window-at-cap", SwapParams { w_n: c.max_notice_secs, ..ok }, None);
+    bounds("notice-window-over-cap", SwapParams { w_n: c.max_notice_secs + 1, ..ok }, None);
+    bounds("depth-zero", SwapParams { depth: 0, ..ok }, None);
+    for depth in [1u8, 2, 10, 25, 255] {
+      let floor = min_claim_delay(depth, c) as u32;
+      bounds(&format!("claim-delay-at-floor-depth-{depth}"), SwapParams { depth, d_c: floor, ..ok }, None);
+      bounds(&format!("claim-delay-below-floor-depth-{depth}"), SwapParams { depth, d_c: floor - 1, ..ok }, None);
+    }
+    let wc = min_claim_window(c) as u32;
+    bounds("claim-window-at-floor", SwapParams { w_c: wc, ..ok }, None);
+    bounds("claim-window-below-floor", SwapParams { w_c: wc - 1, ..ok }, None);
+    for pending in [None, ApprovalWindow, FundingWindow] {
+      let floor = min_final_window(&ok, pending_window(&ok, pending)) as u32;
+      bounds(&format!("final-window-at-floor-{}", pending_name(pending)), SwapParams { w_f: floor, ..ok }, pending);
+      bounds(&format!("final-window-below-floor-{}", pending_name(pending)), SwapParams { w_f: floor - 1, ..ok }, pending);
+    }
+    bounds("final-window-at-cap", SwapParams { w_f: c.max_final_secs, ..ok }, None);
+    bounds("final-window-over-cap", SwapParams { w_f: c.max_final_secs + 1, ..ok }, None);
+
+    // Deadline derivation from event times.
+    let mut derive = |name: &str, p: SwapParams, pending: Pending, t: EventTimes| {
+      assert_eq!(check_bounds(&p, pending, c), Ok(()));
+      let dl = derive_deadlines(&p, pending, &t, c);
+      cases.push(ok_case(
+        &format!("{}-{name}", chain.name()),
+        json!({
+          "op": "derive", "chain": chain.name(), "pending": pending_name(pending), "params": params_json(&p),
+          "t_lock": t.t_lock, "t_active": t.t_active, "t_notice": t.t_notice, "t_ready": t.t_ready, "t_refund": t.t_refund,
+        }),
+        json!({
+          "t_pend": dl.t_pend, "t_note": dl.t_note, "t_cut": dl.t_cut, "t_co": dl.t_co, "t_ready_min": dl.t_ready_min,
+          "t_cd": dl.t_cd, "t_final": dl.t_final, "t_nl": dl.t_nl, "t_exp": dl.t_exp, "t_hold": dl.t_hold, "t_split": dl.t_split,
+        }),
+      ));
+      dl
+    };
+    derive("derive-at-lock-active", ok, None, EventTimes { t_lock: T0, t_active: Some(T0), ..Default::default() });
+    derive("derive-at-lock-pending", ok, ApprovalWindow, EventTimes { t_lock: T0, ..Default::default() });
+    derive("derive-at-take-funding", ok, FundingWindow, EventTimes { t_lock: T0, ..Default::default() });
+    derive(
+      "derive-full",
+      ok,
+      ApprovalWindow,
+      EventTimes { t_lock: T0, t_active: Some(T0 + 20), t_notice: Some(T0 + 120), t_ready: Some(T0 + 2_000), t_refund: Some(T0 + 4_000) },
+    );
+    // The extreme of SPEC 3.2: direction B funded at the last second with W_n at its cap and the
+    // smallest final window, a notice at the last second, ready at the last second.
+    for depth in [2u8, 10, 25] {
+      let mut p = SwapParams { w_n: c.max_notice_secs, d_c: min_claim_delay(depth, c) as u32, w_c: min_claim_window(c) as u32, depth, ..ok };
+      let pending = if c.explicit_approve { ApprovalWindow } else { FundingWindow };
+      p.w_f = min_final_window(&p, pending_window(&p, pending)) as u32;
+      let d0 = derive_deadlines(&p, pending, &EventTimes { t_lock: T0, ..Default::default() }, c);
+      let t_active = d0.t_pend.unwrap() - 1;
+      let t_notice = d0.t_nl - 1;
+      let t_ready = t_notice + p.d_c as i64 - 1;
+      let dl = derive(
+        &format!("derive-extreme-depth-{depth}"),
+        p,
+        pending,
+        EventTimes { t_lock: T0, t_active: Some(t_active), t_notice: Some(t_notice), t_ready: Some(t_ready), t_refund: Option::None },
+      );
+      // The order the contracts rely on.
+      assert!(dl.t_note.unwrap() <= dl.t_nl);
+      assert!(t_notice < dl.t_cut.unwrap() && dl.t_cut.unwrap() <= dl.t_co.unwrap() - 2 * c.margin_secs);
+      assert!(dl.t_cd.unwrap() < dl.t_final - amounts::DAY_SECS && dl.t_final < dl.t_exp);
+    }
+  }
+  suite(
+    "deadlines",
+    cases,
+    vec![
+      ("constants", json!({ "solana": consts_json(&SOLANA), "ethereum": consts_json(&ETHEREUM) })),
+      (
+        "formulas",
+        json!({
+          "delta_cut": "FINALITY_SECS + depth * BLOCK_ALLOWANCE_SECS + CUT_MARGIN_SECS",
+          "min_claim_delay": "max(MIN_CLAIM_DELAY_SECS, delta_cut + 2 * MARGIN_SECS)",
+          "min_claim_window": "FINALITY_SECS + 2 * MARGIN_SECS",
+          "min_final_window": "w_p + w_n + d_c + w_c + 86400",
+          "w_p": "none: 0; approval: w_a; funding: w_n",
+          "t_pend": "t_lock + w_p", "t_note": "t_active + w_n", "t_cut": "t_notice + delta_cut", "t_co": "t_notice + d_c",
+          "t_ready_min": "t_notice + depth * READY_MIN_SECS_PER_CONF", "t_cd": "t_ready + w_c", "t_final": "t_lock + w_f",
+          "t_nl": "t_final - d_c - w_c - 86400", "t_exp": "t_final + EXPIRY_SECS", "t_hold": "t_refund + HOLD_SECS",
+          "t_split": "t_refund + SPLIT_SECS",
+        }),
+      ),
+      ("bound_check_order", json!(["DepositTooHigh", "ApprovalWindowOutOfRange", "NoticeWindowOutOfRange", "DepthInvalid", "ClaimDelayTooShort", "ClaimWindowTooShort", "FinalWindowOutOfRange"])),
+    ],
+  )
+}
+
+// ------------------------------------------------------------------ transitions
+
+/// A deadline or event time of a swap, resolved against its current record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Anchor {
+  Lock,
+  Pend,
+  Active,
+  Note,
+  Notice,
+  ReadyMin,
+  Cut,
+  Co,
+  Ready,
+  Cd,
+  Final,
+  Nl,
+  Exp,
+  Refund,
+  Hold,
+  Split,
+}
+impl Anchor {
+  fn name(self) -> &'static str {
+    match self {
+      Anchor::Lock => "t_lock",
+      Anchor::Pend => "T_pend",
+      Anchor::Active => "t_A",
+      Anchor::Note => "T_note",
+      Anchor::Notice => "t_N",
+      Anchor::ReadyMin => "T_ready_min",
+      Anchor::Cut => "T_cut",
+      Anchor::Co => "T_co",
+      Anchor::Ready => "t_R",
+      Anchor::Cd => "T_cd",
+      Anchor::Final => "T_final",
+      Anchor::Nl => "T_nl",
+      Anchor::Exp => "T_exp",
+      Anchor::Refund => "t_refund",
+      Anchor::Hold => "T_hold",
+      Anchor::Split => "T_split",
+    }
+  }
+  fn resolve(self, s: &SwapState, c: &ChainConsts) -> i64 {
+    let set = |t: i64| {
+      assert!(t != 0, "anchor {} is not set in state {:?}", self.name(), s.state);
+      t
+    };
+    match self {
+      Anchor::Lock => s.t_lock,
+      Anchor::Pend => set(s.t_pending_deadline),
+      Anchor::Active => set(s.t_active),
+      Anchor::Note => set(s.t_note_deadline),
+      Anchor::Notice => set(s.t_notice),
+      Anchor::ReadyMin => {
+        set(s.t_notice);
+        s.t_ready_min(c)
+      }
+      Anchor::Cut => set(s.t_cut),
+      Anchor::Co => set(s.t_claim_open),
+      Anchor::Ready => set(s.t_ready),
+      Anchor::Cd => set(s.t_claim_deadline),
+      Anchor::Final => s.t_final,
+      Anchor::Nl => s.t_nl(),
+      Anchor::Exp => s.t_exp(c),
+      Anchor::Refund => set(s.t_refund),
+      Anchor::Hold => {
+        set(s.t_refund);
+        s.t_hold(c)
+      }
+      Anchor::Split => {
+        set(s.t_refund);
+        s.t_split(c)
+      }
+    }
+  }
+}
+
+#[derive(Clone, Copy)]
+struct Step {
+  call: Call,
+  caller: Role,
+  anchor: Anchor,
+  offset: i64,
+  env: Env,
+}
+fn step(call: Call, caller: Role, anchor: Anchor, offset: i64) -> Step {
+  Step { call, caller, anchor, offset, env: Env::OK }
+}
+impl Step {
+  fn env(mut self, env: Env) -> Self {
+    self.env = env;
+    self
+  }
+}
+
+const REFUND: Call = Call::Refund { secret_ok: true };
+const CLAIM: Call = Call::Claim { secret_ok: true };
+const APPROVE: Call = Call::Approve { open_ok: true };
+const FUND: Call = Call::Fund { open_ok: true };
+fn reject(reason: RejectReason) -> Call {
+  Call::Reject { open_ok: true, reason }
+}
+
+fn dir_name(d: Direction) -> &'static str {
+  match d {
+    Direction::A => "A",
+    Direction::B => "B",
+  }
+}
+fn call_args(call: &Call) -> Value {
+  match call {
+    Call::Open(a) => json!({
+      "direction": dir_name(a.direction), "offer_mode": a.offer_mode, "approval": a.approval, "amount": d(a.amount),
+      "w_a": a.params.w_a, "w_n": a.params.w_n, "d_c": a.params.d_c, "w_c": a.params.w_c, "w_f": a.params.w_f,
+      "depth": a.params.depth, "dep_bps": a.params.dep_bps,
+    }),
+    Call::Approve { open_ok } | Call::Fund { open_ok } => json!({ "open_ok": open_ok }),
+    Call::Reject { open_ok, reason } => json!({ "open_ok": open_ok, "reason": *reason as u8 }),
+    Call::Refund { secret_ok } | Call::Claim { secret_ok } => json!({ "secret_ok": secret_ok }),
+    Call::Withhold(e) => json!({ "evidence": match e { Evidence::Absent => "absent", Evidence::Opens => "opens", Evidence::Mismatch => "mismatch" } }),
+    Call::PublishEvidence { opens } => json!({ "opens": opens }),
+    Call::WithdrawOwed(who) => json!({ "who": who.name() }),
+    _ => json!({}),
+  }
+}
+fn env_json(e: &Env) -> Value {
+  json!({
+    "taker_can_receive": e.taker_can_receive, "maker_can_receive": e.maker_can_receive,
+    "treasury_can_receive": e.treasury_can_receive, "open_pending": e.open_pending,
+  })
+}
+fn swap_json(s: &SwapState) -> Value {
+  json!({
+    "state": s.state.name(), "state_code": s.state as u8, "direction": dir_name(s.direction), "mode": s.mode,
+    "outcome": s.outcome, "deposit_state": s.deposit_state, "depth": s.depth, "flags": s.flags,
+    "amount": d(s.amount), "deposit": d(s.deposit), "fee_bps": s.fee_bps, "w_n": s.w_n, "d_c": s.d_c, "w_c": s.w_c,
+    "t_lock": s.t_lock, "t_pending_deadline": s.t_pending_deadline, "t_active": s.t_active,
+    "t_note_deadline": s.t_note_deadline, "t_notice": s.t_notice, "t_cut": s.t_cut, "t_claim_open": s.t_claim_open,
+    "t_ready": s.t_ready, "t_claim_deadline": s.t_claim_deadline, "t_final": s.t_final, "t_refund": s.t_refund,
+    "t_settled": s.t_settled,
+    "owed_taker": d(s.owed_taker), "owed_maker": d(s.owed_maker), "owed_treasury": d(s.owed_treasury),
+  })
+}
+fn maker_json(m: &MakerRecord) -> Value {
+  json!({
+    "counters": m.counters.to_vec(), "response_secs_sum": d(m.response_secs_sum), "volume": d(m.volume),
+    "withheld_volume": d(m.withheld_volume), "open_pending": m.open_pending,
+  })
+}
+fn expect_json(result: &Result<Effects, ModelError>, chain: Chain, maker: Option<&MakerRecord>) -> Value {
+  match result {
+    Err(e) => json!({ "ok": false, "error": e.chain_name(chain) }),
+    Ok(fx) => {
+      let mut v = json!({
+        "ok": true,
+        "state": fx.state.state.name(),
+        "counter": fx.counter,
+        "counter_name": fx.counter.map(|c| counter::NAMES[c as usize]),
+        "payouts": fx.payouts.iter().map(|p| json!({ "to": p.to.name(), "amount": d(p.amount), "parked": p.parked })).collect::<Vec<_>>(),
+        "escrow_in": d(fx.escrow_in),
+        "response_secs": fx.response_secs,
+        "volume": d(fx.volume),
+        "withheld_volume": d(fx.withheld_volume),
+        "open_pending": fx.open_pending,
+        "closed": fx.closed,
+        "swap": swap_json(&fx.state),
+      });
+      if let Some(m) = maker {
+        v.as_object_mut().unwrap().insert("maker".into(), maker_json(m));
+      }
+      v
+    }
+  }
+}
+
+/// A scripted swap on one chain.
+struct Run {
+  chain: Chain,
+  c: &'static ChainConsts,
+  state: SwapState,
+  maker: MakerRecord,
+  now: i64,
+}
+impl Run {
+  fn new(chain: Chain) -> Self {
+    Run { chain, c: chain.consts(), state: SwapState::NONE, maker: MakerRecord::default(), now: T0 }
+  }
+  /// Run one call; on success the swap and the maker record advance. Returns the step as JSON.
+  fn exec(&mut self, call: Call, caller: Role, at: i64, anchor: Option<(Anchor, i64)>, env: &Env, with_maker: bool) -> (Value, Result<Effects, ModelError>) {
+    assert!(at >= self.now, "{}: time runs backwards ({} < {})", call.name(), at, self.now);
+    self.now = at;
+    let mut env = *env;
+    if matches!(call, Call::Open(_)) {
+      env.open_pending = self.maker.open_pending;
+    }
+    let result = apply(self.state, call, caller, at, &env, self.c);
+    if let Ok(fx) = &result {
+      self.state = fx.state;
+      self.maker.record(fx, self.c.max_amount);
+    }
+    let mut v = json!({
+      "call": call.name(), "args": call_args(&call), "caller": caller.name(), "at": at, "env": env_json(&env),
+      "expect": expect_json(&result, self.chain, with_maker.then_some(&self.maker)),
+    });
+    if let Some((a, off)) = anchor {
+      v.as_object_mut().unwrap().insert("anchor".into(), json!({ "name": a.name(), "offset": off }));
+    }
+    (v, result)
+  }
+  fn step(&mut self, s: &Step, with_maker: bool) -> (Value, Result<Effects, ModelError>) {
+    let at = s.anchor.resolve(&self.state, self.c) + s.offset;
+    self.exec(s.call, s.caller, at, Some((s.anchor, s.offset)), &s.env, with_maker)
+  }
+}
+
+/// Where a row starts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Target {
+  /// PENDING. `window`: the offer is in window mode.
+  Pending { window: bool },
+  Active,
+  Noticed { late: bool },
+  Ready,
+  AbortedFree,
+  AbortedHold,
+  /// HOLD after a refund; `notice`: a lock notice is on record.
+  Hold { notice: bool },
+  Withheld { notice: bool },
+}
+impl Target {
+  fn label(self) -> String {
+    match self {
+      Target::Pending { window: true } => "PENDING (window mode)".into(),
+      Target::Pending { window: false } => "PENDING".into(),
+      Target::Active => "ACTIVE".into(),
+      Target::Noticed { late: false } => "NOTICED".into(),
+      Target::Noticed { late: true } => "NOTICED (late notice)".into(),
+      Target::Ready => "READY".into(),
+      Target::AbortedFree => "ABORTED_FREE".into(),
+      Target::AbortedHold => "ABORTED_HOLD".into(),
+      Target::Hold { notice: true } => "HOLD".into(),
+      Target::Hold { notice: false } => "HOLD (no notice on record)".into(),
+      Target::Withheld { notice: true } => "WITHHELD".into(),
+      Target::Withheld { notice: false } => "WITHHELD (no notice on record)".into(),
+    }
+  }
+}
+
+fn open_args(chain: Chain, direction: Direction, offer_mode: u8, approval: bool, dep_bps: Option<u16>) -> OpenArgs {
+  let mut params = canonical(chain);
+  if let Some(b) = dep_bps {
+    params.dep_bps = b;
+  }
+  OpenArgs { direction, offer_mode, approval, amount: canonical_amount(chain), params }
+}
+
+/// The open call and the steps that bring a fresh swap to `target`.
+fn reach(chain: Chain, dir: Direction, target: Target, dep_bps: Option<u16>) -> (OpenArgs, Vec<Step>) {
+  use Direction::*;
+  let (claimer, locker) = match dir {
+    A => (Role::Operator, Role::Session),
+    B => (Role::Session, Role::Operator),
+  };
+  let window = matches!(target, Target::Pending { window: true });
+  let open = open_args(chain, dir, if window { mode::WINDOW } else { mode::AUTO }, false, dep_bps);
+  let mut steps = Vec::new();
+  if matches!(target, Target::Pending { .. }) {
+    return (open, steps);
+  }
+  // Leave PENDING if the swap starts there (always on Ethereum; direction B on Solana).
+  let starts_pending = chain.consts().explicit_approve || dir == B;
+  if starts_pending {
+    steps.push(step(if dir == A { APPROVE } else { FUND }, Role::Operator, Anchor::Lock, 20));
+  }
+  let notice = |late: bool| if late { step(Call::PostNotice, claimer, Anchor::Note, 50) } else { step(Call::PostNotice, claimer, Anchor::Active, 100) };
+  match target {
+    Target::Pending { .. } => unreachable!(),
+    Target::Active => {}
+    Target::Noticed { late } => steps.push(notice(late)),
+    Target::Ready => {
+      steps.push(notice(false));
+      steps.push(step(Call::SetReady, locker, Anchor::ReadyMin, 300));
+    }
+    Target::AbortedFree => {
+      assert_eq!(dir, A, "ABORTED_FREE exists only in direction A");
+      steps.push(notice(false));
+      steps.push(step(Call::Abort, claimer, Anchor::Notice, 200));
+    }
+    Target::AbortedHold => {
+      steps.push(notice(false));
+      steps.push(if dir == A { step(Call::Abort, claimer, Anchor::Co, 10) } else { step(Call::Abort, claimer, Anchor::Notice, 200) });
+    }
+    Target::Hold { notice: with_notice } | Target::Withheld { notice: with_notice } => {
+      match (dir, with_notice) {
+        (A, true) => {
+          steps.push(notice(false));
+          steps.push(step(REFUND, locker, Anchor::Notice, 300)); // A10b
+        }
+        (A, false) => steps.push(step(REFUND, locker, Anchor::Active, 50)), // A10a
+        (B, true) => {
+          steps.push(notice(false));
+          steps.push(step(REFUND, locker, Anchor::Cut, 10)); // B9d
+        }
+        (B, false) => steps.push(step(REFUND, locker, Anchor::Note, 10)), // B9b
+      }
+      if matches!(target, Target::Withheld { .. }) {
+        let evidence = if dir == A && with_notice { Evidence::Opens } else { Evidence::Absent };
+        steps.push(step(Call::Withhold(evidence), Role::Operator, Anchor::Refund, 60));
+      }
+    }
+  }
+  (open, steps)
+}
+
+/// One group of rows: a call from a state, tried at several instants and by several callers.
+struct RowSpec {
+  id: &'static str,
+  dir: Direction,
+  target: Target,
+  dep_bps: Option<u16>,
+  call: Call,
+  /// Callers the row is tried with at every point.
+  callers: Vec<Role>,
+  /// Instants: (anchor, offset).
+  points: Vec<(Anchor, i64)>,
+  /// Other callers, tried at the first point only (wrong-caller cases).
+  others: Vec<Role>,
+  /// Environment for the call (pay-or-park).
+  env: Env,
+}
+fn spec(id: &'static str, dir: Direction, target: Target, call: Call, caller: Role, points: &[(Anchor, i64)]) -> RowSpec {
+  RowSpec { id, dir, target, dep_bps: None, call, callers: vec![caller], points: points.to_vec(), others: vec![], env: Env::OK }
+}
+impl RowSpec {
+  fn also(mut self, caller: Role) -> Self {
+    self.callers.push(caller);
+    self
+  }
+  fn others(mut self, roles: &[Role]) -> Self {
+    self.others = roles.to_vec();
+    self
+  }
+  fn no_deposit(mut self) -> Self {
+    self.dep_bps = Some(0);
+    self
+  }
+}
+
+fn row_specs(chain: Chain) -> Vec<RowSpec> {
+  use Anchor::*;
+  use Direction::{A, B};
+  use Role::{Anyone, Operator, Owner, Session, TakerWallet};
+  let _ = Owner;
+  let pend_w = Target::Pending { window: true };
+  let pend = Target::Pending { window: false };
+  let active = Target::Active;
+  let noticed = Target::Noticed { late: false };
+  let late = Target::Noticed { late: true };
+  let ready = Target::Ready;
+  let aborted_free = Target::AbortedFree;
+  let aborted_hold = Target::AbortedHold;
+  let hold = Target::Hold { notice: true };
+  let hold_nn = Target::Hold { notice: false };
+  let withheld = Target::Withheld { notice: true };
+  let bad_refund = Call::Refund { secret_ok: false };
+  let bad_claim = Call::Claim { secret_ok: false };
+  let mut v = vec![
+    // ---------------------------------------------------------------- direction A (SPEC 3.4)
+    spec("A2", A, pend_w, APPROVE, Operator, &[(Lock, 0), (Pend, -1), (Pend, 0)]).others(&[TakerWallet, Session, Anyone]),
+    spec("A2 stale open hash", A, pend_w, Call::Approve { open_ok: false }, Operator, &[(Lock, 5)]),
+    spec("A2 not pending", A, active, APPROVE, Operator, &[(Active, 5)]),
+    spec("A3 reason 0", A, pend_w, reject(RejectReason::MakerChoice), Operator, &[(Lock, 5), (Pend, 100)]).others(&[TakerWallet, Session, Anyone]),
+    spec("A3 reason 1", A, pend_w, reject(RejectReason::UnusableInput), Operator, &[(Lock, 5)]),
+    spec("A3 reason 2", A, pend_w, reject(RejectReason::LeafConsumed), Operator, &[(Lock, 5)]),
+    spec("A3 stale open hash", A, pend_w, Call::Reject { open_ok: false, reason: RejectReason::MakerChoice }, Operator, &[(Lock, 5)]),
+    spec("A4", A, pend_w, Call::CancelPending, TakerWallet, &[(Lock, 0), (Pend, 9)]).also(Session).others(&[Operator, Anyone]),
+    spec("A4 not pending", A, active, Call::CancelPending, Session, &[(Active, 5)]),
+    spec("A5", A, pend_w, Call::ExpirePending, Anyone, &[(Pend, -1), (Pend, 0), (Pend, 500)]).also(Operator),
+    spec("A6", A, active, Call::PostNotice, Operator, &[(Active, 0), (Note, -1), (Note, 0)]).others(&[TakerWallet, Session, Anyone]),
+    spec("A6 twice", A, noticed, Call::PostNotice, Operator, &[(Notice, 1)]),
+    spec("A7a", A, active, Call::Abort, Operator, &[(Active, 0), (Note, -1), (Note, 0)]).others(&[TakerWallet, Session, Anyone]),
+    spec("A7b/A7c", A, noticed, Call::Abort, Operator, &[(Notice, 0), (Co, -1), (Co, 0), (Final, -1), (Final, 0)]),
+    spec("A7d", A, ready, Call::Abort, Operator, &[(Ready, 0), (Final, -1), (Final, 0)]),
+    spec("A7 twice", A, aborted_free, Call::Abort, Operator, &[(Notice, 400)]),
+    spec("A8", A, active, Call::RefundUnnoticed, Anyone, &[(Note, -1), (Note, 0), (Final, 5)]).also(TakerWallet),
+    spec("A8 after a notice", A, noticed, Call::RefundUnnoticed, Anyone, &[(Note, 0)]),
+    spec("A9", A, noticed, Call::SetReady, Session, &[(ReadyMin, -1), (ReadyMin, 0), (Co, -1), (Co, 0)]).also(TakerWallet).others(&[Operator, Anyone]),
+    spec("A9 not noticed", A, active, Call::SetReady, Session, &[(Active, 700)]),
+    spec("A10a/A10g", A, active, REFUND, Session, &[(Active, 0), (Note, -1), (Note, 0), (Final, 1)]).also(TakerWallet).others(&[Operator, Anyone]),
+    spec("A10 wrong secret", A, active, bad_refund, Session, &[(Active, 0)]),
+    spec("A10 while pending", A, pend_w, REFUND, Session, &[(Lock, 5)]),
+    spec("A10b/A10f", A, noticed, REFUND, Session, &[(Notice, 0), (Co, -1), (Co, 0), (Final, 0), (Exp, -1), (Exp, 0)]),
+    spec("A10c/A10f", A, aborted_hold, REFUND, Session, &[(Co, 20), (Final, -1), (Final, 0), (Exp, -1), (Exp, 0)]),
+    spec("A10d/A10f", A, aborted_free, REFUND, Session, &[(Notice, 300), (Final, -1), (Final, 0), (Exp, -1), (Exp, 0)]),
+    spec("A10e/A10f", A, ready, REFUND, Session, &[(Ready, 1), (Cd, -1), (Cd, 0), (Final, -1), (Final, 0), (Exp, -1), (Exp, 0)]),
+    spec("A11a/A11c", A, ready, CLAIM, Operator, &[(Ready, 0), (Cd, -1), (Cd, 0), (Final, -1), (Final, 0), (Exp, -1), (Exp, 0)]).others(&[TakerWallet, Session, Anyone]),
+    spec("A11 wrong secret", A, ready, bad_claim, Operator, &[(Ready, 0)]),
+    spec("A11b/A11c", A, noticed, CLAIM, Operator, &[(Notice, 0), (Co, -1), (Co, 0), (Final, -1), (Final, 0), (Exp, -1), (Exp, 0)]),
+    spec("A11c after abort (free)", A, aborted_free, CLAIM, Operator, &[(Final, -1), (Final, 0), (Exp, -1), (Exp, 0)]),
+    spec("A11c after abort (hold)", A, aborted_hold, CLAIM, Operator, &[(Final, -1), (Final, 0), (Exp, -1), (Exp, 0)]),
+    spec("A11 without a notice", A, active, CLAIM, Operator, &[(Active, 0), (Final, 0)]),
+    // "When D == 0, a refund that would enter HOLD goes straight to DONE."
+    spec("A10a D == 0", A, active, REFUND, Session, &[(Active, 0)]).no_deposit(),
+    spec("A10b D == 0", A, noticed, REFUND, Session, &[(Notice, 0)]).no_deposit(),
+    spec("A10c D == 0", A, aborted_hold, REFUND, Session, &[(Co, 20)]).no_deposit(),
+    spec("fund in A", A, pend_w, FUND, Operator, &[(Lock, 5)]),
+    spec("expire_unnoticed in A", A, active, Call::ExpireUnnoticed, Anyone, &[(Exp, 0)]),
+    // ---------------------------------------------------------------- direction B (SPEC 3.5)
+    spec("B2", B, pend, Call::CancelPending, TakerWallet, &[(Lock, 1), (Pend, 9)]).also(Session).others(&[Operator, Anyone]),
+    spec("B2 window", B, pend_w, Call::CancelPending, Session, &[(Lock, 1)]),
+    spec("B3 window, reason 0", B, pend_w, reject(RejectReason::MakerChoice), Operator, &[(Lock, 1), (Pend, 100)]).others(&[TakerWallet, Session, Anyone]),
+    spec("B3 window, reason 1", B, pend_w, reject(RejectReason::UnusableInput), Operator, &[(Lock, 1)]),
+    spec("B3 window, reason 2", B, pend_w, reject(RejectReason::LeafConsumed), Operator, &[(Lock, 1)]),
+    spec("B3 outside window mode", B, pend, reject(RejectReason::MakerChoice), Operator, &[(Lock, 1)]),
+    spec("B4", B, pend, Call::ExpirePending, Anyone, &[(Pend, -1), (Pend, 0)]),
+    spec("B4 window", B, pend_w, Call::ExpirePending, Anyone, &[(Pend, -1), (Pend, 0)]),
+    spec("B5", B, pend, FUND, Operator, &[(Lock, 1), (Pend, -1), (Pend, 0)]).others(&[TakerWallet, Session, Anyone]),
+    spec("B5 window", B, pend_w, FUND, Operator, &[(Pend, -1), (Pend, 0)]),
+    spec("B5 stale open hash", B, pend, Call::Fund { open_ok: false }, Operator, &[(Lock, 1)]),
+    spec("approve in B", B, pend, APPROVE, Operator, &[(Lock, 1)]),
+    spec("B6", B, active, Call::PostNotice, Session, &[(Active, 0), (Note, -1), (Note, 0), (Nl, -1), (Nl, 0)]).also(TakerWallet).others(&[Operator, Anyone]),
+    spec("B7", B, noticed, Call::SetReady, Operator, &[(ReadyMin, -1), (ReadyMin, 0), (Co, -1), (Co, 0)]).others(&[TakerWallet, Session, Anyone]),
+    spec("B8 noticed", B, noticed, Call::Abort, Session, &[(Notice, 0), (Final, -1), (Final, 0)]).also(TakerWallet).others(&[Operator, Anyone]),
+    spec("B8 ready", B, ready, Call::Abort, Session, &[(Ready, 0), (Final, -1), (Final, 0)]),
+    spec("B8 before a notice", B, active, Call::Abort, Session, &[(Active, 0)]),
+    spec("B8 twice", B, aborted_hold, Call::Abort, Session, &[(Notice, 300)]),
+    spec("B9a/B9b", B, active, REFUND, Operator, &[(Active, 0), (Note, -1), (Note, 0), (Final, 7)]).others(&[TakerWallet, Session, Anyone]),
+    spec("B9 wrong secret", B, active, bad_refund, Operator, &[(Active, 0)]),
+    spec("B9 while pending", B, pend, REFUND, Operator, &[(Lock, 1)]),
+    spec("B9c/B9d/B9g", B, noticed, REFUND, Operator, &[(Notice, 0), (Cut, -1), (Cut, 0), (Co, -1), (Co, 0), (Final, 0), (Exp, -1), (Exp, 0)]),
+    spec("B9h/B9d/B9g", B, late, REFUND, Operator, &[(Notice, 0), (Cut, -1), (Cut, 0), (Co, -1), (Co, 0), (Exp, -1), (Exp, 0)]),
+    spec("B9e/B9g", B, ready, REFUND, Operator, &[(Ready, 1), (Cd, -1), (Cd, 0), (Final, -1), (Final, 0), (Exp, -1), (Exp, 0)]),
+    spec("B9f/B9g", B, aborted_hold, REFUND, Operator, &[(Notice, 300), (Final, -1), (Final, 0), (Exp, -1), (Exp, 0)]),
+    spec("B10a/B10c", B, ready, CLAIM, Session, &[(Ready, 0), (Cd, -1), (Cd, 0), (Final, -1), (Final, 0), (Exp, -1), (Exp, 0)]).also(TakerWallet).others(&[Operator, Anyone]),
+    spec("B10 wrong secret", B, ready, bad_claim, Session, &[(Ready, 0)]),
+    spec("B10b/B10c", B, noticed, CLAIM, Session, &[(Notice, 0), (Co, -1), (Co, 0), (Final, -1), (Final, 0), (Exp, -1), (Exp, 0)]),
+    spec("B10b late notice", B, late, CLAIM, Session, &[(Co, -1), (Co, 0)]),
+    spec("B10c after abort", B, aborted_hold, CLAIM, Session, &[(Final, -1), (Final, 0), (Exp, -1), (Exp, 0)]),
+    spec("B10 without a notice", B, active, CLAIM, Session, &[(Active, 0), (Final, 0)]),
+    spec("B11", B, active, Call::ExpireUnnoticed, Anyone, &[(Exp, -1), (Exp, 0)]).also(Operator),
+    spec("B11 after a notice", B, noticed, Call::ExpireUnnoticed, Anyone, &[(Exp, 0)]),
+    spec("B9b D == 0", B, active, REFUND, Operator, &[(Note, 0)]).no_deposit(),
+    spec("B9h D == 0", B, late, REFUND, Operator, &[(Notice, 0)]).no_deposit(),
+    spec("B9d D == 0", B, noticed, REFUND, Operator, &[(Cut, 0)]).no_deposit(),
+    spec("B9e D == 0", B, ready, REFUND, Operator, &[(Cd, 0)]).no_deposit(),
+    spec("B9f D == 0", B, aborted_hold, REFUND, Operator, &[(Notice, 300)]).no_deposit(),
+    spec("refund_unnoticed in B", B, active, Call::RefundUnnoticed, Anyone, &[(Note, 0)]),
+  ];
+  // ---------------------------------------------------------------- deposit sub-machine (SPEC 3.6)
+  for dir in [A, B] {
+    let claimer = if dir == A { Operator } else { Session };
+    let not_claimer = if dir == A { Session } else { Operator };
+    v.extend([
+      spec("release held, anyone", dir, hold, Call::ReleaseDeposit, Anyone, &[(Hold, -1), (Hold, 0), (Split, 5)]).also(TakerWallet),
+      spec("release held, operator", dir, hold, Call::ReleaseDeposit, Operator, &[(Refund, 1), (Hold, -1), (Hold, 0)]),
+      spec("release withheld", dir, withheld, Call::ReleaseDeposit, Operator, &[(Hold, -1), (Hold, 99), (Split, 99)]).others(&[TakerWallet, Session, Anyone]),
+      spec("withhold", dir, hold, Call::Withhold(if dir == A { Evidence::Opens } else { Evidence::Absent }), Operator, &[(Refund, 1), (Hold, -1), (Hold, 0)]).others(&[TakerWallet, Session, Anyone]),
+      spec("withhold, no notice on record", dir, hold_nn, Call::Withhold(Evidence::Absent), Operator, &[(Refund, 1), (Hold, -1), (Hold, 0)]),
+      spec("withhold twice", dir, withheld, Call::Withhold(Evidence::Opens), Operator, &[(Refund, 90)]),
+      spec("split", dir, withheld, Call::SplitDeposit, Anyone, &[(Split, -1), (Split, 0)]).also(Operator),
+      spec("split of a held deposit", dir, hold, Call::SplitDeposit, Anyone, &[(Split, 0)]),
+      spec("publish_evidence noticed", dir, noticed, Call::PublishEvidence { opens: true }, claimer, &[(Notice, 5)]).others(&[not_claimer, Anyone]),
+      spec("publish_evidence ready", dir, ready, Call::PublishEvidence { opens: true }, claimer, &[(Ready, 5)]),
+      spec("publish_evidence after a refund", dir, hold, Call::PublishEvidence { opens: true }, claimer, &[(Refund, 5)]),
+      spec("publish_evidence withheld", dir, withheld, Call::PublishEvidence { opens: true }, claimer, &[(Split, 5)]),
+      spec("publish_evidence mismatch", dir, noticed, Call::PublishEvidence { opens: false }, claimer, &[(Notice, 5)]),
+      spec("publish_evidence before a notice", dir, active, Call::PublishEvidence { opens: true }, claimer, &[(Active, 5)]),
+      spec("publish_evidence, hold without a notice", dir, hold_nn, Call::PublishEvidence { opens: true }, claimer, &[(Refund, 5)]),
+    ]);
+  }
+  v.push(spec("withhold A without evidence", A, hold, Call::Withhold(Evidence::Absent), Operator, &[(Refund, 1)]));
+  v.push(spec("withhold A with wrong evidence", A, hold, Call::Withhold(Evidence::Mismatch), Operator, &[(Refund, 1)]));
+  let _ = chain;
+  v
+}
+
+/// Rows for opening a swap (A1, B1) and the approval-mode table of SPEC 3.8.
+fn open_rows(chain: Chain) -> Vec<Value> {
+  let c = chain.consts();
+  let mut rows = Vec::new();
+  let mut push = |id: &str, case: &str, args: OpenArgs, caller: Role, env: Env| {
+    let mut run = Run::new(chain);
+    run.maker.open_pending = env.open_pending;
+    let (step_json, result) = run.exec(Call::Open(args), caller, T0, Option::None, &env, false);
+    rows.push(json!({
+      "id": id, "case": case, "chain": chain.name(), "direction": dir_name(args.direction), "mode": args.offer_mode,
+      "from_state": "NONE", "setup": [], "step": step_json, "ok": result.is_ok(),
+    }));
+  };
+  for (dir, id) in [(Direction::A, "A1"), (Direction::B, "B1")] {
+    for (m, approval, case) in [
+      (mode::AUTO, false, "AUTO offer"),
+      (mode::AUTO, true, "AUTO offer, advance approval presented"),
+      (mode::WINDOW, false, "WINDOW offer"),
+      (mode::WINDOW, true, "WINDOW offer, advance approval presented"),
+      (mode::ADVANCE, false, "ADVANCE offer, no approval"),
+      (mode::ADVANCE, true, "ADVANCE offer, advance approval presented"),
+      (mode::QUOTE, false, "taker-bound quote"),
+    ] {
+      push(id, case, open_args(chain, dir, m, approval, Option::None), Role::TakerWallet, Env::OK);
+    }
+    for caller in [Role::Session, Role::Operator, Role::Anyone] {
+      push(id, &format!("wrong caller: {}", caller.name()), open_args(chain, dir, mode::AUTO, false, Option::None), caller, Env::OK);
+    }
+    push(id, "no deposit", open_args(chain, dir, mode::AUTO, false, Some(0)), Role::TakerWallet, Env::OK);
+    // MAX_OPEN_PENDING: the 65th pending swap is refused.
+    push(id, "63 pending swaps open", open_args(chain, dir, mode::WINDOW, false, Option::None), Role::TakerWallet, Env { open_pending: c.max_open_pending - 1, ..Env::OK });
+    push(id, "64 pending swaps open", open_args(chain, dir, mode::WINDOW, false, Option::None), Role::TakerWallet, Env { open_pending: c.max_open_pending, ..Env::OK });
+    // One violated bound each.
+    let base = open_args(chain, dir, mode::WINDOW, false, Option::None);
+    let with = |f: &dyn Fn(&mut SwapParams)| {
+      let mut a = base;
+      f(&mut a.params);
+      a
+    };
+    push(id, "deposit over the cap", with(&|p| p.dep_bps = c.max_deposit_bps + 1), Role::TakerWallet, Env::OK);
+    push(id, "approval window too short", with(&|p| p.w_a = 29), Role::TakerWallet, Env::OK);
+    push(id, "notice window too long", with(&|p| p.w_n = c.max_notice_secs + 1), Role::TakerWallet, Env::OK);
+    push(id, "depth zero", with(&|p| p.depth = 0), Role::TakerWallet, Env::OK);
+    push(id, "claim delay too short", with(&|p| p.d_c = min_claim_delay(p.depth, c) as u32 - 1), Role::TakerWallet, Env::OK);
+    push(id, "claim window too short", with(&|p| p.w_c = min_claim_window(c) as u32 - 1), Role::TakerWallet, Env::OK);
+    push(id, "final window too short", with(&|p| p.w_f = (p.w_a + p.w_n + p.d_c + p.w_c + 86_400) - 1), Role::TakerWallet, Env::OK);
+    push(id, "final window over the cap", with(&|p| p.w_f = c.max_final_secs + 1), Role::TakerWallet, Env::OK);
+  }
+  rows
+}
+
+fn rows(chain: Chain) -> Vec<Value> {
+  let mut out = open_rows(chain);
+  for spec in row_specs(chain) {
+    let (open, setup) = reach(chain, spec.dir, spec.target, spec.dep_bps);
+    let mut attempts: Vec<(Role, (Anchor, i64), &str)> = Vec::new();
+    for caller in &spec.callers {
+      for point in &spec.points {
+        attempts.push((*caller, *point, ""));
+      }
+    }
+    for caller in &spec.others {
+      attempts.push((*caller, spec.points[0], "other caller: "));
+    }
+    let mut any_ok = false;
+    for (caller, (anchor, offset), prefix) in attempts {
+      // Replay from scratch for every attempt: a row never depends on another row.
+      let mut run = Run::new(chain);
+      let (open_json, opened) = run.exec(Call::Open(open), Role::TakerWallet, T0, Option::None, &Env::OK, false);
+      opened.expect("row setup: open");
+      let mut setup_json = Vec::new();
+      for s in &setup {
+        let (j, r) = run.step(s, false);
+        r.unwrap_or_else(|e| panic!("row {}: setup step {} failed with {e:?}", spec.id, s.call.name()));
+        setup_json.push(strip_expect(j));
+      }
+      let from = run.state;
+      let the_step = Step { call: spec.call, caller, anchor, offset, env: spec.env };
+      let (step_json, result) = run.step(&the_step, false);
+      any_ok |= result.is_ok();
+      let sign = if offset < 0 { "-" } else { "+" };
+      out.push(json!({
+        "id": spec.id,
+        "case": format!("{prefix}{} at {}{sign}{}", caller.name(), anchor.name(), offset.abs()),
+        "chain": chain.name(),
+        "direction": dir_name(spec.dir),
+        "mode": from.mode,
+        "from_state": from.state.name(),
+        "from_label": spec.target.label(),
+        "open": strip_expect(open_json),
+        "setup": setup_json,
+        "from": swap_json(&from),
+        "step": step_json,
+        "ok": result.is_ok(),
+      }));
+    }
+    let _ = any_ok;
+  }
+  out
+}
+fn strip_expect(mut step: Value) -> Value {
+  step.as_object_mut().unwrap().remove("expect");
+  step
+}
+
+// ------------------------------------------------------------------ sequences
+
+struct Seq {
+  name: String,
+  about: &'static str,
+  open: OpenArgs,
+  steps: Vec<Step>,
+  maker: Option<MakerRecord>,
+}
+fn seq(name: impl Into<String>, about: &'static str, open: OpenArgs, steps: Vec<Step>) -> Seq {
+  Seq { name: name.into(), about, open, steps, maker: Option::None }
+}
+
+fn run_seq(chain: Chain, s: &Seq) -> (Value, SwapState) {
+  let mut run = Run::new(chain);
+  if let Some(m) = &s.maker {
+    run.maker = m.clone();
+  }
+  let initial = maker_json(&run.maker);
+  let mut steps = Vec::new();
+  let (open_json, opened) = run.exec(Call::Open(s.open), Role::TakerWallet, T0, Option::None, &Env::OK, true);
+  opened.unwrap_or_else(|e| panic!("sequence {}: open failed with {e:?}", s.name));
+  steps.push(open_json);
+  for st in &s.steps {
+    let (j, _) = run.step(st, true);
+    steps.push(j);
+  }
+  (
+    json!({
+      "name": s.name, "chain": chain.name(), "direction": dir_name(s.open.direction), "about": s.about,
+      "initial_maker": initial, "steps": steps,
+      "final": { "swap": swap_json(&run.state), "maker": maker_json(&run.maker) },
+    }),
+    run.state,
+  )
+}
+
+fn sequences(chain: Chain) -> Vec<Value> {
+  use Anchor::*;
+  use Direction::{A, B};
+  use Role::{Anyone, Operator, Owner, Session, TakerWallet};
+  let c = chain.consts();
+  let out: std::cell::RefCell<Vec<Value>> = Default::default();
+  let names: std::cell::RefCell<std::collections::BTreeSet<String>> = Default::default();
+  let add = |s: Seq, expect_final: Option<State>| -> SwapState {
+    assert!(names.borrow_mut().insert(s.name.clone()), "duplicate sequence {}", s.name);
+    let (v, state) = run_seq(chain, &s);
+    if let Some(want) = expect_final {
+      assert_eq!(state.state, want, "sequence {} ends in {:?}", s.name, state.state);
+    }
+    out.borrow_mut().push(v);
+    state
+  };
+  let leave_pending = |dir: Direction, open: &OpenArgs| -> Vec<Step> {
+    // Whether this swap starts PENDING on this chain (SPEC 3.8).
+    let window = open.offer_mode == mode::WINDOW && !open.approval;
+    if c.explicit_approve || dir == B || window {
+      vec![step(if dir == A { APPROVE } else { FUND }, Operator, Lock, 12)]
+    } else {
+      vec![]
+    }
+  };
+  let roles = |dir: Direction| if dir == A { (Operator, Session) } else { (Session, Operator) }; // (claimer, locker)
+
+  // 1. A happy path per direction and mode.
+  for dir in [A, B] {
+    for (m, approval, label) in [(mode::AUTO, false, "auto"), (mode::WINDOW, false, "window"), (mode::ADVANCE, true, "advance"), (mode::QUOTE, false, "quote")] {
+      let open = open_args(chain, dir, m, approval, Option::None);
+      let (claimer, locker) = roles(dir);
+      let mut steps = leave_pending(dir, &open);
+      steps.push(step(Call::PostNotice, claimer, Active, 90));
+      steps.push(step(Call::SetReady, locker, ReadyMin, 600));
+      steps.push(step(CLAIM, claimer, Ready, 60));
+      add(seq(format!("happy/{}/{label}", dir_name(dir)), "lock or take, approve or fund where the swap starts pending, notice, ready, claim", open, steps), Some(State::Done));
+    }
+  }
+
+  // 2. For each deadline, the last enabled second and the first disabled second of every call it
+  //    gates: two sequences per call, one acting at T − 1 and one at T.
+  struct Gate {
+    deadline: Anchor,
+    dir: Direction,
+    target: Target,
+    what: &'static str,
+    call: Call,
+    caller: Role,
+  }
+  let g = |deadline, dir, target, what, call, caller| Gate { deadline, dir, target, what, call, caller };
+  let noticed = Target::Noticed { late: false };
+  let late = Target::Noticed { late: true };
+  let hold = Target::Hold { notice: true };
+  let withheld = Target::Withheld { notice: true };
+  let pend_w = Target::Pending { window: true };
+  let pend = Target::Pending { window: false };
+  let gates = vec![
+    // T_appr / T_fund
+    g(Pend, A, pend_w, "approve", APPROVE, Operator),
+    g(Pend, A, pend_w, "expire_pending", Call::ExpirePending, Anyone),
+    g(Pend, B, pend, "fund", FUND, Operator),
+    g(Pend, B, pend, "expire_pending", Call::ExpirePending, Anyone),
+    g(Pend, B, pend_w, "expire_pending-window", Call::ExpirePending, Anyone),
+    // T_note
+    g(Note, A, Target::Active, "post_notice", Call::PostNotice, Operator),
+    g(Note, A, Target::Active, "abort", Call::Abort, Operator),
+    g(Note, A, Target::Active, "refund_unnoticed", Call::RefundUnnoticed, Anyone),
+    g(Note, A, Target::Active, "refund", REFUND, Session),
+    g(Note, B, Target::Active, "refund", REFUND, Operator),
+    g(Note, B, Target::Active, "post_notice", Call::PostNotice, Session),
+    // T_nl (direction B)
+    g(Nl, B, Target::Active, "post_notice", Call::PostNotice, Session),
+    // T_cut (direction B)
+    g(Cut, B, noticed, "refund", REFUND, Operator),
+    g(Cut, B, late, "refund-late-notice", REFUND, Operator),
+    // T_co
+    g(Co, A, noticed, "refund", REFUND, Session),
+    g(Co, A, noticed, "abort", Call::Abort, Operator),
+    g(Co, A, noticed, "set_ready", Call::SetReady, Session),
+    g(Co, A, noticed, "claim", CLAIM, Operator),
+    g(Co, B, noticed, "refund", REFUND, Operator),
+    g(Co, B, noticed, "set_ready", Call::SetReady, Operator),
+    g(Co, B, noticed, "claim", CLAIM, Session),
+    // T_cd
+    g(Cd, A, Target::Ready, "claim", CLAIM, Operator),
+    g(Cd, A, Target::Ready, "refund", REFUND, Session),
+    g(Cd, B, Target::Ready, "claim", CLAIM, Session),
+    g(Cd, B, Target::Ready, "refund", REFUND, Operator),
+    // T_final
+    g(Final, A, noticed, "abort-noticed", Call::Abort, Operator),
+    g(Final, A, Target::Ready, "abort-ready", Call::Abort, Operator),
+    g(Final, A, Target::AbortedHold, "refund-aborted-hold", REFUND, Session),
+    g(Final, A, Target::AbortedFree, "refund-aborted-free", REFUND, Session),
+    g(Final, A, Target::Ready, "refund-ready", REFUND, Session),
+    g(Final, A, noticed, "claim-noticed", CLAIM, Operator),
+    g(Final, A, Target::Ready, "claim-ready", CLAIM, Operator),
+    g(Final, A, Target::AbortedFree, "claim-aborted-free", CLAIM, Operator),
+    g(Final, A, Target::AbortedHold, "claim-aborted-hold", CLAIM, Operator),
+    g(Final, B, noticed, "abort-noticed", Call::Abort, Session),
+    g(Final, B, Target::Ready, "abort-ready", Call::Abort, Session),
+    g(Final, B, Target::Ready, "refund-ready", REFUND, Operator),
+    g(Final, B, Target::AbortedHold, "refund-aborted-hold", REFUND, Operator),
+    g(Final, B, noticed, "claim-noticed", CLAIM, Session),
+    g(Final, B, Target::Ready, "claim-ready", CLAIM, Session),
+    g(Final, B, Target::AbortedHold, "claim-aborted-hold", CLAIM, Session),
+    // T_exp
+    g(Exp, A, noticed, "claim-noticed", CLAIM, Operator),
+    g(Exp, A, Target::Ready, "claim-ready", CLAIM, Operator),
+    g(Exp, A, Target::AbortedFree, "claim-aborted-free", CLAIM, Operator),
+    g(Exp, A, Target::AbortedHold, "claim-aborted-hold", CLAIM, Operator),
+    g(Exp, A, noticed, "refund-noticed", REFUND, Session),
+    g(Exp, A, Target::Ready, "refund-ready", REFUND, Session),
+    g(Exp, A, Target::AbortedFree, "refund-aborted-free", REFUND, Session),
+    g(Exp, A, Target::AbortedHold, "refund-aborted-hold", REFUND, Session),
+    g(Exp, B, noticed, "claim-noticed", CLAIM, Session),
+    g(Exp, B, Target::Ready, "claim-ready", CLAIM, Session),
+    g(Exp, B, Target::AbortedHold, "claim-aborted-hold", CLAIM, Session),
+    g(Exp, B, noticed, "refund-noticed", REFUND, Operator),
+    g(Exp, B, Target::Ready, "refund-ready", REFUND, Operator),
+    g(Exp, B, Target::AbortedHold, "refund-aborted-hold", REFUND, Operator),
+    g(Exp, B, Target::Active, "expire_unnoticed", Call::ExpireUnnoticed, Anyone),
+    // T_hold
+    g(Hold, A, hold, "release_deposit", Call::ReleaseDeposit, Anyone),
+    g(Hold, A, hold, "withhold", Call::Withhold(Evidence::Opens), Operator),
+    g(Hold, B, hold, "release_deposit", Call::ReleaseDeposit, Anyone),
+    g(Hold, B, hold, "withhold", Call::Withhold(Evidence::Absent), Operator),
+    // T_split
+    g(Split, A, withheld, "split_deposit", Call::SplitDeposit, Anyone),
+    g(Split, B, withheld, "split_deposit", Call::SplitDeposit, Anyone),
+  ];
+  for gate in &gates {
+    let (open, setup) = reach(chain, gate.dir, gate.target, Option::None);
+    let mut enabled = [false; 2];
+    for (i, (offset, label)) in [(-1i64, "T-1"), (0, "T")].into_iter().enumerate() {
+      let mut steps = setup.clone();
+      steps.push(step(gate.call, gate.caller, gate.deadline, offset));
+      let s = seq(
+        format!("boundary/{}/{}/{}/{label}", gate.deadline.name(), dir_name(gate.dir), gate.what),
+        "the call one second before the deadline and at the deadline (two sequences)",
+        open,
+        steps,
+      );
+      let (v, _) = run_seq(chain, &s);
+      enabled[i] = v["steps"].as_array().unwrap().last().unwrap()["expect"]["ok"] == true;
+      assert!(names.borrow_mut().insert(s.name.clone()));
+      out.borrow_mut().push(v);
+    }
+    // Every gate either flips at the deadline, or (a keyed refund in ACTIVE, a direction-B
+    // notice, a NOTICED claim at T_final) stays enabled and changes row.
+    let changes_row = matches!(
+      (gate.deadline, gate.what),
+      (Note, "refund") | (Note, "post_notice") | (Cut, _) | (Co, "abort") | (Final, "claim-noticed")
+    ) && !(gate.deadline == Note && gate.dir == A && gate.what == "post_notice");
+    assert_eq!(enabled[0] != enabled[1], !changes_row, "gate {}/{}/{}", gate.deadline.name(), dir_name(gate.dir), gate.what);
+    if changes_row {
+      assert!(enabled[0] && enabled[1], "gate {}/{}/{}", gate.deadline.name(), dir_name(gate.dir), gate.what);
+    }
+  }
+
+  // 3. Direction B funded at the last second with W_n at its cap and the smallest final window,
+  //    then a notice at the last second, then ready at the last second.
+  {
+    let mut open = open_args(chain, B, mode::AUTO, false, Option::None);
+    open.params.w_n = c.max_notice_secs;
+    let pending = if c.explicit_approve { Pending::ApprovalWindow } else { Pending::FundingWindow };
+    open.params.w_f = min_final_window(&open.params, pending_window(&open.params, pending)) as u32;
+    let steps = vec![
+      step(FUND, Operator, Pend, -1),
+      step(Call::PostNotice, Session, Nl, -1),
+      step(Call::SetReady, Operator, Co, -1),
+      step(REFUND, Operator, Cd, -1),  // refused: the taker's window
+      step(CLAIM, Session, Cd, -1),    // the last second of the claim window
+    ];
+    let s = add(seq("extreme/B/last-second-everywhere", "the latest reachable T_cd still precedes T_final - 86,400", open, steps), Some(State::Done));
+    assert!(s.t_claim_deadline < s.t_final - amounts::DAY_SECS);
+    assert!(s.has(flag::LATE_NOTICE) || s.t_notice < s.t_note_deadline);
+  }
+  // The same in direction A (notice at T_note − 1), for symmetry.
+  {
+    let mut open = open_args(chain, A, mode::WINDOW, false, Option::None);
+    open.params.w_n = c.max_notice_secs;
+    open.params.w_f = min_final_window(&open.params, open.params.w_a) as u32;
+    let steps = vec![
+      step(APPROVE, Operator, Pend, -1),
+      step(Call::PostNotice, Operator, Note, -1),
+      step(Call::SetReady, Session, Co, -1),
+      step(CLAIM, Operator, Cd, -1),
+    ];
+    let s = add(seq("extreme/A/last-second-everywhere", "approval, notice, ready and claim each at their last second", open, steps), Some(State::Done));
+    assert!(s.t_claim_deadline < s.t_final - amounts::DAY_SECS);
+  }
+
+  // 4. Direction B late notice followed by a refund, and by a claim at T_co.
+  {
+    let open = open_args(chain, B, mode::AUTO, false, Option::None);
+    let base = vec![step(FUND, Operator, Lock, 12), step(Call::PostNotice, Session, Note, 30)];
+    let mut steps = base.clone();
+    steps.extend([
+      step(REFUND, Operator, Notice, 60),                 // B9h: the deposit is held
+      step(Call::Withhold(Evidence::Absent), Operator, Refund, 30),
+      step(Call::ReleaseDeposit, Operator, Refund, 600),  // released on request
+    ]);
+    add(seq("B/late-notice-then-refund", "a notice after T_note is accepted; the maker's refund then holds the take deposit (B9h)", open, steps), Some(State::Done));
+    let mut steps = base;
+    steps.extend([
+      step(CLAIM, Session, Co, -1), // refused
+      step(CLAIM, Session, Co, 0),  // B10b: the taker never depends on the maker
+    ]);
+    add(seq("B/late-notice-then-claim-at-T_co", "after its own late notice the taker can always claim at T_co (B10b)", open, steps), Some(State::Done));
+  }
+
+  // 5. A keyed refund in ACTIVE after T_note (A10g), and the keyless one (A8).
+  {
+    let open = open_args(chain, A, mode::AUTO, false, Option::None);
+    let mut steps = leave_pending(A, &open);
+    steps.push(step(Call::PostNotice, Operator, Note, 0)); // refused: too late
+    steps.push(step(REFUND, Session, Note, 5));
+    add(seq("A/refund-in-active-after-T_note", "A10g: the same result as the keyless A8, with the share revealed", open, steps), Some(State::Done));
+    let mut steps = leave_pending(A, &open);
+    steps.push(step(Call::RefundUnnoticed, Anyone, Note, 0));
+    add(seq("A/refund_unnoticed", "A8: a stranger returns the escrow once the notice deadline has passed", open, steps), Some(State::Done));
+  }
+
+  // 6. expire_unnoticed (B11): nobody acts after funding.
+  {
+    let open = open_args(chain, B, mode::AUTO, false, Option::None);
+    let steps = vec![
+      step(FUND, Operator, Lock, 12),
+      step(Call::ExpireUnnoticed, Anyone, Exp, -1), // refused
+      step(Call::ExpireUnnoticed, Anyone, Exp, 0),
+      step(Call::WithdrawOwed(Party::Maker), Operator, Exp, 10), // refused: not the owner
+      step(Call::WithdrawOwed(Party::Maker), Owner, Exp, 20),
+      step(Call::WithdrawOwed(Party::Maker), Owner, Exp, 30), // refused: nothing owed
+    ];
+    add(seq("B/expire_unnoticed", "B11: the take deposit returns to the taker; the maker's escrow is parked and pulled", open, steps), Some(State::Done));
+  }
+
+  // 7. A parked payout on each secret-bearing call, followed by withdraw_owed.
+  {
+    let no_taker = Env { taker_can_receive: false, ..Env::OK };
+    // On Ethereum the treasury share only increments treasuryAccrued and cannot be parked.
+    let no_maker = Env { maker_can_receive: false, treasury_can_receive: c.open_secret_calls, ..Env::OK };
+    let open_a = open_args(chain, A, mode::AUTO, false, Option::None);
+    let open_b = open_args(chain, B, mode::AUTO, false, Option::None);
+
+    let mut steps = leave_pending(A, &open_a);
+    steps.extend([
+      step(Call::PostNotice, Operator, Active, 90),
+      step(REFUND, Session, Notice, 200).env(no_taker),
+      step(Call::WithdrawOwed(Party::Taker), Session, Refund, 10), // refused: the wallet only
+      step(Call::WithdrawOwed(Party::Taker), TakerWallet, Refund, 20),
+      step(Call::ReleaseDeposit, Anyone, Hold, 0),
+    ]);
+    add(seq("parked/A/refund", "the taker cannot receive: the refund still succeeds and reveals the share; the payout is parked", open_a, steps), Some(State::Done));
+
+    let mut steps = leave_pending(A, &open_a);
+    steps.extend([
+      step(Call::PostNotice, Operator, Active, 90),
+      step(Call::SetReady, Session, ReadyMin, 600),
+      step(CLAIM, Operator, Ready, 60).env(no_maker),
+      step(Call::WithdrawOwed(Party::Maker), Owner, Ready, 120),
+    ]);
+    if !c.open_secret_calls {
+      steps.push(step(Call::WithdrawOwed(Party::Treasury), Anyone, Ready, 180));
+    }
+    add(seq("parked/A/claim", "the maker's payout address cannot receive: the claim still succeeds", open_a, steps), Some(State::Done));
+
+    let steps = vec![
+      step(FUND, Operator, Lock, 12),
+      step(Call::PostNotice, Session, Active, 90),
+      step(REFUND, Operator, Cut, 10).env(no_maker),
+      step(Call::WithdrawOwed(Party::Maker), Owner, Refund, 30),
+      step(Call::ReleaseDeposit, Anyone, Hold, 0).env(no_taker),
+      step(Call::WithdrawOwed(Party::Taker), TakerWallet, Hold, 60),
+    ];
+    add(seq("parked/B/refund", "the operator cannot receive its own refund, then the taker cannot receive the released deposit", open_b, steps), Some(State::Done));
+
+    let steps = vec![
+      step(FUND, Operator, Lock, 12),
+      step(Call::PostNotice, Session, Active, 90),
+      step(Call::SetReady, Operator, ReadyMin, 600),
+      step(CLAIM, Session, Ready, 60).env(no_taker),
+      step(Call::WithdrawOwed(Party::Taker), TakerWallet, Ready, 120),
+    ];
+    add(seq("parked/B/claim", "the taker cannot receive: the claim still succeeds and reveals the share", open_b, steps), Some(State::Done));
+
+    // A keyless exit with a parked payout ends in DONE and is not closed.
+    let open_w = open_args(chain, A, mode::WINDOW, false, Option::None);
+    let steps = vec![step(Call::CancelPending, Session, Lock, 5).env(no_taker), step(Call::WithdrawOwed(Party::Taker), TakerWallet, Lock, 50)];
+    add(seq("parked/A/cancel_pending", "a row marked closed stays open (DONE) while a payout is parked", open_w, steps), Some(State::Done));
+  }
+
+  // 8. D == 0 on every held-refund row: straight to DONE, no deposit counter moves.
+  {
+    let held: [(&str, Direction, Target, (Anchor, i64)); 8] = [
+      ("A10a", A, Target::Active, (Active, 30)),
+      ("A10b", A, noticed, (Notice, 30)),
+      ("A10c", A, Target::AbortedHold, (Co, 30)),
+      ("B9b", B, Target::Active, (Note, 30)),
+      ("B9h", B, late, (Notice, 30)),
+      ("B9d", B, noticed, (Cut, 30)),
+      ("B9e", B, Target::Ready, (Cd, 30)),
+      ("B9f", B, Target::AbortedHold, (Notice, 400)),
+    ];
+    for (id, dir, target, (anchor, offset)) in held {
+      let (open, mut steps) = reach(chain, dir, target, Some(0));
+      let (_, locker) = roles(dir);
+      steps.push(step(REFUND, locker, anchor, offset));
+      steps.push(step(Call::ReleaseDeposit, Anyone, Split, 0)); // refused: there is no deposit to release
+      let s = add(seq(format!("no-deposit/{id}"), "with D == 0 a refund that would enter HOLD goes straight to DONE", open, steps), Some(State::Done));
+      assert_eq!(s.deposit_state, 0);
+    }
+  }
+
+  // 9. Counters at their maximum: updates saturate and never fail.
+  {
+    let open = open_args(chain, A, mode::WINDOW, false, Option::None);
+    let mut maker = MakerRecord::default();
+    for id in [counter::LOCKS, counter::APPROVALS, counter::NOTICES, counter::COMPLETED] {
+      maker.counters[id as usize] = u32::MAX;
+    }
+    maker.counters[counter::READIES as usize] = u32::MAX - 1;
+    maker.response_secs_sum = u64::MAX - 5;
+    maker.volume = c.max_amount - 7;
+    let steps = vec![
+      step(APPROVE, Operator, Lock, 12),
+      step(Call::PostNotice, Operator, Active, 90),
+      step(Call::SetReady, Session, ReadyMin, 600),
+      step(CLAIM, Operator, Ready, 60),
+    ];
+    let mut s = seq("saturation/counters-at-u32-max", "a claim with completed, the response-time sum and the volume at their maxima still succeeds", open, steps);
+    s.maker = Some(maker);
+    add(s, Some(State::Done));
+  }
+
+  // 10. The deposit paths: hold then crank; withhold with evidence then release; then split.
+  {
+    let open = open_args(chain, A, mode::AUTO, false, Option::None);
+    let base = {
+      let mut s = leave_pending(A, &open);
+      s.push(step(Call::PostNotice, Operator, Active, 90));
+      s.push(step(REFUND, Session, Notice, 400));
+      s
+    };
+    let mut steps = base.clone();
+    steps.extend([step(Call::ReleaseDeposit, Anyone, Hold, -1), step(Call::Withhold(Evidence::Opens), Operator, Hold, 0), step(Call::ReleaseDeposit, Anyone, Hold, 0)]);
+    add(seq("deposit/A/held-then-returned", "row 4: the deposit is returned by a stranger's crank after 30 minutes; withhold is refused at T_hold", open, steps), Some(State::Done));
+    let mut steps = base.clone();
+    steps.extend([
+      step(Call::Withhold(Evidence::Absent), Operator, Refund, 30),   // refused: evidence required
+      step(Call::Withhold(Evidence::Mismatch), Operator, Refund, 40), // refused: does not open the commitment
+      step(Call::Withhold(Evidence::Opens), Operator, Refund, 50),
+      step(Call::ReleaseDeposit, Anyone, Hold, 5),                    // refused: only the operator releases a withheld deposit
+      step(Call::ReleaseDeposit, Operator, Hold, 3_600),
+    ]);
+    add(seq("deposit/A/withheld-then-released", "row 4 with withhold: evidence required and checked; released on request", open, steps), Some(State::Done));
+    let mut steps = base;
+    steps.extend([
+      step(Call::Withhold(Evidence::Opens), Operator, Hold, -1),
+      step(Call::SplitDeposit, Anyone, Split, -1), // refused
+      step(Call::SplitDeposit, Anyone, Split, 0),
+    ]);
+    add(seq("deposit/A/withheld-then-split", "the 60-day split: ceil(D/2) to the taker, floor(D/2) to the treasury; the maker never receives D", open, steps), Some(State::Done));
+    let mut odd = open_args(chain, B, mode::AUTO, false, Option::None);
+    odd.amount += 77; // an odd deposit
+    let steps = vec![
+      step(FUND, Operator, Lock, 12),
+      step(REFUND, Operator, Note, 5), // B9b
+      step(Call::Withhold(Evidence::Absent), Operator, Refund, 10),
+      step(Call::SplitDeposit, Anyone, Split, 0),
+    ];
+    add(seq("deposit/B/no-notice-withheld-then-split", "B9b, withhold without evidence, split", odd, steps), Some(State::Done));
+  }
+
+  // 11. Pending exits (row 1) and the approval bound to its lock (SPEC 3.12).
+  {
+    let open = open_args(chain, A, mode::WINDOW, false, Option::None);
+    add(seq("pending/A/reject", "A3", open, vec![step(reject(RejectReason::MakerChoice), Operator, Lock, 10)]), Some(State::Done));
+    add(seq("pending/A/reject-no-fault", "A3 with reason 1: counted apart from ordinary rejections", open, vec![step(reject(RejectReason::UnusableInput), Operator, Lock, 10)]), Some(State::Done));
+    add(seq("pending/A/cancel", "A4", open, vec![step(Call::CancelPending, Session, Lock, 10)]), Some(State::Done));
+    add(seq("pending/A/expire", "A5: expiry cranked by a stranger", open, vec![step(Call::ExpirePending, Anyone, Pend, 0)]), Some(State::Done));
+    add(
+      seq(
+        "pending/A/stale-open-hash",
+        "approve, reject and then approve again with the open hash of another lock fail with BadState; the right one succeeds",
+        open,
+        vec![
+          step(Call::Approve { open_ok: false }, Operator, Lock, 5),
+          step(Call::Reject { open_ok: false, reason: RejectReason::MakerChoice }, Operator, Lock, 6),
+          step(APPROVE, Operator, Lock, 7),
+        ],
+      ),
+      Some(State::Active),
+    );
+    let open_b = open_args(chain, B, mode::AUTO, false, Option::None);
+    add(
+      seq(
+        "pending/B/lapse",
+        "B4 outside window mode: missed_funds where a lapse is the maker's fault, approval_timeouts under EXPLICIT_APPROVE",
+        open_b,
+        vec![step(Call::Fund { open_ok: false }, Operator, Lock, 5), step(Call::ExpirePending, Anyone, Pend, 0)],
+      ),
+      Some(State::Done),
+    );
+    add(seq("pending/B/cancel", "B2", open_b, vec![step(Call::CancelPending, TakerWallet, Lock, 10)]), Some(State::Done));
+  }
+
+  // 12. The unhappy rows of SPEC 3.10 as whole stories.
+  {
+    let open = open_args(chain, A, mode::AUTO, false, Option::None);
+    let start = leave_pending(A, &open);
+    let with = |extra: Vec<Step>| {
+      let mut s = start.clone();
+      s.extend(extra);
+      s
+    };
+    add(seq("rows/A/3-cancel-after-approval", "row 3: A10a then the deposit returns after 30 minutes", open, with(vec![step(REFUND, Session, Active, 60), step(Call::ReleaseDeposit, Anyone, Hold, 0)])), Some(State::Done));
+    add(
+      seq(
+        "rows/A/5-abort-late-then-refund",
+        "row 5: the taker never sets ready; the maker aborts after its claim delay; the taker returns and refunds",
+        open,
+        with(vec![step(Call::PostNotice, Operator, Active, 90), step(Call::Abort, Operator, Co, 5), step(CLAIM, Operator, Co, 6), step(REFUND, Session, Co, 3_600), step(Call::ReleaseDeposit, Anyone, Hold, 0)]),
+      ),
+      Some(State::Done),
+    );
+    add(seq("rows/A/6-claim-without-ready", "row 6: A11b at T_co", open, with(vec![step(Call::PostNotice, Operator, Active, 90), step(CLAIM, Operator, Co, 0)])), Some(State::Done));
+    add(
+      seq(
+        "rows/A/7-missed-claim",
+        "row 7: ready set, the maker misses its claim deadline, the taker refunds in full",
+        open,
+        with(vec![step(Call::PostNotice, Operator, Active, 90), step(Call::SetReady, Session, ReadyMin, 600), step(REFUND, Session, Cd, 0), step(CLAIM, Operator, Cd, 1)]),
+      ),
+      Some(State::Done),
+    );
+    add(seq("rows/A/8-claim-after-final", "row 8: the taker never returns; A11c", open, with(vec![step(Call::PostNotice, Operator, Active, 90), step(CLAIM, Operator, Final, 0)])), Some(State::Done));
+    add(seq("rows/A/abort-pre-notice", "A7a: amount to the taker at once", open, with(vec![step(Call::Abort, Operator, Active, 30)])), Some(State::Done));
+    add(seq("rows/A/abort-early-then-refund", "A7b then A10d: a full refund, no hold", open, with(vec![step(Call::PostNotice, Operator, Active, 90), step(Call::Abort, Operator, Notice, 60), step(REFUND, Session, Notice, 120)])), Some(State::Done));
+    add(seq("rows/A/abort-after-ready-then-claim-at-final", "A7d then A11c: an abort is a waiver until the final deadline, not forever", open, with(vec![step(Call::PostNotice, Operator, Active, 90), step(Call::SetReady, Session, ReadyMin, 600), step(Call::Abort, Operator, Ready, 60), step(CLAIM, Operator, Final, -1), step(CLAIM, Operator, Final, 0)])), Some(State::Done));
+    add(seq("rows/A/expired-refund", "A10f: after T_exp only the locker can refund", open, with(vec![step(Call::PostNotice, Operator, Active, 90), step(CLAIM, Operator, Exp, 0), step(REFUND, Session, Exp, 0)])), Some(State::Done));
+
+    let open_b = open_args(chain, B, mode::AUTO, false, Option::None);
+    let funded = vec![step(FUND, Operator, Lock, 12)];
+    let with_b = |extra: Vec<Step>| {
+      let mut s = funded.clone();
+      s.extend(extra);
+      s
+    };
+    add(seq("rows/B/backout-pre-notice", "B9a", open_b, with_b(vec![step(REFUND, Operator, Active, 60)])), Some(State::Done));
+    add(seq("rows/B/backout-post-notice", "B9c: the maker's free option", open_b, with_b(vec![step(Call::PostNotice, Session, Active, 90), step(REFUND, Operator, Cut, -1)])), Some(State::Done));
+    add(seq("rows/B/refund-unconfirmed", "B9d: the lock is not confirmed at T_cut", open_b, with_b(vec![step(Call::PostNotice, Session, Active, 90), step(REFUND, Operator, Cut, 0), step(Call::ReleaseDeposit, Anyone, Hold, 0)])), Some(State::Done));
+    add(seq("rows/B/taker-misses-claim", "B9e", open_b, with_b(vec![step(Call::PostNotice, Session, Active, 90), step(Call::SetReady, Operator, ReadyMin, 600), step(REFUND, Operator, Cd, 0), step(Call::ReleaseDeposit, Anyone, Hold, 0)])), Some(State::Done));
+    add(seq("rows/B/taker-abort-then-refund", "B8 then B9f", open_b, with_b(vec![step(Call::PostNotice, Session, Active, 90), step(Call::Abort, Session, Notice, 60), step(REFUND, Operator, Notice, 120), step(Call::ReleaseDeposit, Operator, Refund, 5)])), Some(State::Done));
+    add(seq("rows/B/claim-without-ready", "B10b", open_b, with_b(vec![step(Call::PostNotice, Session, Active, 90), step(CLAIM, Session, Co, 0)])), Some(State::Done));
+    add(seq("rows/B/claim-after-final", "B10c after an abort", open_b, with_b(vec![step(Call::PostNotice, Session, Active, 90), step(Call::Abort, Session, Notice, 60), step(CLAIM, Session, Final, 0)])), Some(State::Done));
+    add(seq("rows/B/expired-refund", "B9g: the take deposit returns to the taker", open_b, with_b(vec![step(Call::PostNotice, Session, Active, 90), step(REFUND, Operator, Exp, 0)])), Some(State::Done));
+    add(seq("rows/B/no-notice", "B9b then the deposit returns", open_b, with_b(vec![step(REFUND, Operator, Note, 0), step(Call::ReleaseDeposit, Anyone, Hold, 0)])), Some(State::Done));
+  }
+  out.into_inner()
+}
+
+pub fn transitions() -> VectorFile {
+  let mut all_rows = Vec::new();
+  let mut all_sequences = Vec::new();
+  let mut summary = Map::new();
+  for chain in [Chain::Solana, Chain::Ethereum] {
+    let r = rows(chain);
+    let s = sequences(chain);
+    // Every counter the chain can reach is exercised by some row or sequence.
+    let mut seen = [false; counter::COUNT];
+    let mut mark = |expect: &Value| {
+      if let Some(c) = expect["counter"].as_u64() {
+        seen[c as usize] = true;
+      }
+    };
+    for row in &r {
+      mark(&row["step"]["expect"]);
+    }
+    for sq in &s {
+      for st in sq["steps"].as_array().unwrap() {
+        mark(&st["expect"]);
+      }
+    }
+    for id in 0..=counter::REJECTIONS_NO_FAULT {
+      let reachable = !(id == counter::MISSED_FUNDS && !chain.consts().lapse_is_fault);
+      assert_eq!(seen[id as usize], reachable, "{}: counter {} ({})", chain.name(), id, counter::NAMES[id as usize]);
+    }
+    let rejected = r.iter().filter(|x| x["ok"] == false).count();
+    summary.insert(chain.name().into(), json!({ "rows": r.len(), "rows_rejected": rejected, "sequences": s.len() }));
+    all_rows.extend(r);
+    all_sequences.extend(s);
+  }
+  // The standard `cases` array carries one entry per row so generic tooling sees the suite.
+  let cases: Vec<Value> = all_rows
+    .iter()
+    .enumerate()
+    .map(|(i, r)| {
+      let name = format!("{:04} {} {} {}: {}", i, r["chain"].as_str().unwrap(), r["direction"].as_str().unwrap(), r["id"].as_str().unwrap(), r["case"].as_str().unwrap());
+      if r["ok"] == true {
+        json!({ "name": name, "valid": true, "row": i })
+      } else {
+        json!({ "name": name, "valid": false, "row": i, "error": r["step"]["expect"]["error"] })
+      }
+    })
+    .collect();
+  suite_lines(
+    "transitions",
+    cases,
+    vec![
+      ("rows", Value::Array(all_rows)),
+      ("sequences", Value::Array(all_sequences)),
+      ("summary", Value::Object(summary)),
+      ("t0", json!(T0)),
+      ("counter_names", json!(counter::NAMES.to_vec())),
+      (
+        "how_to_replay",
+        json!({
+          "row": "Start from no swap. Run `open` (lock or take) by the taker wallet at `open.at`, then each `setup` step at its `at`, check the swap equals `from`, then run `step` at `step.at` and compare with `step.expect`.",
+          "sequence": "Start the maker record at `initial_maker`. Run every step at its `at`. A step with `expect.ok == false` must fail with `expect.error` and change nothing.",
+          "callers": { "taker": "the taker's wallet", "session": "the swap's session key", "operator": "the maker's operator key", "owner": "Solana: the maker's owner key. Ethereum: the account the parked payout is owed to", "anyone": "an unrelated fee payer" },
+          "args": {
+            "secret_ok": "true: the scalar that opens the commitment. false: any other scalar in range",
+            "open_ok": "true: expected_open is the swap's open hash. false: any other 32 bytes",
+            "evidence": "absent: none (Solana None, Ethereum zeros). opens: the notice opening. mismatch: any other pair",
+            "opens": "as evidence",
+            "offer_mode": "0 AUTO, 1 WINDOW, 2 ADVANCE, 3 taker-bound quote",
+            "approval": "a valid advance approval accompanies the lock",
+          },
+          "env": "which payout destinations can receive (pay or park), and the maker's open_pending before a lock or take. On Ethereum the treasury share only increments treasuryAccrued: it is listed as paid to `treasury`.",
+          "payouts": "`parked: false` was transferred; `parked: true` stayed in escrow and was added to owed_*. A payout of zero is absent.",
+          "closed": "the row is marked closed in SPEC 3.4/3.5 and nothing was parked: Solana closes the swap account in the same instruction (the state then reads as 0); Ethereum keeps the swap in DONE.",
+          "error": "the chain's error name. A call refused only because of the time is TooLate if one of its windows in that state has already closed, else TooEarly. Check order: direction, caller, state and open hash, time, then secret or evidence.",
+        }),
+      ),
+    ],
+  )
+}

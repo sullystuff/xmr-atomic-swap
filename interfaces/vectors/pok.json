@@ -1,0 +1,164 @@
+{
+  "cases": [
+    {
+      "input": {
+        "ctx": "0ad77ee0d84f293d2725d88b9f9c851b0b6c65710f7df1168b468f8c017389a1",
+        "s": "fb0c918c107430be68d4e575dbeced8da535b1d6f0d018e2e96fb12e2037690c"
+      },
+      "name": "valid-0",
+      "output": {
+        "S": "1e62a6d4bca40b776108473fe80eee168b65cacfc54a373b159f053958bf56f3",
+        "pok": "05e8db14089a3eb8f1133efd51ab62eba394dd20e171ae11c2742c8a5c5ed6572b9999a4ca425349bd7eaa08aee81346414d835009b574ab0da7dc687cee6801"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "ctx": "508850609a82988db49d15806f22ebd7a8e7c7a4551b46af70614a4cf05257a6",
+        "s": "aa95e340c53317acf1e2aa1372a922f2b40c1124863d42d040e3aab4537db905"
+      },
+      "name": "valid-1",
+      "output": {
+        "S": "e108e7b80a196b0c1cd5c393aed922fb1ca7730ca13d2cfa69861e9666126e04",
+        "pok": "0e9586d5f38452cfd80b12bb629cab87edf0be8aa25c075cf9c10d53e8c4ca458ec2af52301f3075ffbdc85e1e06577b95829aa2ecb8f8ac5d4e436335bf030d"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "ctx": "62aef13c55654313fc3b565c33a9a40af4da3f1f10ae81e40b7638966ce72580",
+        "s": "6fcceb936e1749bf5b27b167dc111d3e6d514afc65f65ff33de0592b52009104"
+      },
+      "name": "valid-2",
+      "output": {
+        "S": "cab36e59169b843eebd189479869082d8d0d08f17451664f4672d8ab9e14ee45",
+        "pok": "7c53472bc2f38efdc698788d9892b12e21357d11bc21ffbc1a06a702f4e4386930c811998e06426edf7a50c5380ce55f6b0ef10f91764468acffdd54bed96f09"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "ctx": "dd82f3a7d128108e598c247a55ae6a19f6a614f6f9b7535271fdee6fbb5e28fd",
+        "s": "ff5af04d674e2e18d8ee7fc046b69df4d452cbfb21302cc871953451bfce1c0f"
+      },
+      "name": "valid-3",
+      "output": {
+        "S": "8c74030d8987789943a0eb350ff173f2cdb5602a8f857425f802bc34411f0102",
+        "pok": "9bbe049e69a625f2d72b2e5e868804b21aec20f51a3f7f420116f420627528e12981a7ffe43c380dc86126e0bdb155e3d205766f3062c078a5383d543dd0ac03"
+      },
+      "valid": true
+    },
+    {
+      "error": "PokInvalid",
+      "input": {
+        "S": "1e62a6d4bca40b776108473fe80eee168b65cacfc54a373b159f053958bf56f3",
+        "ctx": "508850609a82988db49d15806f22ebd7a8e7c7a4551b46af70614a4cf05257a6",
+        "pok": "05e8db14089a3eb8f1133efd51ab62eba394dd20e171ae11c2742c8a5c5ed6572b9999a4ca425349bd7eaa08aee81346414d835009b574ab0da7dc687cee6801"
+      },
+      "name": "wrong-ctx",
+      "valid": false
+    },
+    {
+      "error": "PokInvalid",
+      "input": {
+        "S": "e108e7b80a196b0c1cd5c393aed922fb1ca7730ca13d2cfa69861e9666126e04",
+        "ctx": "0ad77ee0d84f293d2725d88b9f9c851b0b6c65710f7df1168b468f8c017389a1",
+        "pok": "05e8db14089a3eb8f1133efd51ab62eba394dd20e171ae11c2742c8a5c5ed6572b9999a4ca425349bd7eaa08aee81346414d835009b574ab0da7dc687cee6801"
+      },
+      "name": "wrong-key",
+      "valid": false
+    },
+    {
+      "error": "PokInvalid",
+      "input": {
+        "S": "1e62a6d4bca40b776108473fe80eee168b65cacfc54a373b159f053958bf56f3",
+        "ctx": "0ad77ee0d84f293d2725d88b9f9c851b0b6c65710f7df1168b468f8c017389a1",
+        "pok": "05e8db04089a3eb8f1133efd51ab62eba394dd20e171ae11c2742c8a5c5ed6572b9999a4ca425349bd7eaa08aee81346414d835009b574ab0da7dc687cee6801"
+      },
+      "name": "flipped-bit-in-R",
+      "valid": false
+    },
+    {
+      "error": "PokInvalid",
+      "input": {
+        "S": "1e62a6d4bca40b776108473fe80eee168b65cacfc54a373b159f053958bf56f3",
+        "ctx": "0ad77ee0d84f293d2725d88b9f9c851b0b6c65710f7df1168b468f8c017389a1",
+        "pok": "05e8db14089a3eb8f1133efd51ab62eba394dd20e171ae11c2742c8a5c5ed6572b9999a4ca425349bc7eaa08aee81346414d835009b574ab0da7dc687cee6801"
+      },
+      "name": "flipped-bit-in-z",
+      "valid": false
+    },
+    {
+      "error": "PokInvalid",
+      "input": {
+        "S": "1e62a6d4bca40b776108473fe80eee168b65cacfc54a373b159f053958bf56f3",
+        "ctx": "0ad77ee0d84f293d2725d88b9f9c851b0b6c65710f7df1168b468f8c017389a1",
+        "pok": "05e8db14089a3eb8f1133efd51ab62eba394dd20e171ae11c2742c8a5c5ed657186d8f01e5a565a1931ba2ab8ce2f25a414d835009b574ab0da7dc687cee6811"
+      },
+      "name": "non-canonical-z",
+      "valid": false
+    },
+    {
+      "error": "PokInvalid",
+      "input": {
+        "S": "1e62a6d4bca40b776108473fe80eee168b65cacfc54a373b159f053958bf56f3",
+        "ctx": "0ad77ee0d84f293d2725d88b9f9c851b0b6c65710f7df1168b468f8c017389a1",
+        "pok": "05e8db14089a3eb8f1133efd51ab62eba394dd20e171ae11c2742c8a5c5ed657ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "name": "z-all-ones",
+      "valid": false
+    },
+    {
+      "error": "PokInvalid",
+      "input": {
+        "S": "1e62a6d4bca40b776108473fe80eee168b65cacfc54a373b159f053958bf56f3",
+        "ctx": "0ad77ee0d84f293d2725d88b9f9c851b0b6c65710f7df1168b468f8c017389a1",
+        "pok": "02000000000000000000000000000000000000000000000000000000000000002b9999a4ca425349bd7eaa08aee81346414d835009b574ab0da7dc687cee6801"
+      },
+      "name": "R-off-curve",
+      "valid": false
+    },
+    {
+      "error": "InvalidKeyCommitment",
+      "input": {
+        "S": "0100000000000000000000000000000000000000000000000000000000000000",
+        "ctx": "0ad77ee0d84f293d2725d88b9f9c851b0b6c65710f7df1168b468f8c017389a1",
+        "pok": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "name": "identity-commitment",
+      "valid": false
+    },
+    {
+      "error": "InvalidKeyCommitment",
+      "input": {
+        "S": "a42a378aa91be9d019593c2dc8a25d437ec2f84725164b53b0a8d93146096716",
+        "ctx": "0ad77ee0d84f293d2725d88b9f9c851b0b6c65710f7df1168b468f8c017389a1",
+        "pok": "05e8db14089a3eb8f1133efd51ab62eba394dd20e171ae11c2742c8a5c5ed6572b9999a4ca425349bd7eaa08aee81346414d835009b574ab0da7dc687cee6801"
+      },
+      "name": "torsioned-commitment",
+      "valid": false
+    },
+    {
+      "error": "PokInvalid",
+      "input": {
+        "S": "2e6016c5ece0a1a6ba6b7c56cf01b88d998808eab56bd43c7d6a39a599ff0f82",
+        "ctx": "0ad77ee0d84f293d2725d88b9f9c851b0b6c65710f7df1168b468f8c017389a1",
+        "pok": "351f3d86bcaf757ca41f276ea8335045b02a49e860f382f9448bf71a591148394c6bc6e374f97992d162d3e0cab9ee927739b004bde30d7bdb94dc1e858c9505"
+      },
+      "name": "rogue-key-proof-from-k",
+      "valid": false
+    },
+    {
+      "error": "PokInvalid",
+      "input": {
+        "S": "2e6016c5ece0a1a6ba6b7c56cf01b88d998808eab56bd43c7d6a39a599ff0f82",
+        "ctx": "0ad77ee0d84f293d2725d88b9f9c851b0b6c65710f7df1168b468f8c017389a1",
+        "pok": "05e8db14089a3eb8f1133efd51ab62eba394dd20e171ae11c2742c8a5c5ed6572b9999a4ca425349bd7eaa08aee81346414d835009b574ab0da7dc687cee6801"
+      },
+      "name": "rogue-key-proof-from-victim",
+      "valid": false
+    }
+  ],
+  "format": "xmrswap-vectors/1",
+  "suite": "pok"
+}

@@ -1,0 +1,152 @@
+{
+  "cases": [
+    {
+      "input": {
+        "chain_tag": 1,
+        "seed": "6c544cd04b8863478592fceee81d297b78af99ad445e2313ccd9e101b052b8f2",
+        "share_id": "7118034fdb65f5ad5ada4b5b5960e92c"
+      },
+      "name": "solana-0",
+      "output": {
+        "enc_pub": "6757dc23127b1941b48b970be1c1b457ed4b47f110e6d89e6a66ae1b9ba3c342",
+        "enc_secret": "e35a72fd6d5c382a5c4b0611851736e97cda2e0e74fada4333442047b8d4e8c2",
+        "session_pub": "04f8df2080e6cbc99137ff505cc85a41bb3ab08a0d7a07be1de40094ea36e14d",
+        "session_secret": "6cced40bcb38159652140d5c5e46efe845b318c65fa22b5465cfb039a9e1cecf",
+        "spend": "3d7690b6779850b1d125cd3e7df9f0629cc616f4ccd899a1ae6291bf9662920a",
+        "spend_pub": "56ea671fa6a58093c22c25f6f3999d24f671e732c4884212185835bc751d6e36",
+        "view": "a94591044bcce6e55a5ada7a5ea2e1e80e829a15aec09560bcc5322b929c4602"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain_tag": 2,
+        "seed": "6c544cd04b8863478592fceee81d297b78af99ad445e2313ccd9e101b052b8f2",
+        "share_id": "7118034fdb65f5ad5ada4b5b5960e92c"
+      },
+      "name": "ethereum-0",
+      "output": {
+        "enc_pub": "296bc62e577615c50e50ca172017a9f3c30bdee7d5e317cf467ec7338879ad05",
+        "enc_secret": "dd2ceafe9e527fabf66b26d1f5ff8dd660819b57353c2f8720c6ff7b9b79cf92",
+        "session_pub": "0eb218093aefd4cfd44f68f93124c646cf3bc1af",
+        "session_secret": "da481f4738d52fbfc291fb76c4d9e146940591cdaea4faadccee831193f461ed",
+        "spend": "b90c0ee65ea4d90adab9ed97adab81a03b51c17554ee0681732d03f31d6a7c03",
+        "spend_pub": "9d3ed104d0f096a8caa5b9247646cfd49f1b8f89ee2db81af726f211404cfcb4",
+        "view": "fdea420da82299224b825170c5265d9a24e5a4076eff13871258efbf61d40500"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain_tag": 1,
+        "seed": "afa01c371186b14eb818d590d4b637d4fc5850b9d64e649ca4223c0115d784aa",
+        "share_id": "7d7dc978d5013b9b4354adfc916c542c"
+      },
+      "name": "solana-1",
+      "output": {
+        "enc_pub": "aa14fe2edb0e09c87f808aac3262caec66d3d48dafb0965c291e3f516016ef38",
+        "enc_secret": "503b75528243a963ddf51e0956c607c064b6d4401ad184d29a27bb9a01586434",
+        "session_pub": "138b2275f6a01901af667e700fdde9c221ebf346c0e9cd41acc4a893b3be14ac",
+        "session_secret": "65e91589cb47cd43a6fd32f91969eb4fc2fc9ca6250522087deb39ff15a09c4f",
+        "spend": "da9724aafe79b741398c269513ce30b519fe1c880c832b3fbccc49ac1c20f00f",
+        "spend_pub": "760484c1caffc5a0ef7c78f7284b4724e402b4adfac290dd1979ea5aa04b0406",
+        "view": "d03ec131b946a3aaa3246ae419f93b8e6ff53ab5b0a8532d106267e5089d6507"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain_tag": 2,
+        "seed": "afa01c371186b14eb818d590d4b637d4fc5850b9d64e649ca4223c0115d784aa",
+        "share_id": "7d7dc978d5013b9b4354adfc916c542c"
+      },
+      "name": "ethereum-1",
+      "output": {
+        "enc_pub": "6c2542a6484168baef9044e91e0f17681563707256458f46eb1d9a777dd9c71e",
+        "enc_secret": "44227840f719028fd083075f2fe8320f6a95a6b398d84e7fe9c32e44eb88e766",
+        "session_pub": "7a4a70e376da551fa9e961a11f8b71bcf8e22285",
+        "session_secret": "d635450ce06d2492123371e71bec43693183cacd77ea3869041c26c51c41ad50",
+        "spend": "3280da23f420b387677fbb8977757d8c06c86d237b36e8d21f08d0f8913c2806",
+        "spend_pub": "d02ae9bcb622a82193a68e423ba32b6c8805a8fa9eb1b2b35668b0b777ca4bee",
+        "view": "c16792524516f54b3679e2475f3ebee7c48536b62d99f342788eaae32d41f80c"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain_tag": 1,
+        "seed": "8ed8356515759c5ff6cc1fc24782eb92137b9202f6fbbaf38d22e02c9b6a17d0",
+        "share_id": "0ef9ccbf6ea0f5bcec4a98f766cbc194"
+      },
+      "name": "solana-2",
+      "output": {
+        "enc_pub": "b495c8753a1590f268a03cfc732c5ee4b6ea8df256fc2f09a5aec7206ac83823",
+        "enc_secret": "109336461308f161b6cbfed8142c036e1c05474c4b12313886c782af3109044e",
+        "session_pub": "3fb604ef76cf42def914582cc3b8d4afdfc4be23c820092cf67e75b5e7461a58",
+        "session_secret": "507683050e1371f260145ac0cfd4c398a7f7e1cae3e92043d5fff44fab614a6a",
+        "spend": "73054101f1f4a164193e76396b75d2934960511c258018d324fe2fea349b5c06",
+        "spend_pub": "7b2d9935c8140e66d42be7c5e6ca298bcff282d51e3310bb4b358a592c76c89a",
+        "view": "d866c4dac54bb523fded938f5aa2a7c3d5f21ed7e7232d7fed66c7051496690c"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain_tag": 2,
+        "seed": "8ed8356515759c5ff6cc1fc24782eb92137b9202f6fbbaf38d22e02c9b6a17d0",
+        "share_id": "0ef9ccbf6ea0f5bcec4a98f766cbc194"
+      },
+      "name": "ethereum-2",
+      "output": {
+        "enc_pub": "d5a801bcc7993b3ec8164f651a68e66f033dee90a491378ecd5fa6a009553361",
+        "enc_secret": "0b1a1bbecfe626016bb20aadd7b0bc85dd67a464668b983ddb8034ff178ababd",
+        "session_pub": "9d75b5a3027f7d2748d7ba0a300fffe91a9fa3ad",
+        "session_secret": "4130e155d4c4ae99b3b26b09cd84c504aa6e0651101eece7de69558ca530b8b6",
+        "spend": "412bc31579a52d713e863991a761ed9decf801534352ba687da426fd3b650200",
+        "spend_pub": "2ae198d218773bbeb3af730d018c51ff4b8e88a7dfee55ea8353bcec2796e88d",
+        "view": "7e696b227f6b6e4d57822c53aef8b8a1b47c77bad3bb74853cd4dc06695a2c09"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "maker_pda": "b35604660dd8b99249a932084792793f0acf5e087a0d4d2f381264121580338c",
+        "seed": "6c544cd04b8863478592fceee81d297b78af99ad445e2313ccd9e101b052b8f2"
+      },
+      "name": "contact-0",
+      "output": {
+        "chain_tag": 1,
+        "enc_pub": "4900f8bf6de5e234362865e0f730345abeff7dff590f503a279b59d42bc14a06",
+        "enc_secret": "e119b4717a3df6fa5b64b52d43c9dc8129625a210ba8f6ea313af7d79556c07f",
+        "share_id": "f3cda7a50a140e2b58c6f804eaa64ba9"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "maker_pda": "19dfc0fed658cc6c4ed4c8bf388fbc284a18672e586d3c7611100eff27532308",
+        "seed": "afa01c371186b14eb818d590d4b637d4fc5850b9d64e649ca4223c0115d784aa"
+      },
+      "name": "contact-1",
+      "output": {
+        "chain_tag": 1,
+        "enc_pub": "e0ad6c9a866987c087249bb44bc7b369b3b8a3f2715af1721cf8f60904619a23",
+        "enc_secret": "783904b0551257ceaf6bc6171016c72b45846d4831f73e96f897ea4cf8781829",
+        "share_id": "404fcf06554d826d8a7c0c18b43d1dd0"
+      },
+      "valid": true
+    },
+    {
+      "error": "UnknownChainTag",
+      "input": {
+        "chain_tag": 3,
+        "seed": "6c544cd04b8863478592fceee81d297b78af99ad445e2313ccd9e101b052b8f2",
+        "share_id": "7118034fdb65f5ad5ada4b5b5960e92c"
+      },
+      "name": "unknown-chain-tag",
+      "valid": false
+    }
+  ],
+  "format": "xmrswap-vectors/1",
+  "suite": "keys"
+}

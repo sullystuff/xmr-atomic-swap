@@ -10,6 +10,10 @@ description = "XMR atomic swaps: every cryptographic rule, encoding and the refe
 crate-type = ["cdylib", "rlib"]
 
 [[bin]]
+name = "gen-vectors"
+path = "src/bin/gen-vectors.rs"
+
+[[bin]]
 name = "xmr-joint-sweep"
 path = "src/bin/xmr-joint-sweep.rs"
 

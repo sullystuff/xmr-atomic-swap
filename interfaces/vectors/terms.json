@@ -1,0 +1,217 @@
+{
+  "cases": [
+    {
+      "input": {
+        "asset": 0,
+        "d_c": 6060,
+        "dep_bps": 100,
+        "depth_above": [
+          "0",
+          "1000000000000",
+          "50000000000000"
+        ],
+        "depths": [
+          2,
+          10,
+          25
+        ],
+        "direction": 0,
+        "fee_bps": 5,
+        "mode": 0,
+        "w_a": 60,
+        "w_c": 1800,
+        "w_f": 604800,
+        "w_n": 600
+      },
+      "name": "sol-a-auto",
+      "output": {
+        "preimage": "000000640005003c00000058020000ac17000008070000803a09000000000000000000020010a5d4e80000000a00203d88792d000019",
+        "terms_hash": "4565eb4f16082f950898d36dc6b0fe8d256de9ec7a9b18b880f69e1edde3a0b4"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "asset": 1,
+        "d_c": 6060,
+        "dep_bps": 100,
+        "depth_above": [
+          "0",
+          "1000000000000",
+          "50000000000000"
+        ],
+        "depths": [
+          2,
+          10,
+          25
+        ],
+        "direction": 0,
+        "fee_bps": 5,
+        "mode": 1,
+        "w_a": 60,
+        "w_c": 1800,
+        "w_f": 604800,
+        "w_n": 600
+      },
+      "name": "usdc-a-window",
+      "output": {
+        "preimage": "010001640005003c00000058020000ac17000008070000803a09000000000000000000020010a5d4e80000000a00203d88792d000019",
+        "terms_hash": "87f0a241cecc8eb11f23cee2e709146701bea45b97a4a0bbf5485a6e4ba18e41"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "asset": 0,
+        "d_c": 6060,
+        "dep_bps": 500,
+        "depth_above": [
+          "0",
+          "1000000000000",
+          "50000000000000"
+        ],
+        "depths": [
+          2,
+          10,
+          25
+        ],
+        "direction": 1,
+        "fee_bps": 5,
+        "mode": 2,
+        "w_a": 60,
+        "w_c": 1800,
+        "w_f": 604800,
+        "w_n": 600
+      },
+      "name": "sol-b-advance",
+      "output": {
+        "preimage": "000102f40105003c00000058020000ac17000008070000803a09000000000000000000020010a5d4e80000000a00203d88792d000019",
+        "terms_hash": "9fb9614f9ddfe69c2ca36cd967bedaa4b822cd63e36bd4601fb51214a6b5aafa"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "asset": 0,
+        "d_c": 5400,
+        "dep_bps": 100,
+        "depth_above": [
+          "0",
+          "0",
+          "0"
+        ],
+        "depths": [
+          10,
+          0,
+          0
+        ],
+        "direction": 0,
+        "fee_bps": 5,
+        "mode": 0,
+        "w_a": 60,
+        "w_c": 1800,
+        "w_f": 604800,
+        "w_n": 600
+      },
+      "name": "one-depth-tier",
+      "output": {
+        "preimage": "000000640005003c000000580200001815000008070000803a090000000000000000000a000000000000000000000000000000000000",
+        "terms_hash": "cf31f225e29f700f128f261b7f95befc054967a7cf523dcbeeff4354a8010f06"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "asset": 0,
+        "d_c": 6060,
+        "dep_bps": 0,
+        "depth_above": [
+          "0",
+          "1000000000000",
+          "50000000000000"
+        ],
+        "depths": [
+          2,
+          10,
+          25
+        ],
+        "direction": 0,
+        "fee_bps": 5,
+        "mode": 0,
+        "w_a": 60,
+        "w_c": 1800,
+        "w_f": 604800,
+        "w_n": 600
+      },
+      "name": "no-deposit",
+      "output": {
+        "preimage": "000000000005003c00000058020000ac17000008070000803a09000000000000000000020010a5d4e80000000a00203d88792d000019",
+        "terms_hash": "f52d0eb813f845a29b2d64b148c31852f405e474a21820e21c2e56e7c059319f"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "asset": 0,
+        "d_c": 6061,
+        "dep_bps": 100,
+        "depth_above": [
+          "0",
+          "1000000000000",
+          "50000000000000"
+        ],
+        "depths": [
+          2,
+          10,
+          25
+        ],
+        "direction": 0,
+        "fee_bps": 5,
+        "mode": 0,
+        "w_a": 60,
+        "w_c": 1800,
+        "w_f": 604800,
+        "w_n": 600
+      },
+      "name": "claim-delay-one-second-longer",
+      "output": {
+        "preimage": "000000640005003c00000058020000ad17000008070000803a09000000000000000000020010a5d4e80000000a00203d88792d000019",
+        "terms_hash": "1e45796a67e9a65772cd5c2196340ddb4e2c355fd62f27fb2af6f05be3bc3123"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "asset": 1,
+        "d_c": 4294967295,
+        "dep_bps": 65535,
+        "depth_above": [
+          "0",
+          "18446744073709551614",
+          "18446744073709551615"
+        ],
+        "depths": [
+          255,
+          254,
+          253
+        ],
+        "direction": 1,
+        "fee_bps": 65535,
+        "mode": 2,
+        "w_a": 4294967295,
+        "w_c": 4294967295,
+        "w_f": 4294967295,
+        "w_n": 4294967295
+      },
+      "name": "extremes",
+      "output": {
+        "preimage": "010102ffffffffffffffffffffffffffffffffffffffffffffffff0000000000000000fffefffffffffffffffefffffffffffffffffd",
+        "terms_hash": "31b3035686881d897835a0e5324d45c2fa1fc5dff9e2c410bc3a1155deec458f"
+      },
+      "valid": true
+    }
+  ],
+  "format": "xmrswap-vectors/1",
+  "layout": "SHA256(DS(\"terms\") || asset u8 || direction u8 || mode u8 || dep_bps u16 || fee_bps u16 || w_a || w_n || d_c || w_c || w_f (u32 each) || 3 x (depth_above u64 || depth u8)), little-endian",
+  "suite": "terms"
+}

@@ -1,0 +1,2195 @@
+{
+  "bound_check_order": [
+    "DepositTooHigh",
+    "ApprovalWindowOutOfRange",
+    "NoticeWindowOutOfRange",
+    "DepthInvalid",
+    "ClaimDelayTooShort",
+    "ClaimWindowTooShort",
+    "FinalWindowOutOfRange"
+  ],
+  "cases": [
+    {
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 5400,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 60,
+          "w_c": 1800,
+          "w_f": 604800,
+          "w_n": 600
+        },
+        "pending": "none"
+      },
+      "name": "solana-defaults-active",
+      "output": {
+        "delta_cut": 2715,
+        "min_claim_delay": 3600,
+        "min_claim_window": 615,
+        "min_final_window": 94200,
+        "w_p": 0
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 5400,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 60,
+          "w_c": 1800,
+          "w_f": 604800,
+          "w_n": 600
+        },
+        "pending": "approval"
+      },
+      "name": "solana-defaults-approval",
+      "output": {
+        "delta_cut": 2715,
+        "min_claim_delay": 3600,
+        "min_claim_window": 615,
+        "min_final_window": 94260,
+        "w_p": 60
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 5400,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 60,
+          "w_c": 1800,
+          "w_f": 604800,
+          "w_n": 600
+        },
+        "pending": "funding"
+      },
+      "name": "solana-defaults-funding",
+      "output": {
+        "delta_cut": 2715,
+        "min_claim_delay": 3600,
+        "min_claim_window": 615,
+        "min_final_window": 94800,
+        "w_p": 600
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 5400,
+          "dep_bps": 500,
+          "depth": 10,
+          "w_a": 60,
+          "w_c": 1800,
+          "w_f": 604800,
+          "w_n": 600
+        },
+        "pending": "none"
+      },
+      "name": "solana-deposit-at-cap",
+      "output": {
+        "delta_cut": 2715,
+        "min_claim_delay": 3600,
+        "min_claim_window": 615,
+        "min_final_window": 94200,
+        "w_p": 0
+      },
+      "valid": true
+    },
+    {
+      "error": "DepositTooHigh",
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 5400,
+          "dep_bps": 501,
+          "depth": 10,
+          "w_a": 60,
+          "w_c": 1800,
+          "w_f": 604800,
+          "w_n": 600
+        },
+        "pending": "none"
+      },
+      "name": "solana-deposit-over-cap",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 5400,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 30,
+          "w_c": 1800,
+          "w_f": 604800,
+          "w_n": 600
+        },
+        "pending": "approval"
+      },
+      "name": "solana-approval-window-30",
+      "output": {
+        "delta_cut": 2715,
+        "min_claim_delay": 3600,
+        "min_claim_window": 615,
+        "min_final_window": 94230,
+        "w_p": 30
+      },
+      "valid": true
+    },
+    {
+      "error": "ApprovalWindowOutOfRange",
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 5400,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 29,
+          "w_c": 1800,
+          "w_f": 604800,
+          "w_n": 600
+        },
+        "pending": "approval"
+      },
+      "name": "solana-approval-window-29",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 5400,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 3600,
+          "w_c": 1800,
+          "w_f": 604800,
+          "w_n": 600
+        },
+        "pending": "approval"
+      },
+      "name": "solana-approval-window-at-cap",
+      "output": {
+        "delta_cut": 2715,
+        "min_claim_delay": 3600,
+        "min_claim_window": 615,
+        "min_final_window": 97800,
+        "w_p": 3600
+      },
+      "valid": true
+    },
+    {
+      "error": "ApprovalWindowOutOfRange",
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 5400,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 3601,
+          "w_c": 1800,
+          "w_f": 604800,
+          "w_n": 600
+        },
+        "pending": "approval"
+      },
+      "name": "solana-approval-window-over-cap",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 5400,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 0,
+          "w_c": 1800,
+          "w_f": 604800,
+          "w_n": 600
+        },
+        "pending": "none"
+      },
+      "name": "solana-approval-window-unchecked-when-active",
+      "output": {
+        "delta_cut": 2715,
+        "min_claim_delay": 3600,
+        "min_claim_window": 615,
+        "min_final_window": 94200,
+        "w_p": 0
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 5400,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 0,
+          "w_c": 1800,
+          "w_f": 604800,
+          "w_n": 600
+        },
+        "pending": "funding"
+      },
+      "name": "solana-approval-window-unchecked-when-funding",
+      "output": {
+        "delta_cut": 2715,
+        "min_claim_delay": 3600,
+        "min_claim_window": 615,
+        "min_final_window": 94800,
+        "w_p": 600
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 5400,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 60,
+          "w_c": 1800,
+          "w_f": 604800,
+          "w_n": 300
+        },
+        "pending": "none"
+      },
+      "name": "solana-notice-window-at-floor",
+      "output": {
+        "delta_cut": 2715,
+        "min_claim_delay": 3600,
+        "min_claim_window": 615,
+        "min_final_window": 93900,
+        "w_p": 0
+      },
+      "valid": true
+    },
+    {
+      "error": "NoticeWindowOutOfRange",
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 5400,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 60,
+          "w_c": 1800,
+          "w_f": 604800,
+          "w_n": 299
+        },
+        "pending": "none"
+      },
+      "name": "solana-notice-window-below-floor",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 5400,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 60,
+          "w_c": 1800,
+          "w_f": 604800,
+          "w_n": 3600
+        },
+        "pending": "none"
+      },
+      "name": "solana-notice-window-at-cap",
+      "output": {
+        "delta_cut": 2715,
+        "min_claim_delay": 3600,
+        "min_claim_window": 615,
+        "min_final_window": 97200,
+        "w_p": 0
+      },
+      "valid": true
+    },
+    {
+      "error": "NoticeWindowOutOfRange",
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 5400,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 60,
+          "w_c": 1800,
+          "w_f": 604800,
+          "w_n": 3601
+        },
+        "pending": "none"
+      },
+      "name": "solana-notice-window-over-cap",
+      "valid": false
+    },
+    {
+      "error": "DepthInvalid",
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 5400,
+          "dep_bps": 100,
+          "depth": 0,
+          "w_a": 60,
+          "w_c": 1800,
+          "w_f": 604800,
+          "w_n": 600
+        },
+        "pending": "none"
+      },
+      "name": "solana-depth-zero",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 3600,
+          "dep_bps": 100,
+          "depth": 1,
+          "w_a": 60,
+          "w_c": 1800,
+          "w_f": 604800,
+          "w_n": 600
+        },
+        "pending": "none"
+      },
+      "name": "solana-claim-delay-at-floor-depth-1",
+      "output": {
+        "delta_cut": 1095,
+        "min_claim_delay": 3600,
+        "min_claim_window": 615,
+        "min_final_window": 92400,
+        "w_p": 0
+      },
+      "valid": true
+    },
+    {
+      "error": "ClaimDelayTooShort",
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 3599,
+          "dep_bps": 100,
+          "depth": 1,
+          "w_a": 60,
+          "w_c": 1800,
+          "w_f": 604800,
+          "w_n": 600
+        },
+        "pending": "none"
+      },
+      "name": "solana-claim-delay-below-floor-depth-1",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 3600,
+          "dep_bps": 100,
+          "depth": 2,
+          "w_a": 60,
+          "w_c": 1800,
+          "w_f": 604800,
+          "w_n": 600
+        },
+        "pending": "none"
+      },
+      "name": "solana-claim-delay-at-floor-depth-2",
+      "output": {
+        "delta_cut": 1275,
+        "min_claim_delay": 3600,
+        "min_claim_window": 615,
+        "min_final_window": 92400,
+        "w_p": 0
+      },
+      "valid": true
+    },
+    {
+      "error": "ClaimDelayTooShort",
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 3599,
+          "dep_bps": 100,
+          "depth": 2,
+          "w_a": 60,
+          "w_c": 1800,
+          "w_f": 604800,
+          "w_n": 600
+        },
+        "pending": "none"
+      },
+      "name": "solana-claim-delay-below-floor-depth-2",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 3600,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 60,
+          "w_c": 1800,
+          "w_f": 604800,
+          "w_n": 600
+        },
+        "pending": "none"
+      },
+      "name": "solana-claim-delay-at-floor-depth-10",
+      "output": {
+        "delta_cut": 2715,
+        "min_claim_delay": 3600,
+        "min_claim_window": 615,
+        "min_final_window": 92400,
+        "w_p": 0
+      },
+      "valid": true
+    },
+    {
+      "error": "ClaimDelayTooShort",
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 3599,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 60,
+          "w_c": 1800,
+          "w_f": 604800,
+          "w_n": 600
+        },
+        "pending": "none"
+      },
+      "name": "solana-claim-delay-below-floor-depth-10",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 6015,
+          "dep_bps": 100,
+          "depth": 25,
+          "w_a": 60,
+          "w_c": 1800,
+          "w_f": 604800,
+          "w_n": 600
+        },
+        "pending": "none"
+      },
+      "name": "solana-claim-delay-at-floor-depth-25",
+      "output": {
+        "delta_cut": 5415,
+        "min_claim_delay": 6015,
+        "min_claim_window": 615,
+        "min_final_window": 94815,
+        "w_p": 0
+      },
+      "valid": true
+    },
+    {
+      "error": "ClaimDelayTooShort",
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 6014,
+          "dep_bps": 100,
+          "depth": 25,
+          "w_a": 60,
+          "w_c": 1800,
+          "w_f": 604800,
+          "w_n": 600
+        },
+        "pending": "none"
+      },
+      "name": "solana-claim-delay-below-floor-depth-25",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 47415,
+          "dep_bps": 100,
+          "depth": 255,
+          "w_a": 60,
+          "w_c": 1800,
+          "w_f": 604800,
+          "w_n": 600
+        },
+        "pending": "none"
+      },
+      "name": "solana-claim-delay-at-floor-depth-255",
+      "output": {
+        "delta_cut": 46815,
+        "min_claim_delay": 47415,
+        "min_claim_window": 615,
+        "min_final_window": 136215,
+        "w_p": 0
+      },
+      "valid": true
+    },
+    {
+      "error": "ClaimDelayTooShort",
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 47414,
+          "dep_bps": 100,
+          "depth": 255,
+          "w_a": 60,
+          "w_c": 1800,
+          "w_f": 604800,
+          "w_n": 600
+        },
+        "pending": "none"
+      },
+      "name": "solana-claim-delay-below-floor-depth-255",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 5400,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 60,
+          "w_c": 615,
+          "w_f": 604800,
+          "w_n": 600
+        },
+        "pending": "none"
+      },
+      "name": "solana-claim-window-at-floor",
+      "output": {
+        "delta_cut": 2715,
+        "min_claim_delay": 3600,
+        "min_claim_window": 615,
+        "min_final_window": 93015,
+        "w_p": 0
+      },
+      "valid": true
+    },
+    {
+      "error": "ClaimWindowTooShort",
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 5400,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 60,
+          "w_c": 614,
+          "w_f": 604800,
+          "w_n": 600
+        },
+        "pending": "none"
+      },
+      "name": "solana-claim-window-below-floor",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 5400,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 60,
+          "w_c": 1800,
+          "w_f": 94200,
+          "w_n": 600
+        },
+        "pending": "none"
+      },
+      "name": "solana-final-window-at-floor-none",
+      "output": {
+        "delta_cut": 2715,
+        "min_claim_delay": 3600,
+        "min_claim_window": 615,
+        "min_final_window": 94200,
+        "w_p": 0
+      },
+      "valid": true
+    },
+    {
+      "error": "FinalWindowOutOfRange",
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 5400,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 60,
+          "w_c": 1800,
+          "w_f": 94199,
+          "w_n": 600
+        },
+        "pending": "none"
+      },
+      "name": "solana-final-window-below-floor-none",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 5400,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 60,
+          "w_c": 1800,
+          "w_f": 94260,
+          "w_n": 600
+        },
+        "pending": "approval"
+      },
+      "name": "solana-final-window-at-floor-approval",
+      "output": {
+        "delta_cut": 2715,
+        "min_claim_delay": 3600,
+        "min_claim_window": 615,
+        "min_final_window": 94260,
+        "w_p": 60
+      },
+      "valid": true
+    },
+    {
+      "error": "FinalWindowOutOfRange",
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 5400,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 60,
+          "w_c": 1800,
+          "w_f": 94259,
+          "w_n": 600
+        },
+        "pending": "approval"
+      },
+      "name": "solana-final-window-below-floor-approval",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 5400,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 60,
+          "w_c": 1800,
+          "w_f": 94800,
+          "w_n": 600
+        },
+        "pending": "funding"
+      },
+      "name": "solana-final-window-at-floor-funding",
+      "output": {
+        "delta_cut": 2715,
+        "min_claim_delay": 3600,
+        "min_claim_window": 615,
+        "min_final_window": 94800,
+        "w_p": 600
+      },
+      "valid": true
+    },
+    {
+      "error": "FinalWindowOutOfRange",
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 5400,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 60,
+          "w_c": 1800,
+          "w_f": 94799,
+          "w_n": 600
+        },
+        "pending": "funding"
+      },
+      "name": "solana-final-window-below-floor-funding",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 5400,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 60,
+          "w_c": 1800,
+          "w_f": 2592000,
+          "w_n": 600
+        },
+        "pending": "none"
+      },
+      "name": "solana-final-window-at-cap",
+      "output": {
+        "delta_cut": 2715,
+        "min_claim_delay": 3600,
+        "min_claim_window": 615,
+        "min_final_window": 94200,
+        "w_p": 0
+      },
+      "valid": true
+    },
+    {
+      "error": "FinalWindowOutOfRange",
+      "input": {
+        "chain": "solana",
+        "op": "bounds",
+        "params": {
+          "d_c": 5400,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 60,
+          "w_c": 1800,
+          "w_f": 2592001,
+          "w_n": 600
+        },
+        "pending": "none"
+      },
+      "name": "solana-final-window-over-cap",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "derive",
+        "params": {
+          "d_c": 5400,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 60,
+          "w_c": 1800,
+          "w_f": 604800,
+          "w_n": 600
+        },
+        "pending": "none",
+        "t_active": 1800000000,
+        "t_lock": 1800000000,
+        "t_notice": null,
+        "t_ready": null,
+        "t_refund": null
+      },
+      "name": "solana-derive-at-lock-active",
+      "output": {
+        "t_cd": null,
+        "t_co": null,
+        "t_cut": null,
+        "t_exp": 1803196800,
+        "t_final": 1800604800,
+        "t_hold": null,
+        "t_nl": 1800511200,
+        "t_note": 1800000600,
+        "t_pend": null,
+        "t_ready_min": null,
+        "t_split": null
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "derive",
+        "params": {
+          "d_c": 5400,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 60,
+          "w_c": 1800,
+          "w_f": 604800,
+          "w_n": 600
+        },
+        "pending": "approval",
+        "t_active": null,
+        "t_lock": 1800000000,
+        "t_notice": null,
+        "t_ready": null,
+        "t_refund": null
+      },
+      "name": "solana-derive-at-lock-pending",
+      "output": {
+        "t_cd": null,
+        "t_co": null,
+        "t_cut": null,
+        "t_exp": 1803196800,
+        "t_final": 1800604800,
+        "t_hold": null,
+        "t_nl": 1800511200,
+        "t_note": null,
+        "t_pend": 1800000060,
+        "t_ready_min": null,
+        "t_split": null
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "derive",
+        "params": {
+          "d_c": 5400,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 60,
+          "w_c": 1800,
+          "w_f": 604800,
+          "w_n": 600
+        },
+        "pending": "funding",
+        "t_active": null,
+        "t_lock": 1800000000,
+        "t_notice": null,
+        "t_ready": null,
+        "t_refund": null
+      },
+      "name": "solana-derive-at-take-funding",
+      "output": {
+        "t_cd": null,
+        "t_co": null,
+        "t_cut": null,
+        "t_exp": 1803196800,
+        "t_final": 1800604800,
+        "t_hold": null,
+        "t_nl": 1800511200,
+        "t_note": null,
+        "t_pend": 1800000600,
+        "t_ready_min": null,
+        "t_split": null
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "derive",
+        "params": {
+          "d_c": 5400,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 60,
+          "w_c": 1800,
+          "w_f": 604800,
+          "w_n": 600
+        },
+        "pending": "approval",
+        "t_active": 1800000020,
+        "t_lock": 1800000000,
+        "t_notice": 1800000120,
+        "t_ready": 1800002000,
+        "t_refund": 1800004000
+      },
+      "name": "solana-derive-full",
+      "output": {
+        "t_cd": 1800003800,
+        "t_co": 1800005520,
+        "t_cut": 1800002835,
+        "t_exp": 1803196800,
+        "t_final": 1800604800,
+        "t_hold": 1800005800,
+        "t_nl": 1800511200,
+        "t_note": 1800000620,
+        "t_pend": 1800000060,
+        "t_ready_min": 1800000720,
+        "t_split": 1805188000
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "derive",
+        "params": {
+          "d_c": 3600,
+          "dep_bps": 100,
+          "depth": 2,
+          "w_a": 60,
+          "w_c": 615,
+          "w_f": 97815,
+          "w_n": 3600
+        },
+        "pending": "funding",
+        "t_active": 1800003599,
+        "t_lock": 1800000000,
+        "t_notice": 1800007199,
+        "t_ready": 1800010798,
+        "t_refund": null
+      },
+      "name": "solana-derive-extreme-depth-2",
+      "output": {
+        "t_cd": 1800011413,
+        "t_co": 1800010799,
+        "t_cut": 1800008474,
+        "t_exp": 1802689815,
+        "t_final": 1800097815,
+        "t_hold": null,
+        "t_nl": 1800007200,
+        "t_note": 1800007199,
+        "t_pend": 1800003600,
+        "t_ready_min": 1800007319,
+        "t_split": null
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "derive",
+        "params": {
+          "d_c": 3600,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 60,
+          "w_c": 615,
+          "w_f": 97815,
+          "w_n": 3600
+        },
+        "pending": "funding",
+        "t_active": 1800003599,
+        "t_lock": 1800000000,
+        "t_notice": 1800007199,
+        "t_ready": 1800010798,
+        "t_refund": null
+      },
+      "name": "solana-derive-extreme-depth-10",
+      "output": {
+        "t_cd": 1800011413,
+        "t_co": 1800010799,
+        "t_cut": 1800009914,
+        "t_exp": 1802689815,
+        "t_final": 1800097815,
+        "t_hold": null,
+        "t_nl": 1800007200,
+        "t_note": 1800007199,
+        "t_pend": 1800003600,
+        "t_ready_min": 1800007799,
+        "t_split": null
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "solana",
+        "op": "derive",
+        "params": {
+          "d_c": 6015,
+          "dep_bps": 100,
+          "depth": 25,
+          "w_a": 60,
+          "w_c": 615,
+          "w_f": 100230,
+          "w_n": 3600
+        },
+        "pending": "funding",
+        "t_active": 1800003599,
+        "t_lock": 1800000000,
+        "t_notice": 1800007199,
+        "t_ready": 1800013213,
+        "t_refund": null
+      },
+      "name": "solana-derive-extreme-depth-25",
+      "output": {
+        "t_cd": 1800013828,
+        "t_co": 1800013214,
+        "t_cut": 1800012614,
+        "t_exp": 1802692230,
+        "t_final": 1800100230,
+        "t_hold": null,
+        "t_nl": 1800007200,
+        "t_note": 1800007199,
+        "t_pend": 1800003600,
+        "t_ready_min": 1800008699,
+        "t_split": null
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 10800,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 120,
+          "w_c": 5400,
+          "w_f": 604800,
+          "w_n": 1800
+        },
+        "pending": "none"
+      },
+      "name": "ethereum-defaults-active",
+      "output": {
+        "delta_cut": 3900,
+        "min_claim_delay": 7500,
+        "min_claim_window": 4800,
+        "min_final_window": 104400,
+        "w_p": 0
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 10800,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 120,
+          "w_c": 5400,
+          "w_f": 604800,
+          "w_n": 1800
+        },
+        "pending": "approval"
+      },
+      "name": "ethereum-defaults-approval",
+      "output": {
+        "delta_cut": 3900,
+        "min_claim_delay": 7500,
+        "min_claim_window": 4800,
+        "min_final_window": 104520,
+        "w_p": 120
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 10800,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 120,
+          "w_c": 5400,
+          "w_f": 604800,
+          "w_n": 1800
+        },
+        "pending": "funding"
+      },
+      "name": "ethereum-defaults-funding",
+      "output": {
+        "delta_cut": 3900,
+        "min_claim_delay": 7500,
+        "min_claim_window": 4800,
+        "min_final_window": 106200,
+        "w_p": 1800
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 10800,
+          "dep_bps": 500,
+          "depth": 10,
+          "w_a": 120,
+          "w_c": 5400,
+          "w_f": 604800,
+          "w_n": 1800
+        },
+        "pending": "none"
+      },
+      "name": "ethereum-deposit-at-cap",
+      "output": {
+        "delta_cut": 3900,
+        "min_claim_delay": 7500,
+        "min_claim_window": 4800,
+        "min_final_window": 104400,
+        "w_p": 0
+      },
+      "valid": true
+    },
+    {
+      "error": "DepositTooHigh",
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 10800,
+          "dep_bps": 501,
+          "depth": 10,
+          "w_a": 120,
+          "w_c": 5400,
+          "w_f": 604800,
+          "w_n": 1800
+        },
+        "pending": "none"
+      },
+      "name": "ethereum-deposit-over-cap",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 10800,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 30,
+          "w_c": 5400,
+          "w_f": 604800,
+          "w_n": 1800
+        },
+        "pending": "approval"
+      },
+      "name": "ethereum-approval-window-30",
+      "output": {
+        "delta_cut": 3900,
+        "min_claim_delay": 7500,
+        "min_claim_window": 4800,
+        "min_final_window": 104430,
+        "w_p": 30
+      },
+      "valid": true
+    },
+    {
+      "error": "ApprovalWindowOutOfRange",
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 10800,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 29,
+          "w_c": 5400,
+          "w_f": 604800,
+          "w_n": 1800
+        },
+        "pending": "approval"
+      },
+      "name": "ethereum-approval-window-29",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 10800,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 3600,
+          "w_c": 5400,
+          "w_f": 604800,
+          "w_n": 1800
+        },
+        "pending": "approval"
+      },
+      "name": "ethereum-approval-window-at-cap",
+      "output": {
+        "delta_cut": 3900,
+        "min_claim_delay": 7500,
+        "min_claim_window": 4800,
+        "min_final_window": 108000,
+        "w_p": 3600
+      },
+      "valid": true
+    },
+    {
+      "error": "ApprovalWindowOutOfRange",
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 10800,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 3601,
+          "w_c": 5400,
+          "w_f": 604800,
+          "w_n": 1800
+        },
+        "pending": "approval"
+      },
+      "name": "ethereum-approval-window-over-cap",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 10800,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 0,
+          "w_c": 5400,
+          "w_f": 604800,
+          "w_n": 1800
+        },
+        "pending": "none"
+      },
+      "name": "ethereum-approval-window-unchecked-when-active",
+      "output": {
+        "delta_cut": 3900,
+        "min_claim_delay": 7500,
+        "min_claim_window": 4800,
+        "min_final_window": 104400,
+        "w_p": 0
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 10800,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 0,
+          "w_c": 5400,
+          "w_f": 604800,
+          "w_n": 1800
+        },
+        "pending": "funding"
+      },
+      "name": "ethereum-approval-window-unchecked-when-funding",
+      "output": {
+        "delta_cut": 3900,
+        "min_claim_delay": 7500,
+        "min_claim_window": 4800,
+        "min_final_window": 106200,
+        "w_p": 1800
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 10800,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 120,
+          "w_c": 5400,
+          "w_f": 604800,
+          "w_n": 1500
+        },
+        "pending": "none"
+      },
+      "name": "ethereum-notice-window-at-floor",
+      "output": {
+        "delta_cut": 3900,
+        "min_claim_delay": 7500,
+        "min_claim_window": 4800,
+        "min_final_window": 104100,
+        "w_p": 0
+      },
+      "valid": true
+    },
+    {
+      "error": "NoticeWindowOutOfRange",
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 10800,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 120,
+          "w_c": 5400,
+          "w_f": 604800,
+          "w_n": 1499
+        },
+        "pending": "none"
+      },
+      "name": "ethereum-notice-window-below-floor",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 10800,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 120,
+          "w_c": 5400,
+          "w_f": 604800,
+          "w_n": 3600
+        },
+        "pending": "none"
+      },
+      "name": "ethereum-notice-window-at-cap",
+      "output": {
+        "delta_cut": 3900,
+        "min_claim_delay": 7500,
+        "min_claim_window": 4800,
+        "min_final_window": 106200,
+        "w_p": 0
+      },
+      "valid": true
+    },
+    {
+      "error": "NoticeWindowOutOfRange",
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 10800,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 120,
+          "w_c": 5400,
+          "w_f": 604800,
+          "w_n": 3601
+        },
+        "pending": "none"
+      },
+      "name": "ethereum-notice-window-over-cap",
+      "valid": false
+    },
+    {
+      "error": "DepthInvalid",
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 10800,
+          "dep_bps": 100,
+          "depth": 0,
+          "w_a": 120,
+          "w_c": 5400,
+          "w_f": 604800,
+          "w_n": 1800
+        },
+        "pending": "none"
+      },
+      "name": "ethereum-depth-zero",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 7200,
+          "dep_bps": 100,
+          "depth": 1,
+          "w_a": 120,
+          "w_c": 5400,
+          "w_f": 604800,
+          "w_n": 1800
+        },
+        "pending": "none"
+      },
+      "name": "ethereum-claim-delay-at-floor-depth-1",
+      "output": {
+        "delta_cut": 2280,
+        "min_claim_delay": 7200,
+        "min_claim_window": 4800,
+        "min_final_window": 100800,
+        "w_p": 0
+      },
+      "valid": true
+    },
+    {
+      "error": "ClaimDelayTooShort",
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 7199,
+          "dep_bps": 100,
+          "depth": 1,
+          "w_a": 120,
+          "w_c": 5400,
+          "w_f": 604800,
+          "w_n": 1800
+        },
+        "pending": "none"
+      },
+      "name": "ethereum-claim-delay-below-floor-depth-1",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 7200,
+          "dep_bps": 100,
+          "depth": 2,
+          "w_a": 120,
+          "w_c": 5400,
+          "w_f": 604800,
+          "w_n": 1800
+        },
+        "pending": "none"
+      },
+      "name": "ethereum-claim-delay-at-floor-depth-2",
+      "output": {
+        "delta_cut": 2460,
+        "min_claim_delay": 7200,
+        "min_claim_window": 4800,
+        "min_final_window": 100800,
+        "w_p": 0
+      },
+      "valid": true
+    },
+    {
+      "error": "ClaimDelayTooShort",
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 7199,
+          "dep_bps": 100,
+          "depth": 2,
+          "w_a": 120,
+          "w_c": 5400,
+          "w_f": 604800,
+          "w_n": 1800
+        },
+        "pending": "none"
+      },
+      "name": "ethereum-claim-delay-below-floor-depth-2",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 7500,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 120,
+          "w_c": 5400,
+          "w_f": 604800,
+          "w_n": 1800
+        },
+        "pending": "none"
+      },
+      "name": "ethereum-claim-delay-at-floor-depth-10",
+      "output": {
+        "delta_cut": 3900,
+        "min_claim_delay": 7500,
+        "min_claim_window": 4800,
+        "min_final_window": 101100,
+        "w_p": 0
+      },
+      "valid": true
+    },
+    {
+      "error": "ClaimDelayTooShort",
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 7499,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 120,
+          "w_c": 5400,
+          "w_f": 604800,
+          "w_n": 1800
+        },
+        "pending": "none"
+      },
+      "name": "ethereum-claim-delay-below-floor-depth-10",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 10200,
+          "dep_bps": 100,
+          "depth": 25,
+          "w_a": 120,
+          "w_c": 5400,
+          "w_f": 604800,
+          "w_n": 1800
+        },
+        "pending": "none"
+      },
+      "name": "ethereum-claim-delay-at-floor-depth-25",
+      "output": {
+        "delta_cut": 6600,
+        "min_claim_delay": 10200,
+        "min_claim_window": 4800,
+        "min_final_window": 103800,
+        "w_p": 0
+      },
+      "valid": true
+    },
+    {
+      "error": "ClaimDelayTooShort",
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 10199,
+          "dep_bps": 100,
+          "depth": 25,
+          "w_a": 120,
+          "w_c": 5400,
+          "w_f": 604800,
+          "w_n": 1800
+        },
+        "pending": "none"
+      },
+      "name": "ethereum-claim-delay-below-floor-depth-25",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 51600,
+          "dep_bps": 100,
+          "depth": 255,
+          "w_a": 120,
+          "w_c": 5400,
+          "w_f": 604800,
+          "w_n": 1800
+        },
+        "pending": "none"
+      },
+      "name": "ethereum-claim-delay-at-floor-depth-255",
+      "output": {
+        "delta_cut": 48000,
+        "min_claim_delay": 51600,
+        "min_claim_window": 4800,
+        "min_final_window": 145200,
+        "w_p": 0
+      },
+      "valid": true
+    },
+    {
+      "error": "ClaimDelayTooShort",
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 51599,
+          "dep_bps": 100,
+          "depth": 255,
+          "w_a": 120,
+          "w_c": 5400,
+          "w_f": 604800,
+          "w_n": 1800
+        },
+        "pending": "none"
+      },
+      "name": "ethereum-claim-delay-below-floor-depth-255",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 10800,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 120,
+          "w_c": 4800,
+          "w_f": 604800,
+          "w_n": 1800
+        },
+        "pending": "none"
+      },
+      "name": "ethereum-claim-window-at-floor",
+      "output": {
+        "delta_cut": 3900,
+        "min_claim_delay": 7500,
+        "min_claim_window": 4800,
+        "min_final_window": 103800,
+        "w_p": 0
+      },
+      "valid": true
+    },
+    {
+      "error": "ClaimWindowTooShort",
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 10800,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 120,
+          "w_c": 4799,
+          "w_f": 604800,
+          "w_n": 1800
+        },
+        "pending": "none"
+      },
+      "name": "ethereum-claim-window-below-floor",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 10800,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 120,
+          "w_c": 5400,
+          "w_f": 104400,
+          "w_n": 1800
+        },
+        "pending": "none"
+      },
+      "name": "ethereum-final-window-at-floor-none",
+      "output": {
+        "delta_cut": 3900,
+        "min_claim_delay": 7500,
+        "min_claim_window": 4800,
+        "min_final_window": 104400,
+        "w_p": 0
+      },
+      "valid": true
+    },
+    {
+      "error": "FinalWindowOutOfRange",
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 10800,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 120,
+          "w_c": 5400,
+          "w_f": 104399,
+          "w_n": 1800
+        },
+        "pending": "none"
+      },
+      "name": "ethereum-final-window-below-floor-none",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 10800,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 120,
+          "w_c": 5400,
+          "w_f": 104520,
+          "w_n": 1800
+        },
+        "pending": "approval"
+      },
+      "name": "ethereum-final-window-at-floor-approval",
+      "output": {
+        "delta_cut": 3900,
+        "min_claim_delay": 7500,
+        "min_claim_window": 4800,
+        "min_final_window": 104520,
+        "w_p": 120
+      },
+      "valid": true
+    },
+    {
+      "error": "FinalWindowOutOfRange",
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 10800,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 120,
+          "w_c": 5400,
+          "w_f": 104519,
+          "w_n": 1800
+        },
+        "pending": "approval"
+      },
+      "name": "ethereum-final-window-below-floor-approval",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 10800,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 120,
+          "w_c": 5400,
+          "w_f": 106200,
+          "w_n": 1800
+        },
+        "pending": "funding"
+      },
+      "name": "ethereum-final-window-at-floor-funding",
+      "output": {
+        "delta_cut": 3900,
+        "min_claim_delay": 7500,
+        "min_claim_window": 4800,
+        "min_final_window": 106200,
+        "w_p": 1800
+      },
+      "valid": true
+    },
+    {
+      "error": "FinalWindowOutOfRange",
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 10800,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 120,
+          "w_c": 5400,
+          "w_f": 106199,
+          "w_n": 1800
+        },
+        "pending": "funding"
+      },
+      "name": "ethereum-final-window-below-floor-funding",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 10800,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 120,
+          "w_c": 5400,
+          "w_f": 2592000,
+          "w_n": 1800
+        },
+        "pending": "none"
+      },
+      "name": "ethereum-final-window-at-cap",
+      "output": {
+        "delta_cut": 3900,
+        "min_claim_delay": 7500,
+        "min_claim_window": 4800,
+        "min_final_window": 104400,
+        "w_p": 0
+      },
+      "valid": true
+    },
+    {
+      "error": "FinalWindowOutOfRange",
+      "input": {
+        "chain": "ethereum",
+        "op": "bounds",
+        "params": {
+          "d_c": 10800,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 120,
+          "w_c": 5400,
+          "w_f": 2592001,
+          "w_n": 1800
+        },
+        "pending": "none"
+      },
+      "name": "ethereum-final-window-over-cap",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "derive",
+        "params": {
+          "d_c": 10800,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 120,
+          "w_c": 5400,
+          "w_f": 604800,
+          "w_n": 1800
+        },
+        "pending": "none",
+        "t_active": 1800000000,
+        "t_lock": 1800000000,
+        "t_notice": null,
+        "t_ready": null,
+        "t_refund": null
+      },
+      "name": "ethereum-derive-at-lock-active",
+      "output": {
+        "t_cd": null,
+        "t_co": null,
+        "t_cut": null,
+        "t_exp": 1803196800,
+        "t_final": 1800604800,
+        "t_hold": null,
+        "t_nl": 1800502200,
+        "t_note": 1800001800,
+        "t_pend": null,
+        "t_ready_min": null,
+        "t_split": null
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "derive",
+        "params": {
+          "d_c": 10800,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 120,
+          "w_c": 5400,
+          "w_f": 604800,
+          "w_n": 1800
+        },
+        "pending": "approval",
+        "t_active": null,
+        "t_lock": 1800000000,
+        "t_notice": null,
+        "t_ready": null,
+        "t_refund": null
+      },
+      "name": "ethereum-derive-at-lock-pending",
+      "output": {
+        "t_cd": null,
+        "t_co": null,
+        "t_cut": null,
+        "t_exp": 1803196800,
+        "t_final": 1800604800,
+        "t_hold": null,
+        "t_nl": 1800502200,
+        "t_note": null,
+        "t_pend": 1800000120,
+        "t_ready_min": null,
+        "t_split": null
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "derive",
+        "params": {
+          "d_c": 10800,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 120,
+          "w_c": 5400,
+          "w_f": 604800,
+          "w_n": 1800
+        },
+        "pending": "funding",
+        "t_active": null,
+        "t_lock": 1800000000,
+        "t_notice": null,
+        "t_ready": null,
+        "t_refund": null
+      },
+      "name": "ethereum-derive-at-take-funding",
+      "output": {
+        "t_cd": null,
+        "t_co": null,
+        "t_cut": null,
+        "t_exp": 1803196800,
+        "t_final": 1800604800,
+        "t_hold": null,
+        "t_nl": 1800502200,
+        "t_note": null,
+        "t_pend": 1800001800,
+        "t_ready_min": null,
+        "t_split": null
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "derive",
+        "params": {
+          "d_c": 10800,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 120,
+          "w_c": 5400,
+          "w_f": 604800,
+          "w_n": 1800
+        },
+        "pending": "approval",
+        "t_active": 1800000020,
+        "t_lock": 1800000000,
+        "t_notice": 1800000120,
+        "t_ready": 1800002000,
+        "t_refund": 1800004000
+      },
+      "name": "ethereum-derive-full",
+      "output": {
+        "t_cd": 1800007400,
+        "t_co": 1800010920,
+        "t_cut": 1800004020,
+        "t_exp": 1803196800,
+        "t_final": 1800604800,
+        "t_hold": 1800005800,
+        "t_nl": 1800502200,
+        "t_note": 1800001820,
+        "t_pend": 1800000120,
+        "t_ready_min": 1800000720,
+        "t_split": 1805188000
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "derive",
+        "params": {
+          "d_c": 7200,
+          "dep_bps": 100,
+          "depth": 2,
+          "w_a": 120,
+          "w_c": 4800,
+          "w_f": 102120,
+          "w_n": 3600
+        },
+        "pending": "approval",
+        "t_active": 1800000119,
+        "t_lock": 1800000000,
+        "t_notice": 1800003719,
+        "t_ready": 1800010918,
+        "t_refund": null
+      },
+      "name": "ethereum-derive-extreme-depth-2",
+      "output": {
+        "t_cd": 1800015718,
+        "t_co": 1800010919,
+        "t_cut": 1800006179,
+        "t_exp": 1802694120,
+        "t_final": 1800102120,
+        "t_hold": null,
+        "t_nl": 1800003720,
+        "t_note": 1800003719,
+        "t_pend": 1800000120,
+        "t_ready_min": 1800003839,
+        "t_split": null
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "derive",
+        "params": {
+          "d_c": 7500,
+          "dep_bps": 100,
+          "depth": 10,
+          "w_a": 120,
+          "w_c": 4800,
+          "w_f": 102420,
+          "w_n": 3600
+        },
+        "pending": "approval",
+        "t_active": 1800000119,
+        "t_lock": 1800000000,
+        "t_notice": 1800003719,
+        "t_ready": 1800011218,
+        "t_refund": null
+      },
+      "name": "ethereum-derive-extreme-depth-10",
+      "output": {
+        "t_cd": 1800016018,
+        "t_co": 1800011219,
+        "t_cut": 1800007619,
+        "t_exp": 1802694420,
+        "t_final": 1800102420,
+        "t_hold": null,
+        "t_nl": 1800003720,
+        "t_note": 1800003719,
+        "t_pend": 1800000120,
+        "t_ready_min": 1800004319,
+        "t_split": null
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain": "ethereum",
+        "op": "derive",
+        "params": {
+          "d_c": 10200,
+          "dep_bps": 100,
+          "depth": 25,
+          "w_a": 120,
+          "w_c": 4800,
+          "w_f": 105120,
+          "w_n": 3600
+        },
+        "pending": "approval",
+        "t_active": 1800000119,
+        "t_lock": 1800000000,
+        "t_notice": 1800003719,
+        "t_ready": 1800013918,
+        "t_refund": null
+      },
+      "name": "ethereum-derive-extreme-depth-25",
+      "output": {
+        "t_cd": 1800018718,
+        "t_co": 1800013919,
+        "t_cut": 1800010319,
+        "t_exp": 1802697120,
+        "t_final": 1800105120,
+        "t_hold": null,
+        "t_nl": 1800003720,
+        "t_note": 1800003719,
+        "t_pend": 1800000120,
+        "t_ready_min": 1800005219,
+        "t_split": null
+      },
+      "valid": true
+    }
+  ],
+  "constants": {
+    "ethereum": {
+      "BLOCK_ALLOWANCE_SECS": 180,
+      "CLOSE_GRACE_SECS": 0,
+      "CUT_MARGIN_SECS": 900,
+      "EXPIRY_SECS": 2592000,
+      "EXPLICIT_APPROVE": true,
+      "FEE_BPS": 5,
+      "FINALITY_SECS": 1200,
+      "HOLD_SECS": 1800,
+      "LAPSE_IS_FAULT": false,
+      "LINK_DELAY_SECS": 604800,
+      "MARGIN_SECS": 1800,
+      "MAX_APPROVAL_SECS": 3600,
+      "MAX_DEPOSIT_BPS": 500,
+      "MAX_FINAL_SECS": 2592000,
+      "MAX_NOTICE_SECS": 3600,
+      "MAX_OPEN_PENDING": 64,
+      "MIN_APPROVAL_SECS": 30,
+      "MIN_CLAIM_DELAY_SECS": 7200,
+      "MIN_NOTICE_SECS": 1500,
+      "OPEN_SECRET_CALLS": true,
+      "READY_MIN_SECS_PER_CONF": 60,
+      "SPLIT_SECS": 5184000
+    },
+    "solana": {
+      "BLOCK_ALLOWANCE_SECS": 180,
+      "CLOSE_GRACE_SECS": 2592000,
+      "CUT_MARGIN_SECS": 900,
+      "EXPIRY_SECS": 2592000,
+      "EXPLICIT_APPROVE": false,
+      "FEE_BPS": 5,
+      "FINALITY_SECS": 15,
+      "HOLD_SECS": 1800,
+      "LAPSE_IS_FAULT": true,
+      "LINK_DELAY_SECS": 604800,
+      "MARGIN_SECS": 300,
+      "MAX_APPROVAL_SECS": 3600,
+      "MAX_DEPOSIT_BPS": 500,
+      "MAX_FINAL_SECS": 2592000,
+      "MAX_NOTICE_SECS": 3600,
+      "MAX_OPEN_PENDING": 64,
+      "MIN_APPROVAL_SECS": 30,
+      "MIN_CLAIM_DELAY_SECS": 3600,
+      "MIN_NOTICE_SECS": 300,
+      "OPEN_SECRET_CALLS": false,
+      "READY_MIN_SECS_PER_CONF": 60,
+      "SPLIT_SECS": 5184000
+    }
+  },
+  "format": "xmrswap-vectors/1",
+  "formulas": {
+    "delta_cut": "FINALITY_SECS + depth * BLOCK_ALLOWANCE_SECS + CUT_MARGIN_SECS",
+    "min_claim_delay": "max(MIN_CLAIM_DELAY_SECS, delta_cut + 2 * MARGIN_SECS)",
+    "min_claim_window": "FINALITY_SECS + 2 * MARGIN_SECS",
+    "min_final_window": "w_p + w_n + d_c + w_c + 86400",
+    "t_cd": "t_ready + w_c",
+    "t_co": "t_notice + d_c",
+    "t_cut": "t_notice + delta_cut",
+    "t_exp": "t_final + EXPIRY_SECS",
+    "t_final": "t_lock + w_f",
+    "t_hold": "t_refund + HOLD_SECS",
+    "t_nl": "t_final - d_c - w_c - 86400",
+    "t_note": "t_active + w_n",
+    "t_pend": "t_lock + w_p",
+    "t_ready_min": "t_notice + depth * READY_MIN_SECS_PER_CONF",
+    "t_split": "t_refund + SPLIT_SECS",
+    "w_p": "none: 0; approval: w_a; funding: w_n"
+  },
+  "suite": "deadlines"
+}
