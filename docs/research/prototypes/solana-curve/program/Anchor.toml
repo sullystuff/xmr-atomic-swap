@@ -1,0 +1,12 @@
+[toolchain]
+anchor_version = "0.32.1"
+
+[workspace]
+members = ["program"]
+
+[programs.localnet]
+curve_check = "HNZrgojMR8XBDsap8MPTgdznw5P1WzFi9k2yZND3JeCo"
+
+[provider]
+cluster = "localnet"
+wallet = "/dev/null"

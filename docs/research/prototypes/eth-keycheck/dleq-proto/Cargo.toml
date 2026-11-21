@@ -1,0 +1,39 @@
+[package]
+name = "dleq-proto"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+# --- candidate A: serai cross-group DLEq
+dleq = { version = "=0.4.1", features = ["experimental", "serialize"] }
+k256 = { version = "=0.13.4", default-features = false, features = ["std", "arithmetic", "bits"] }
+dalek-ff-group = "0.4"
+flexible-transcript = { version = "0.3", features = ["recommended"] }
+blake2 = "0.10"
+# --- candidate B: sigma_fun (what comit xmr-btc-swap / eigenwallet use)
+sigma_fun = { version = "=0.9.0", default-features = false, features = ["alloc", "secp256k1", "ed25519", "serde", "bincode"] }
+curve25519-dalek-ng = "4"
+bincode = { version = "2", features = ["serde"] }
+sha2 = "0.10"
+# --- shared
+rand_core = "0.6"
+rand_chacha = { version = "0.3", default-features = false }
+sha3 = "0.10"
+zeroize = "1"
+hex = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+
+# A transitive dep enables rand_core/getrandom. For the raw-ABI feasibility test we register a
+# handler that always errors (all randomness comes from the host-provided seed). In the real
+# wasm-bindgen build use `features = ["js"]` instead, which maps to crypto.getRandomValues.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["custom"] }

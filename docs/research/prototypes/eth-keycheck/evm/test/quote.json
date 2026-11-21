@@ -1,0 +1,47 @@
+{
+  "types": {
+    "EIP712Domain": [
+      {"name": "name", "type": "string"},
+      {"name": "version", "type": "string"},
+      {"name": "chainId", "type": "uint256"},
+      {"name": "verifyingContract", "type": "address"}
+    ],
+    "Quote": [
+      {"name": "maker", "type": "address"},
+      {"name": "token", "type": "address"},
+      {"name": "price", "type": "uint256"},
+      {"name": "minAmount", "type": "uint256"},
+      {"name": "maxAmount", "type": "uint256"},
+      {"name": "maxTotal", "type": "uint256"},
+      {"name": "validUntil", "type": "uint64"},
+      {"name": "epoch", "type": "uint64"},
+      {"name": "claimDelay", "type": "uint32"},
+      {"name": "depositBps", "type": "uint16"},
+      {"name": "approvalMode", "type": "uint8"},
+      {"name": "keyRoot", "type": "bytes32"},
+      {"name": "quoteId", "type": "bytes32"}
+    ]
+  },
+  "primaryType": "Quote",
+  "domain": {
+    "name": "XmrAtomicSwap",
+    "version": "1",
+    "chainId": 31337,
+    "verifyingContract": "0x2e234DAe75C793f67A35089C9d99245E1C58470b"
+  },
+  "message": {
+    "maker": "0x444f5a056Fa56487078ba8342bbA4083681e11Bf",
+    "token": "0x0000000000000000000000000000000000000000",
+    "price": "123000000000000000000",
+    "minAmount": "10000000000000000",
+    "maxAmount": "10000000000000000000",
+    "maxTotal": "15000000000000000000",
+    "validUntil": 1800000180,
+    "epoch": 0,
+    "claimDelay": 3600,
+    "depositBps": 200,
+    "approvalMode": 0,
+    "keyRoot": "0x17c033f2f823c20282847005d632ffaba37f6d29b482d9f32455e77c2586da52",
+    "quoteId": "0xb8d00316a62a0d195cd21f6e6a94cd80f084162af5a4b596d615bf79ecf19bcf"
+  }
+}
