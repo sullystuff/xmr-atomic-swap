@@ -15,11 +15,10 @@ import { type SolanaSigner, seedSigner } from '@xmrswap/sdk';
 import type { PrivateKeyAccount } from 'viem/accounts';
 import { type EthWorld, type SolWorld, ethAccount } from './chains.js';
 import { REGTEST_MAX_FEE, Wallet } from './monero.js';
-import { type Proc, startProc } from './procs.js';
-import { e2eRoot, fill, freePort, hexOf, repoRoot, sleep, stateRoot, waitFor } from './util.js';
+import { type Proc, startProc, tsNode } from './procs.js';
+import { fill, freePort, hexOf, repoRoot, sleep, stateRoot, waitFor } from './util.js';
 
 export const PASSPHRASE = 'e2e keystore passphrase: correct horse battery staple';
-const TSX = path.join(e2eRoot, 'node_modules/.bin/tsx');
 const CLI = path.join(repoRoot, 'packages/daemon/src/cli.ts');
 
 /** A stand-in for the price API (CoinGecko's `simple/price` shape) on loopback. No live price source is ever called. */
@@ -229,7 +228,7 @@ ${o.extraToml ?? ''}`;
 
   async start(): Promise<void> {
     this.starts++;
-    this.proc = startProc(`maker-${this.o.n}-run${this.starts}`, TSX, [CLI, 'start', this.configPath], { env: this.env(), cwd: this.dir });
+    this.proc = startProc(`maker-${this.o.n}-run${this.starts}`, ...tsNode(CLI, 'start', this.configPath), { env: this.env(), cwd: this.dir });
     await this.proc.waitForOutput(/API on (http:\/\/127\.0\.0\.1:\d+)/, 90_000);
     this.token = readFileSync(path.join(this.dir, 'data', 'api-token'), 'utf8').trim();
     await waitFor(`maker ${this.o.n} API`, async () => (await this.api<StatusResponse>('GET', '/api/status')).version, { timeoutMs: 60_000 });

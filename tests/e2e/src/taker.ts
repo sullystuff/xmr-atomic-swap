@@ -113,6 +113,12 @@ export class SdkTaker {
     this.w.addSecret(`sdk-taker.${ref.slice(0, 10)}.session`, keys.sessionSecret);
   }
 
+  /** Lamports sitting on a Solana swap's session key (its budget, until a session-signed settlement sweeps it back). */
+  async sessionLamports(o: Opened): Promise<bigint> {
+    const k = this.solSession.get(o.ref);
+    return k ? this.w.sol.balance(k.publicKey) : 0n;
+  }
+
   async view(o: Opened): Promise<SwapView | null> {
     return o.chain === 'solana' ? this.w.sol.swap(o.ref) : this.w.eth!.swap(o.swapId!);
   }

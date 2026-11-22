@@ -4,7 +4,8 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { sleep, stateRoot } from './util.js';
+import { pathToFileURL } from 'node:url';
+import { e2eRoot, sleep, stateRoot } from './util.js';
 
 export interface Proc {
   name: string;
@@ -32,13 +33,24 @@ function startTime(pid: number): string {
 }
 const pidDir = (): string => path.join(stateRoot, 'pids');
 
+/** Arguments that run a TypeScript entry point in ONE node process (no wrapper process that a kill would miss). */
+export const tsNode = (script: string, ...args: string[]): [string, string[]] => [process.execPath, ['--import', pathToFileURL(path.join(e2eRoot, 'node_modules/tsx/dist/loader.mjs')).href, script, ...args]];
+
 export function startProc(name: string, cmd: string, args: string[], o: { env?: NodeJS.ProcessEnv; cwd?: string; logDir?: string } = {}): Proc {
   const logDir = o.logDir ?? path.join(stateRoot, 'logs');
   mkdirSync(logDir, { recursive: true });
   mkdirSync(pidDir(), { recursive: true });
   const logFile = path.join(logDir, `${name}.log`);
   appendFileSync(logFile, `\n==== ${name} started ${new Date().toISOString()}\n`);
-  const child = spawn(cmd, args, { env: o.env ?? process.env, cwd: o.cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+  // Its own process group, so that a kill reaches the process and anything it started.
+  const child = spawn(cmd, args, { env: o.env ?? process.env, cwd: o.cwd, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+  const signal = (sig: NodeJS.Signals): void => {
+    try {
+      process.kill(-child.pid!, sig);
+    } catch {
+      child.kill(sig);
+    }
+  };
   let buf = '';
   const onData = (c: Buffer): void => {
     const s = c.toString();
@@ -68,17 +80,17 @@ export function startProc(name: string, cmd: string, args: string[], o: { env?: 
     async stop(graceMs = 8_000) {
       live.delete(p);
       if (exited) return;
-      child.kill('SIGTERM');
+      signal('SIGTERM');
       await Promise.race([done, sleep(graceMs)]);
       if (!exited) {
-        child.kill('SIGKILL');
+        signal('SIGKILL');
         await done;
       }
     },
     async kill() {
       live.delete(p);
       if (exited) return;
-      child.kill('SIGKILL');
+      signal('SIGKILL');
       await done;
     },
     async waitForOutput(pattern, timeoutMs = 60_000) {
@@ -109,20 +121,31 @@ export function reapStale(): void {
     // The same pid with the same kernel start time is the process this harness started, not a reused pid.
     if (Number(pid) > 1 && started && started !== '?' && startTime(Number(pid)) === started) {
       try {
-        process.kill(Number(pid), 'SIGKILL');
+        process.kill(-Number(pid), 'SIGKILL');
       } catch {
-        // gone
+        try {
+          process.kill(Number(pid), 'SIGKILL');
+        } catch {
+          // gone
+        }
       }
     }
     rmSync(file, { force: true });
   }
 }
 
+function killGroup(p: Proc): void {
+  try {
+    process.kill(-p.child.pid!, 'SIGKILL');
+  } catch {
+    p.child.kill('SIGKILL');
+  }
+}
 for (const sig of ['SIGINT', 'SIGTERM'] as const)
   process.once(sig, () => {
-    for (const p of live) p.child.kill('SIGKILL');
+    for (const p of live) killGroup(p);
     process.exit(130);
   });
 process.once('exit', () => {
-  for (const p of live) p.child.kill('SIGKILL');
+  for (const p of live) killGroup(p);
 });

@@ -4,8 +4,8 @@
 import net, { type AddressInfo } from 'node:net';
 import path from 'node:path';
 import { RELAY_ROUTES } from '@xmrswap/protocol';
-import { type Proc, startProc } from './procs.js';
-import { e2eRoot, freePort, repoRoot, stateRoot, waitFor } from './util.js';
+import { type Proc, startProc, tsNode } from './procs.js';
+import { freePort, repoRoot, stateRoot, waitFor } from './util.js';
 
 export interface FakeTor {
   port: number;
@@ -91,7 +91,7 @@ export async function makeRelay(o: { solanaRpc: string; programId: string; torPo
   const r: RelayProc = {
     url: `http://127.0.0.1:${port}`, port, proc: null,
     async start() {
-      r.proc = startProc(`relay-run${++runs}`, path.join(e2eRoot, 'node_modules/.bin/tsx'), [path.join(repoRoot, 'packages/relay/src/main.ts')], {
+      r.proc = startProc(`relay-run${++runs}`, ...tsNode(path.join(repoRoot, 'packages/relay/src/main.ts')), {
         cwd: stateRoot,
         env: {
           PATH: process.env['PATH'], HOME: '/nonexistent', RELAY_BIND: `127.0.0.1:${port}`, RELAY_TOR_SOCKS: `127.0.0.1:${o.torPort}`, SOLANA_RPC_URL: o.solanaRpc, RELAY_PROGRAM_ID: o.programId,

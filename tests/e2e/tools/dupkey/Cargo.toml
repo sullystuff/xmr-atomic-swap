@@ -1,0 +1,25 @@
+# A regtest-only test tool of the end-to-end harness (scenario N-2): it builds a REAL Monero
+# transaction whose output carries a one-time key chosen by the caller, so that a block can hold
+# two outputs with the same one-time key. It is not part of any shipped package.
+[package]
+name = "e2e-dupkey"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+swap-core = { path = "../../../../crates/swap-core" }
+monero-wallet = "=0.2.0"
+monero-daemon-rpc = "=0.2.0"
+monero-simple-request-rpc = "=0.1.0"
+curve25519-dalek = { version = "4", default-features = false }
+tokio = { version = "1", features = ["rt", "macros"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+zeroize = "1"
+hex = "0.4"
+serde_json = "1"
+
+[profile.dev.package."*"]
+opt-level = 3
