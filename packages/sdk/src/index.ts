@@ -17,7 +17,7 @@ export { ModelError, NO_SWAP, apply, enabled, errorOf, isSecretBearing, pendingK
 export * from './machine/view.js';
 
 // Flows.
-export type { Decision, FlowCall, LockReport, Need, OffchainAction, Warning } from './flows/types.js';
+export type { Decision, FlowCall, LockReport, Need, OffchainAction, Refusal, Warning } from './flows/types.js';
 export * from './flows/taker.js';
 export * from './flows/maker.js';
 export * from './flows/keys.js';

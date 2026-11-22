@@ -6,7 +6,7 @@
  */
 import { CHAIN_CONSTS, SWAP_FLAG, SWAP_STATE } from '@xmrswap/protocol';
 import { type SwapView, deadlinesOf, endedInClaim, endedInRefund, hasFlag } from '../machine/view.js';
-import { type Decision, type LockReport, call, done, need, offchain, wait } from './types.js';
+import { type Decision, type LockReport, call, done, need, offchain, refuse, wait } from './types.js';
 
 export interface MakerFacts {
   /** The swap read at `finalized`. */
@@ -40,21 +40,26 @@ export interface MakerFacts {
 }
 
 export function makerStep(f: MakerFacts): Decision {
-  return f.swap.direction === 0 ? makerA(f) : makerB(f);
+  const d = f.swap.direction === 0 ? makerA(f) : makerB(f);
+  // A release or withhold asked for while no deposit is in the hold is said so, not dropped.
+  const st = f.swap.state;
+  if (d.refused === undefined && st !== SWAP_STATE.HOLD && st !== SWAP_STATE.WITHHELD && (f.release || f.withhold)) return refuse(d, 'no-deposit-held');
+  return d;
 }
 
 function makerPending(f: MakerFacts, row: { open: 'approve' | 'fund'; openRow: string; rejectRow: string }): Decision {
   const { swap: s, now } = f;
   const d = deadlinesOf(s.chain, s);
   const canReject = s.direction === 0 || s.mode === 1 || CHAIN_CONSTS[s.chain].explicitApprove;
-  const reject = (reason: 0 | 1 | 2): Decision => (canReject ? call({ name: 'reject', reason }, 'operator', row.rejectRow) : wait('lapse', d.tPend));
+  const reject = (reason: 0 | 1 | 2): Decision => (canReject ? call({ name: 'reject', reason }, 'operator', row.rejectRow) : refuse(wait('lapse', d.tPend), 'reject-not-available'));
+  // An explicit rejection needs no proof check first.
+  if (f.approval && !f.approval.approve) return reject(f.approval.reason);
   if (s.chain === 'ethereum') {
     if (f.takerProofOk === undefined) return need('dleq-proof');
     // Unusable taker input is rejected at once with reason 1, which frees the pending slot.
     if (!f.takerProofOk) return reject(1);
   }
   if (f.approval === undefined) return need('approval-decision');
-  if (!f.approval.approve) return reject(f.approval.reason);
   if (now >= d.tPend!) return wait('lapse', null);
   return call({ name: row.open }, 'operator', row.openRow, d.tPend! - 1n);
 }
@@ -122,7 +127,9 @@ function makerA(f: MakerFacts): Decision {
       if (now > d.tExp - M) return wait('taker-refund', null, 'claim-window-missed');
       if (f.lock === undefined && f.withoutReady === undefined) return need('lock-report');
       const policy = f.withoutReady ?? (f.lock?.ok ? 'claim' : 'abort');
-      if (policy === 'claim' || now >= d.tFinal) return call({ name: 'claim' }, 'operator', now < d.tFinal ? 'A11b' : 'A11c', d.tExp - M);
+      if (policy === 'claim') return call({ name: 'claim' }, 'operator', now < d.tFinal ? 'A11b' : 'A11c', d.tExp - M);
+      // An abort is accepted only before T_final; after it the claim is the maker's only call.
+      if (now >= d.tFinal) return f.withoutReady === 'abort' ? refuse(call({ name: 'claim' }, 'operator', 'A11c', d.tExp - M), 'abort-window-closed') : call({ name: 'claim' }, 'operator', 'A11c', d.tExp - M);
       return call({ name: 'abort' }, 'operator', 'A7c', d.tFinal - 1n);
     }
     case S.READY:
@@ -137,10 +144,12 @@ function makerA(f: MakerFacts): Decision {
     case S.WITHHELD: {
       const dep = makerDeposit(f);
       if (dep) return dep;
+      // A withhold asked for at or after T_hold is refused by the contract: say so.
+      const late = (x: Decision): Decision => (f.withhold && s.state === S.HOLD ? refuse(x, 'hold-ended') : x);
       // The taker's refund revealed its share: the maker's XMR comes back with it.
-      if (relayed && !f.swept) return offchain('sweep');
-      if (evidenceDue(s)) return call({ name: 'publish_evidence', opens: true }, 'operator', 'publish_evidence');
-      return s.state === S.HOLD ? wait('deposit-hold', d.tHold) : wait('deposit-split', d.tSplit);
+      if (relayed && !f.swept) return late(offchain('sweep'));
+      if (evidenceDue(s)) return late(call({ name: 'publish_evidence', opens: true }, 'operator', 'publish_evidence'));
+      return late(s.state === S.HOLD ? wait('deposit-hold', d.tHold) : wait('deposit-split', d.tSplit));
     }
     default: {
       // DONE.
@@ -180,6 +189,10 @@ function makerB(f: MakerFacts): Decision {
     case S.NOTICED: {
       const tCo = d.tCo!;
       const refundable = now <= tCo - M;
+      // An explicit decision to give the escrow back wins over setting ready while the refund
+      // window is open (B9c or B9h before T_cut, B9d after it).
+      if (f.backOut && refundable) return call({ name: 'refund' }, 'operator', now < d.tCut! ? (hasFlag(s, SWAP_FLAG.LATE_NOTICE) ? 'B9h' : 'B9c') : 'B9d', tCo - M);
+      if (f.backOut) return refuse(makerB({ ...f, backOut: false }), 'refund-window-closed');
       if (now < tCo) {
         if (f.noticeOpens === undefined) return need('notice-opening');
         if (f.noticeOpens && f.lock === undefined) return need('lock-report');
@@ -198,9 +211,10 @@ function makerB(f: MakerFacts): Decision {
       return expiry();
     }
     case S.READY:
-      if (now < d.tCd!) return wait('claim', d.tCd);
+      // Ready is set: the maker has no refund before T_cd, whoever asks.
+      if (now < d.tCd!) return f.backOut ? refuse(wait('claim', d.tCd), 'ready-already-set') : wait('claim', d.tCd);
       if (now <= d.tFinal - M) return call({ name: 'refund' }, 'operator', 'B9e', d.tFinal - M);
-      return expiry();
+      return f.backOut && now < d.tExp ? refuse(expiry(), 'refund-window-closed') : expiry();
     case S.ABORTED_FREE:
     case S.ABORTED_HOLD:
       if (now <= d.tFinal - M) return call({ name: 'refund' }, 'operator', 'B9f', d.tFinal - M);
@@ -209,7 +223,8 @@ function makerB(f: MakerFacts): Decision {
     case S.WITHHELD: {
       const dep = makerDeposit(f);
       if (dep) return dep;
-      return s.state === S.HOLD ? wait('deposit-hold', d.tHold) : wait('deposit-split', d.tSplit);
+      const rest = s.state === S.HOLD ? wait('deposit-hold', d.tHold) : wait('deposit-split', d.tSplit);
+      return f.withhold && s.state === S.HOLD ? refuse(rest, 'hold-ended') : rest;
     }
     default: {
       // DONE. After the taker's claim its share is in the swap: the XMR is the maker's to sweep.

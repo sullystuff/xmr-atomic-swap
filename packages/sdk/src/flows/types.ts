@@ -64,7 +64,37 @@ export type Warning =
   /** The Monero lock is invalid (wrong amount, time-locked, duplicate output key, node disagreement). */
   | 'lock-invalid';
 
-export type Decision =
+/**
+ * Why an explicit request (the taker's "refund this swap" / cancel, the maker's reject, back
+ * out, withhold or release) cannot be carried out in the swap's present state. The decision
+ * that carries it says what happens instead; the UI shows the reason rather than continuing
+ * silently.
+ */
+export type Refusal =
+  /** Ready is set: the locker has no refund until the claim window closes (`T_cd`). */
+  | 'ready-already-set'
+  /** The requester's refund window is over; a refund sent now could land in the counterparty's window and leak the share. */
+  | 'refund-window-closed'
+  /** An abort is accepted only before `T_final`. */
+  | 'abort-window-closed'
+  /** The swap ended in a claim: there is nothing left to refund. */
+  | 'already-settled'
+  /** Direction B after funding: the taker has no call that ends the swap; it does not pay and waits for the maker's refund. */
+  | 'cannot-exit-after-funding'
+  /** Direction B outside window mode (Solana): a pending take cannot be rejected, only left to lapse. */
+  | 'reject-not-available'
+  /** A deposit can be withheld only inside the 30-minute hold. */
+  | 'hold-ended'
+  /** No deposit is in the hold or withheld: nothing to withhold or release. */
+  | 'no-deposit-held';
+
+/** What every decision may carry: an explicit request that could not be honoured. */
+interface Refusable {
+  refused?: Refusal;
+}
+
+export type Decision = Refusable & DecisionBody;
+type DecisionBody =
   | {
       do: 'call';
       call: FlowCall;
@@ -104,3 +134,5 @@ export const wait = (on: string, until: bigint | null, warning?: Warning): Decis
 export const need = (fact: Need): Decision => ({ do: 'need', fact });
 export const offchain = (action: OffchainAction, notAfter: bigint | null = null): Decision => ({ do: 'offchain', action, notAfter });
 export const done = (outcome: 'completed' | 'refunded' | 'closed', warning?: Warning): Decision => (warning ? { do: 'done', outcome, warning } : { do: 'done', outcome });
+/** The same decision, marked: the explicit request that led here could not be honoured, for this reason. */
+export const refuse = (d: Decision, reason: Refusal): Decision => ({ ...d, refused: reason });

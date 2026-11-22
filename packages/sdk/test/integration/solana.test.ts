@@ -692,3 +692,54 @@ describe('identity link history', () => {
     expect(linkIntervals(changes, await w.now())).toEqual([{ value: eth, from: t1, to: t1 + 604_800n }]);
   });
 });
+
+describe('refund requested after the lock is confirmed (BUG-1 of tests/e2e/BUGS.md)', () => {
+  it('the user\'s confirmed refund wins over setting ready; later, with ready set, it is refused with a reason', async () => {
+    const before = await w.balance(w.taker.publicKey);
+    const { plan, s: active, session, share, pricing } = await lockA(0, X);
+    const { s, txid, joint } = await makerNotices(active, share);
+    await xmr.settle(2);
+    const opened = openNotice(s, plan.keys.encSecret)!;
+    const lock = await xmr.verifyUntil(txid, jointKeys(swapJointAddress(s, opened.view, 'regtest')), s.xmr, s.depth, 'confirmed');
+    const facts = { swap: s, noticeOpens: true, lock: xmr.report(lock) };
+    const dl = deadlinesOf('solana', s);
+    // The lock is at depth on both nodes; the contract's minimum wait for ready is still running.
+    expect((await w.now()) < dl.tReadyMin!).toBe(true);
+    expect(takerStep({ ...facts, now: await w.now() })).toEqual({ do: 'wait', on: 'ready-minimum', until: dl.tReadyMin });
+    // The user clicks "Refund this swap" and confirms: the refund is sent now, not ready later.
+    const d = takerStep({ ...facts, now: await w.now(), cancel: true });
+    expect(d).toMatchObject({ do: 'call', call: { name: 'refund' }, caller: 'session', row: 'A10b', secret: true });
+    expect(d.refused).toBeUndefined();
+    await w.exec(s, d, { session }, { secret: plan.keys.spend });
+    const held = (await w.swap(plan.swapPda))!;
+    expect(held).toMatchObject({ state: SWAP_STATE.HOLD, depositState: DEPOSIT_STATE.HELD });
+    // Row 4 of the refund table: amount − D back at once, the deposit in the hold.
+    const out = before - (await w.balance(w.taker.publicKey));
+    expect(out).toBe(pricing.deposit + 10_000n + (await w.transport.getMinimumBalanceForRentExemption(736)));
+    // The maker recovers its XMR with the share the refund revealed.
+    expect(makerStep({ swap: held, now: await w.now(), lockTx: 'relayed' })).toEqual({ do: 'offchain', action: 'sweep', notAfter: null });
+    const swept = await xmr.sweep({ spendKey: jointSpendKey(held, share.spend, 'maker'), viewKey: joint.viewPriv, lock, txid });
+    expect(swept.published).toBe(true);
+    expect(await xmr.isMined(swept.txid)).toBe(true);
+    // The request stays set in the UI's notes: it is not a refusal once carried out.
+    expect(takerStep({ swap: held, now: await w.now(), cancel: true }).refused).toBeUndefined();
+
+    // A second swap where ready was set first: the same request is refused with a reason, and the program agrees.
+    const second = await lockA(0, X);
+    const n2 = await makerNotices(second.s, second.share);
+    await xmr.settle(2);
+    const o2 = openNotice(n2.s, second.plan.keys.encSecret)!;
+    const lock2 = await xmr.verifyUntil(n2.txid, jointKeys(swapJointAddress(n2.s, o2.view, 'regtest')), n2.s.xmr, n2.s.depth, 'confirmed');
+    await w.warpTo(deadlinesOf('solana', n2.s).tReadyMin!);
+    await w.exec(n2.s, takerStep({ swap: n2.s, now: await w.now(), noticeOpens: true, lock: xmr.report(lock2) }), { session: second.session });
+    const ready = (await w.swap(second.plan.swapPda))!;
+    expect(ready.state).toBe(SWAP_STATE.READY);
+    expect(takerStep({ swap: ready, now: await w.now(), cancel: true })).toEqual({ do: 'wait', on: 'claim', until: deadlinesOf('solana', ready).tCd, refused: 'ready-already-set' });
+    const forced = solanaInstruction(w.client.program, ready, await w.maker(), second.session.publicKey, { name: 'refund' }, { secret: second.plan.keys.spend });
+    await expect(w.send([forced], [second.session])).rejects.toMatchObject({ code: 'TooEarly' });
+    expect((await w.swap(second.plan.swapPda))!.flags & SWAP_FLAG.REVEALED).toBe(0);
+    // The maker completes it.
+    await w.exec(ready, makerStep({ swap: ready, now: await w.now(), lockTx: 'relayed' }), {}, { secret: second.share.spend });
+    expect((await w.swap(second.plan.swapPda))!.state).toBe(SWAP_STATE.DONE);
+  });
+});

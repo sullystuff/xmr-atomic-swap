@@ -455,7 +455,7 @@ describe('maker, direction B (the maker is the locker)', () => {
 
   it('pending: funds before T_fund; outside window mode a refusal is a lapse, not a reject', () => {
     expect(step(pending, pending.tLock + 1n, { approval: { approve: true } })).toMatchObject({ do: 'call', call: { name: 'fund' }, row: 'B5', notAfter: pending.tPendingDeadline - 1n });
-    expect(step(pending, pending.tLock + 1n, { approval: { approve: false, reason: 0 } })).toEqual({ do: 'wait', on: 'lapse', until: pending.tPendingDeadline });
+    expect(step(pending, pending.tLock + 1n, { approval: { approve: false, reason: 0 } })).toEqual({ do: 'wait', on: 'lapse', until: pending.tPendingDeadline, refused: 'reject-not-available' });
     const window = after(chain, 'happy/B/window', 1);
     expect(step(window, window.tLock + 1n, { approval: { approve: false, reason: 0 } })).toMatchObject({ do: 'call', call: { name: 'reject', reason: 0 }, row: 'B3' });
   });
@@ -500,6 +500,226 @@ describe('maker, direction B (the maker is the locker)', () => {
     const held = after(chain, 'deposit/B/no-notice-withheld-then-split', 3);
     expect(held.state).toBe(SWAP_STATE.HOLD);
     expect(step(held, held.tRefund + 1n, { withhold: true })).toMatchObject({ do: 'call', call: { name: 'withhold', evidence: 'absent' } });
-    expect(step(held, held.tRefund + 1800n, { withhold: true })).toEqual({ do: 'wait', on: 'deposit-hold', until: held.tRefund + 1800n });
+    expect(step(held, held.tRefund + 1800n, { withhold: true })).toEqual({ do: 'wait', on: 'deposit-hold', until: held.tRefund + 1800n, refused: 'hold-ended' });
+  });
+});
+
+// ------------------------------------------------------------------ explicit requests (BUG-1 of tests/e2e/BUGS.md)
+
+describe('an explicit request wins while it can be carried out, and is refused with a reason when it cannot', () => {
+  const chain = 'solana' as const;
+  const M = 300n;
+  const EXP = 2_592_000n;
+  const T = (s: ModelSwap, now: bigint, f: Partial<TakerFacts> = {}) => takerStep({ swap: view(chain, s), now, ...f });
+  const Mk = (s: ModelSwap, now: bigint, f: Partial<MakerFacts> = {}) => makerStep({ swap: view(chain, s), now, ...f });
+
+  describe('taker, direction A: "refund this swap"', () => {
+    const pending = after(chain, 'happy/A/window', 1);
+    const active = after(chain, 'happy/A/auto', 1);
+    const noticed = after(chain, 'happy/A/auto', 2);
+    const ready = after(chain, 'happy/A/auto', 3);
+    const done = after(chain, 'happy/A/auto', 4);
+    const refund = { do: 'call', call: { name: 'refund' }, caller: 'session', secret: true };
+
+    it('NOTICED, lock confirmed: the refund wins over waiting for, and over setting, ready (BUG-1)', () => {
+      const readyMin = noticed.tNotice + BigInt(noticed.depth * 60);
+      const good = { noticeOpens: true, lock: GOOD, cancel: true };
+      // Before the ready minimum (where the e2e suite found it): refund now, not "wait".
+      expect(T(noticed, readyMin - 30n, good)).toEqual({ do: 'call', call: { name: 'refund' }, caller: 'session', secret: true, notAfter: noticed.tClaimOpen - M, row: 'A10b' });
+      // After it: refund, not set_ready.
+      expect(T(noticed, readyMin + 5n, good)).toMatchObject({ ...refund, row: 'A10b' });
+      // Through the last second of the refund window, before and after T_cut.
+      for (const t of [noticed.tNotice, noticed.tCut - 1n, noticed.tCut, noticed.tClaimOpen - M]) expect(T(noticed, t, good), `${t}`).toMatchObject({ ...refund, row: 'A10b' });
+      // Without the request nothing changed: the tab still sets ready on a confirmed lock.
+      expect(T(noticed, readyMin + 5n, { noticeOpens: true, lock: GOOD })).toMatchObject({ do: 'call', call: { name: 'set_ready' } });
+    });
+
+    it('NOTICED: the refund wins whatever is known about the lock, and needs no fact first', () => {
+      const t = noticed.tNotice + 10n;
+      for (const f of [{}, { noticeOpens: true }, { noticeOpens: false }, { noticeOpens: true, lock: SHALLOW }, { noticeOpens: true, lock: BAD }, { noticeOpens: true, lock: MISSING }] as Partial<TakerFacts>[]) {
+        const d = T(noticed, t, { ...f, cancel: true });
+        expect(d, JSON.stringify(f)).toMatchObject({ ...refund, row: 'A10b' });
+        expect(d.refused).toBeUndefined();
+      }
+    });
+
+    it('NOTICED after T_co − M: refused (refund-window-closed); the automatic step is still taken', () => {
+      const t = noticed.tClaimOpen - M + 1n;
+      // A confirmed lock: ready is still worth setting; the page says the refund is no longer possible.
+      expect(T(noticed, t, { noticeOpens: true, lock: GOOD, cancel: true })).toMatchObject({ do: 'call', call: { name: 'set_ready' }, refused: 'refund-window-closed' });
+      expect(T(noticed, t, { noticeOpens: true, lock: SHALLOW, cancel: true })).toEqual({ do: 'wait', on: 'expiry', until: noticed.tFinal + EXP, warning: 'refund-window-missed', refused: 'refund-window-closed' });
+      expect(T(noticed, noticed.tClaimOpen + 5n, { cancel: true })).toMatchObject({ do: 'wait', refused: 'refund-window-closed' });
+      // At T_exp the refund is open again and the request is carried out.
+      const late = T(noticed, noticed.tFinal + EXP, { cancel: true });
+      expect(late).toMatchObject({ ...refund, row: 'A10f' });
+      expect(late.refused).toBeUndefined();
+    });
+
+    it('READY: refused (ready-already-set) until T_cd, carried out from T_cd, refused again after T_final − M', () => {
+      expect(T(ready, ready.tReady + 1n, { cancel: true })).toEqual({ do: 'wait', on: 'claim', until: ready.tClaimDeadline, refused: 'ready-already-set' });
+      expect(T(ready, ready.tClaimDeadline - 1n, { cancel: true }).refused).toBe('ready-already-set');
+      const at = T(ready, ready.tClaimDeadline, { cancel: true });
+      expect(at).toMatchObject({ ...refund, row: 'A10e' });
+      expect(at.refused).toBeUndefined();
+      expect(T(ready, ready.tFinal - M + 1n, { cancel: true })).toMatchObject({ do: 'wait', on: 'expiry', refused: 'refund-window-closed' });
+      expect(T(ready, ready.tFinal + EXP, { cancel: true })).toMatchObject({ ...refund, row: 'A10f' });
+      // Without a request there is nothing to refuse.
+      expect(T(ready, ready.tReady + 1n).refused).toBeUndefined();
+    });
+
+    it('PENDING and ACTIVE: carried out at once; after T_note by the keyless refund', () => {
+      expect(T(pending, pending.tLock + 1n, { cancel: true })).toMatchObject({ do: 'call', call: { name: 'cancel_pending' }, row: 'A4' });
+      expect(T(pending, pending.tPendingDeadline + 5n, { cancel: true })).toMatchObject({ do: 'call', call: { name: 'cancel_pending' } });
+      expect(T(active, active.tActive + 1n, { cancel: true })).toMatchObject({ ...refund, row: 'A10a' });
+      const keyless = T(active, active.tNoteDeadline, { cancel: true });
+      expect(keyless).toMatchObject({ do: 'call', call: { name: 'refund_unnoticed' }, secret: false });
+      expect(keyless.refused).toBeUndefined();
+    });
+
+    it('aborted: the refund is automatic inside its window; outside it the request is refused', () => {
+      const hold = after(chain, 'rows/A/5-abort-late-then-refund', 3);
+      expect(T(hold, hold.tFinal - M, { cancel: true })).toMatchObject({ ...refund, row: 'A10c' });
+      expect(T(hold, hold.tFinal - M + 1n, { cancel: true })).toMatchObject({ do: 'wait', refused: 'refund-window-closed' });
+      expect(T(hold, hold.tFinal - M + 1n).refused).toBeUndefined();
+    });
+
+    it('settled: after the maker\'s claim there is nothing to refund (already-settled); after a refund the request is simply done', () => {
+      expect(T(done, done.tSettled + 1n, { cancel: true })).toEqual({ do: 'offchain', action: 'sweep', notAfter: null, refused: 'already-settled' });
+      expect(T(done, done.tSettled + 1n, { cancel: true, swept: true })).toMatchObject({ refused: 'already-settled' });
+      const held = after(chain, 'deposit/A/held-then-returned', 3);
+      expect(T(held, held.tRefund + 5n, { cancel: true })).toEqual({ do: 'wait', on: 'deposit-hold', until: held.tRefund + 1800n });
+    });
+  });
+
+  describe('taker, direction B: "cancel"', () => {
+    const pending = after(chain, 'happy/B/auto', 1);
+    const active = after(chain, 'happy/B/auto', 2);
+    const noticed = after(chain, 'happy/B/auto', 3);
+    const ready = after(chain, 'happy/B/auto', 4);
+    const done = after(chain, 'happy/B/auto', 5);
+    const abort = { do: 'call', call: { name: 'abort' }, caller: 'session', row: 'B8', secret: false };
+
+    it('PENDING: cancelled at once', () => {
+      expect(T(pending, pending.tLock + 1n, { cancel: true })).toMatchObject({ do: 'call', call: { name: 'cancel_pending' }, row: 'B2' });
+    });
+
+    it('ACTIVE, nothing paid: the address is never shown; the taker has no call of its own (cannot-exit-after-funding)', () => {
+      for (let t = active.tActive; t < active.tFinal; t += 7919n) {
+        const d = T(active, t, { cancel: true, makerProofOk: true });
+        expect(d.do === 'offchain', `at ${t}`).toBe(false);
+        expect(d).toMatchObject({ do: 'wait', on: 'maker-refund', refused: 'cannot-exit-after-funding' });
+      }
+      // The same instant without the request shows the address.
+      expect(T(active, active.tActive + 1n)).toMatchObject({ do: 'offchain', action: 'show-address' });
+      // On Ethereum the request also spares the proof fetch.
+      const eth = after('ethereum', 'happy/B/auto', 2);
+      expect(takerStep({ swap: view('ethereum', eth), now: eth.tActive + 1n, cancel: true })).toMatchObject({ do: 'wait', refused: 'cannot-exit-after-funding' });
+      // Nobody acts: the deposit comes back at T_exp.
+      expect(T(active, active.tFinal + EXP, { cancel: true })).toMatchObject({ do: 'call', call: { name: 'expire_unnoticed' }, refused: 'cannot-exit-after-funding' });
+    });
+
+    it('ACTIVE, XMR already paid: the notice is posted regardless (it protects the XMR); the abort follows', () => {
+      const d = T(active, active.tActive + 60n, { cancel: true, paid: true });
+      expect(d).toMatchObject({ do: 'call', call: { name: 'post_notice' } });
+      expect(d.refused).toBeUndefined();
+    });
+
+    it('NOTICED: the abort wins over waiting for ready and over the claim, until T_final', () => {
+      expect(T(noticed, noticed.tNotice + 10n, { cancel: true })).toMatchObject(abort);
+      // From T_co the claim is open, but the user asked to back out.
+      expect(T(noticed, noticed.tClaimOpen, { cancel: true })).toMatchObject({ ...abort, notAfter: noticed.tFinal - 1n });
+      expect(T(noticed, noticed.tFinal - 1n, { cancel: true })).toMatchObject(abort);
+      // At T_final an abort is no longer accepted: refused, and the claim (the taker's only exit) proceeds.
+      expect(T(noticed, noticed.tFinal, { cancel: true })).toMatchObject({ do: 'call', call: { name: 'claim' }, row: 'B10c', refused: 'abort-window-closed' });
+      expect(T(noticed, noticed.tFinal + EXP - M + 1n, { cancel: true })).toMatchObject({ do: 'wait', refused: 'abort-window-closed' });
+      expect(T(noticed, noticed.tClaimOpen).refused).toBeUndefined();
+    });
+
+    it('READY: the abort wins over the claim until T_final; afterwards it is refused', () => {
+      expect(T(ready, ready.tReady + 1n, { cancel: true })).toMatchObject(abort);
+      expect(T(ready, ready.tClaimDeadline + 5n, { cancel: true })).toMatchObject(abort);
+      expect(T(ready, ready.tFinal, { cancel: true })).toMatchObject({ do: 'call', call: { name: 'claim' }, row: 'B10c', refused: 'abort-window-closed' });
+      expect(T(ready, ready.tReady + 1n)).toMatchObject({ do: 'call', call: { name: 'claim' }, row: 'B10a' });
+    });
+
+    it('after the abort, and after settlement', () => {
+      const aborted = after(chain, 'rows/B/taker-abort-then-refund', 4);
+      expect(aborted.state).toBe(SWAP_STATE.ABORTED_HOLD);
+      const d = T(aborted, aborted.tNotice + 500n, { cancel: true, paid: true });
+      expect(d).toEqual({ do: 'wait', on: 'maker-refund', until: aborted.tFinal });
+      expect(T(done, done.tSettled + 1n, { cancel: true, paid: true })).toEqual({ do: 'done', outcome: 'completed', refused: 'already-settled' });
+    });
+  });
+
+  describe('maker: reject, back out, withhold, release', () => {
+    it('reject: carried out before any proof check; refused where a take cannot be rejected', () => {
+      const eth = after('ethereum', 'happy/A/auto', 1);
+      // An explicit rejection does not wait for the taker's DLEQ proof.
+      expect(makerStep({ swap: view('ethereum', eth), now: eth.tLock + 1n, approval: { approve: false, reason: 0 } })).toMatchObject({ do: 'call', call: { name: 'reject', reason: 0 } });
+      // Approving still does.
+      expect(makerStep({ swap: view('ethereum', eth), now: eth.tLock + 1n, approval: { approve: true } })).toEqual({ do: 'need', fact: 'dleq-proof' });
+      const takeAuto = after(chain, 'happy/B/auto', 1);
+      expect(Mk(takeAuto, takeAuto.tLock + 1n, { approval: { approve: false, reason: 0 } })).toMatchObject({ do: 'wait', on: 'lapse', refused: 'reject-not-available' });
+      const takeWindow = after(chain, 'happy/B/window', 1);
+      expect(Mk(takeWindow, takeWindow.tLock + 1n, { approval: { approve: false, reason: 2 } })).toMatchObject({ do: 'call', call: { name: 'reject', reason: 2 } });
+    });
+
+    it('back out (direction B): wins over setting ready while the refund window is open', () => {
+      const active = after(chain, 'happy/B/auto', 2);
+      const noticed = after(chain, 'happy/B/auto', 3);
+      const ready = after(chain, 'happy/B/auto', 4);
+      const good = { noticeOpens: true, lock: GOOD, commitmentsOk: true, backOut: true };
+      expect(Mk(active, active.tActive + 5n, { backOut: true })).toMatchObject({ do: 'call', call: { name: 'refund' }, row: 'B9a' });
+      const readyMin = noticed.tNotice + BigInt(noticed.depth * 60);
+      // Lock confirmed and ready allowed: the maker asked for its escrow back, so it refunds.
+      expect(Mk(noticed, readyMin + 5n, good)).toMatchObject({ do: 'call', call: { name: 'refund' }, row: 'B9c', secret: true, notAfter: noticed.tClaimOpen - M });
+      expect(Mk(noticed, noticed.tNotice + 1n, { backOut: true })).toMatchObject({ do: 'call', call: { name: 'refund' }, row: 'B9c' });
+      expect(Mk(noticed, noticed.tCut, good)).toMatchObject({ do: 'call', call: { name: 'refund' }, row: 'B9d' });
+      expect(Mk(noticed, noticed.tClaimOpen - M, good)).toMatchObject({ do: 'call', call: { name: 'refund' } });
+      // One second later it could leak the share: refused, and ready is set on the confirmed lock instead.
+      expect(Mk(noticed, noticed.tClaimOpen - M + 1n, good)).toMatchObject({ do: 'call', call: { name: 'set_ready' }, refused: 'refund-window-closed' });
+      expect(Mk(noticed, noticed.tClaimOpen - M + 1n, { backOut: true, noticeOpens: false })).toMatchObject({ do: 'wait', refused: 'refund-window-closed' });
+      // After a late notice the same request holds the taker's deposit.
+      const late = after(chain, 'B/late-notice-then-refund', 3);
+      expect(late.flags & 16).toBeTruthy();
+      expect(Mk(late, late.tNotice + 1n, { backOut: true })).toMatchObject({ do: 'call', call: { name: 'refund' }, row: 'B9h' });
+      // READY: no refund before T_cd.
+      expect(Mk(ready, ready.tReady + 1n, { backOut: true })).toEqual({ do: 'wait', on: 'claim', until: ready.tClaimDeadline, refused: 'ready-already-set' });
+      expect(Mk(ready, ready.tClaimDeadline, { backOut: true })).toMatchObject({ do: 'call', call: { name: 'refund' }, row: 'B9e' });
+      expect(Mk(ready, ready.tFinal - M + 1n, { backOut: true })).toMatchObject({ do: 'wait', refused: 'refund-window-closed' });
+      expect(Mk(ready, ready.tReady + 1n).refused).toBeUndefined();
+    });
+
+    it('withhold: inside the hold only (hold-ended afterwards); release: wins over withhold; neither without a held deposit', () => {
+      const held = after(chain, 'deposit/A/withheld-then-released', 3);
+      const withheld = after(chain, 'deposit/A/withheld-then-split', 4);
+      expect(withheld.state).toBe(SWAP_STATE.WITHHELD);
+      const tHold = held.tRefund + 1800n;
+      expect(Mk(held, tHold - 1n, { withhold: true, lockTx: 'relayed' })).toMatchObject({ do: 'call', call: { name: 'withhold' } });
+      // At T_hold the contract refuses it, whatever else there is to do.
+      expect(Mk(held, tHold, { withhold: true, lockTx: 'relayed' })).toEqual({ do: 'offchain', action: 'sweep', notAfter: null, refused: 'hold-ended' });
+      expect(Mk(held, tHold, { withhold: true, lockTx: 'relayed', swept: true })).toMatchObject({ do: 'call', call: { name: 'publish_evidence' }, refused: 'hold-ended' });
+      // A release asked for together with a withhold: the taker gets its deposit.
+      expect(Mk(held, tHold - 1n, { withhold: true, release: true })).toMatchObject({ do: 'call', call: { name: 'release_deposit' }, caller: 'operator' });
+      expect(Mk(withheld, withheld.tRefund + 99_999n, { release: true })).toMatchObject({ do: 'call', call: { name: 'release_deposit' } });
+      // Already withheld: asking again is not a refusal.
+      expect(Mk(withheld, withheld.tRefund + 100n, { withhold: true, lockTx: 'relayed', swept: true }).refused).toBeUndefined();
+      // No deposit in the hold: before any refund, and after settlement.
+      const noticed = after(chain, 'happy/A/auto', 2);
+      const done = after(chain, 'happy/A/auto', 4);
+      expect(Mk(noticed, noticed.tNotice + 5n, { release: true, lockTx: 'relayed' })).toMatchObject({ do: 'wait', on: 'ready', refused: 'no-deposit-held' });
+      expect(Mk(noticed, noticed.tNotice + 5n, { withhold: true, lockTx: 'relayed' }).refused).toBe('no-deposit-held');
+      expect(Mk(done, done.tSettled + 5n, { release: true })).toEqual({ do: 'done', outcome: 'completed', refused: 'no-deposit-held' });
+      expect(Mk(noticed, noticed.tNotice + 5n, { lockTx: 'relayed' }).refused).toBeUndefined();
+    });
+
+    it('abort instead of a claim without ready (direction A): until T_final; refused after it', () => {
+      const noticed = after(chain, 'happy/A/auto', 2);
+      const f = { lockTx: 'relayed' as const, lock: GOOD, withoutReady: 'abort' as const };
+      expect(Mk(noticed, noticed.tClaimOpen, f)).toMatchObject({ do: 'call', call: { name: 'abort' }, row: 'A7c' });
+      expect(Mk(noticed, noticed.tFinal - 1n, f)).toMatchObject({ do: 'call', call: { name: 'abort' } });
+      expect(Mk(noticed, noticed.tFinal, f)).toMatchObject({ do: 'call', call: { name: 'claim' }, row: 'A11c', refused: 'abort-window-closed' });
+      expect(Mk(noticed, noticed.tFinal, { lockTx: 'relayed', lock: GOOD }).refused).toBeUndefined();
+    });
   });
 });

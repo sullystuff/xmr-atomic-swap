@@ -6,14 +6,19 @@
  */
 import { B_ADDRESS_MIN_LEFT_SECS, SWAP_STATE } from '@xmrswap/protocol';
 import { type SwapView, deadlinesOf, endedInClaim, endedInRefund } from '../machine/view.js';
-import { type Decision, type LockReport, call, done, need, offchain, wait } from './types.js';
+import { type Decision, type LockReport, call, done, need, offchain, refuse, wait } from './types.js';
 
 export interface TakerFacts {
   /** The swap read at `finalized`. A closed Solana account reads as state 0. */
   swap: SwapView;
   /** Chain time of that read, in seconds. */
   now: bigint;
-  /** The user asked to get out (cancel while pending, refund or abort afterwards). */
+  /**
+   * The user asked to get out and confirmed it (cancel while pending; refund in direction A;
+   * do not pay, or abort, in direction B). While the request can still be carried out it wins
+   * over every automatic step, including setting ready on a confirmed lock. When it no longer
+   * can, the decision carries `refused` with the reason and says what happens instead.
+   */
   cancel?: boolean;
   /**
    * Whether the notice decrypts and opens its commitment (direction A). `undefined` = not
@@ -82,32 +87,45 @@ function takerA(f: TakerFacts): Decision {
       return wait('notice', d.tNote);
     case S.NOTICED: {
       const tCo = d.tCo!;
+      const refundable = now <= tCo - M;
+      // An explicit refund request wins over everything automatic while the refund window is
+      // open (A10b is valid at every instant of NOTICED before T_co): the user gets amount − D
+      // back and the maker recovers its XMR with the revealed share.
+      if (f.cancel && refundable) return call({ name: 'refund' }, 'session', 'A10b', tCo - M);
+      // From here on a refund request cannot be carried out any more (unless the expiry refund is open).
+      const out = (dec: Decision): Decision => (f.cancel && !(dec.do === 'call' && dec.call.name === 'refund') ? refuse(dec, 'refund-window-closed') : dec);
       const lockGood = f.noticeOpens === true && f.lock?.ok === true && f.lock.state === 'confirmed';
       if (now < tCo) {
-        if (f.noticeOpens === undefined) return need('notice-opening');
-        if (f.noticeOpens && f.lock === undefined) return need('lock-report');
-        if (lockGood) return now >= d.tReadyMin! ? call({ name: 'set_ready' }, 'session', 'A9', tCo - 1n) : wait('ready-minimum', d.tReadyMin);
+        if (f.noticeOpens === undefined) return out(need('notice-opening'));
+        if (f.noticeOpens && f.lock === undefined) return out(need('lock-report'));
+        if (lockGood) return out(now >= d.tReadyMin! ? call({ name: 'set_ready' }, 'session', 'A9', tCo - 1n) : wait('ready-minimum', d.tReadyMin));
       }
-      const refundable = now <= tCo - M;
-      if (refundable && (f.cancel || now >= d.tCut!)) return call({ name: 'refund' }, 'session', 'A10b', tCo - M);
+      if (refundable && now >= d.tCut!) return call({ name: 'refund' }, 'session', 'A10b', tCo - M);
       if (refundable) return wait('xmr-confirmations', d.tCut, f.noticeOpens === false ? 'notice-invalid' : f.lock?.state === 'invalid' ? 'lock-invalid' : undefined);
       // Too late to refund safely: from T_co the maker may claim, which reveals its share.
-      return expiry();
+      return out(expiry());
     }
-    case S.READY:
-      if (now < d.tCd!) return wait('claim', d.tCd);
+    case S.READY: {
+      // Ready is set: the model has no refund before T_cd, whoever asks.
+      if (now < d.tCd!) return f.cancel ? refuse(wait('claim', d.tCd), 'ready-already-set') : wait('claim', d.tCd);
       if (now <= d.tFinal - M) return call({ name: 'refund' }, 'session', 'A10e', d.tFinal - M);
-      return expiry();
+      const late = expiry();
+      return f.cancel && late.do !== 'call' ? refuse(late, 'refund-window-closed') : late;
+    }
     case S.ABORTED_FREE:
-    case S.ABORTED_HOLD:
+    case S.ABORTED_HOLD: {
       if (now <= d.tFinal - M) return call({ name: 'refund' }, 'session', s.state === S.ABORTED_FREE ? 'A10d' : 'A10c', d.tFinal - M);
-      return expiry();
+      const late = expiry();
+      return f.cancel && late.do !== 'call' ? refuse(late, 'refund-window-closed') : late;
+    }
     case S.HOLD:
     case S.WITHHELD:
       return takerDeposit(f)!;
-    default:
+    default: {
       // DONE. After the maker's claim its share is in the swap: the XMR is the taker's to sweep.
-      return takerDone(f, endedInClaim(s));
+      const end = takerDone(f, endedInClaim(s));
+      return f.cancel && endedInClaim(s) ? refuse(end, 'already-settled') : end;
+    }
   }
 }
 
@@ -142,21 +160,31 @@ function takerB(f: TakerFacts): Decision {
         const last = (d.tNl < d.tFinal ? d.tNl : d.tFinal) - 1n;
         return now <= last ? call({ name: 'post_notice' }, 'session', 'B6', last) : stranded('notice-window-missed');
       }
+      // The user backed out before paying: the address is never shown. The taker has no call of
+      // its own here; the maker refunds, or the take deposit returns at T_exp.
+      if (f.cancel) return refuse(now >= d.tExp ? call({ name: 'expire_unnoticed' }, 'anyone', 'B11') : wait('maker-refund', d.tExp), 'cannot-exit-after-funding');
       if (s.chain === 'ethereum' && f.makerProofOk === undefined) return need('dleq-proof');
       if (s.chain === 'ethereum' && f.makerProofOk === false) return stranded('maker-proof-invalid');
       // The page refuses to show the address with too little time left before T_note.
       const lastShow = d.tNote! - BigInt(B_ADDRESS_MIN_LEFT_SECS[s.chain]);
       return now <= lastShow ? offchain('show-address', lastShow) : stranded('too-late-to-pay');
     }
-    case S.NOTICED:
-      if (now < d.tCo!) return f.cancel ? call({ name: 'abort' }, 'session', 'B8') : wait('ready', d.tCo);
+    case S.NOTICED: {
+      // An explicit request to back out wins while an abort is accepted (B8, before T_final):
+      // the taker waives its claim and the maker's refund reveals the share that recovers the XMR.
+      if (f.cancel && now < d.tFinal) return call({ name: 'abort' }, 'session', 'B8', d.tFinal - 1n);
+      const out = (dec: Decision): Decision => (f.cancel ? refuse(dec, 'abort-window-closed') : dec);
+      if (now < d.tCo!) return wait('ready', d.tCo);
       // [T_co, T_final) and [T_final, T_exp) are both the claimer's: one continuous window.
-      if (now <= d.tExp - M) return call({ name: 'claim' }, 'session', now < d.tFinal ? 'B10b' : 'B10c', d.tExp - M);
-      return wait('maker-refund', null, 'claim-window-missed');
-    case S.READY:
-      if (f.cancel && now < d.tFinal) return call({ name: 'abort' }, 'session', 'B8');
+      if (now <= d.tExp - M) return out(call({ name: 'claim' }, 'session', now < d.tFinal ? 'B10b' : 'B10c', d.tExp - M));
+      return out(wait('maker-refund', null, 'claim-window-missed'));
+    }
+    case S.READY: {
+      if (f.cancel && now < d.tFinal) return call({ name: 'abort' }, 'session', 'B8', d.tFinal - 1n);
       if (now <= d.tCd! - M) return call({ name: 'claim' }, 'session', 'B10a', d.tCd! - M);
-      return afterFinal();
+      const late = afterFinal();
+      return f.cancel ? refuse(late, 'abort-window-closed') : late;
+    }
     case S.ABORTED_FREE:
     case S.ABORTED_HOLD:
       if (now < d.tFinal) return wait('maker-refund', d.tFinal);
@@ -167,8 +195,10 @@ function takerB(f: TakerFacts): Decision {
       if (dep.do === 'call') return dep;
       return recover && !f.swept ? offchain('sweep') : dep;
     }
-    default:
-      return takerDone(f, recover);
+    default: {
+      const end = takerDone(f, recover);
+      return f.cancel && endedInClaim(s) ? refuse(end, 'already-settled') : end;
+    }
   }
 }
 
