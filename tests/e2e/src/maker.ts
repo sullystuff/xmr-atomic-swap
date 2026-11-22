@@ -70,7 +70,10 @@ export interface MakerOpts {
   /** Extra TOML appended verbatim (top-level tables not written by the harness). */
   extraToml?: string;
   ethereum?: boolean;
+  /** `[approvals].auto_max_xmr`: above it a pending lock waits for the maker in the console. */
   autoMaxXmr?: number;
+  /** `[approvals].advance`: takers this maker approves in advance when they ask. */
+  advance?: { taker: string; max_xmr: number; days: number }[];
 }
 
 const DEFAULT_MARKETS: NonNullable<MakerOpts['markets']> = {
@@ -187,7 +190,7 @@ max_age_seconds = 120
 
 [pricing.sources.coingecko]
 base_url = "${o.priceUrl}"
-${o.autoMaxXmr !== undefined ? `\n[approvals]\nauto_max_xmr = ${o.autoMaxXmr}\n` : ''}
+${o.autoMaxXmr !== undefined || o.advance ? `\n[approvals]\n${o.autoMaxXmr !== undefined ? `auto_max_xmr = ${o.autoMaxXmr}\n` : ''}${o.advance ? `advance = [${o.advance.map((a) => `{ taker = "${a.taker}", max_xmr = ${a.max_xmr}, days = ${a.days} }`).join(', ')}]\n` : ''}` : ''}
 ${(['sol', 'usdc_sol', 'eth', 'usdc_eth'] as const).filter((m) => eth || !m.includes('eth')).flatMap((m) => (['sell_xmr', 'buy_xmr'] as const).map((d) => offer(m, d))).join('\n')}
 ${o.extraToml ?? ''}`;
   }

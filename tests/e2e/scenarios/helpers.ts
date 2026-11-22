@@ -90,14 +90,16 @@ export async function ensureBackup(page: Page): Promise<string> {
 }
 
 /** Wait until the daemon's offer for a market and direction is on the offers page, and open its review page. */
-export async function openOffer(tab: TakerTab, w: World, market: Market, direction: 'buy' | 'sell'): Promise<void> {
+export async function openOffer(tab: TakerTab, w: World, market: Market, direction: 'buy' | 'sell', makerPda?: string): Promise<void> {
   const { page } = tab;
   await page.goto(w.ui.url);
   await page.getByRole('heading', { name: 'Buy XMR directly from makers' }).waitFor();
   await connect(page, chainOf(market));
   if (direction === 'sell') await page.getByRole('group', { name: 'Direction' }).getByRole('button', { name: 'Sell XMR' }).click();
   await page.getByRole('button', { name: MARKET_LABEL[market], exact: true }).click();
-  const link = page.getByTestId('offer').first().getByRole('link', { name: direction === 'buy' ? 'Buy XMR' : 'Sell XMR' });
+  // The offer of one maker when several are listed (the row names its maker by the start of its address).
+  const row = makerPda ? page.getByTestId('offer').filter({ hasText: `Maker ${makerPda.slice(0, 8)}` }) : page.getByTestId('offer');
+  const link = row.first().getByRole('link', { name: direction === 'buy' ? 'Buy XMR' : 'Sell XMR' });
   await waitFor(`a live ${market} ${direction} offer on the page`, async () => {
     if (await link.count()) return true;
     await page.getByRole('button', { name: /Refresh/ }).click().catch(() => undefined);
@@ -108,9 +110,9 @@ export async function openOffer(tab: TakerTab, w: World, market: Market, directi
 }
 
 /** From the offers page to a locked buy-XMR swap: every gate on the way. */
-export async function uiLockBuy(tab: TakerTab, w: World, o: { market: Market; xmr: string; destination?: string; beforeConfirm?: (page: Page) => Promise<void> }): Promise<{ ref: string; recoveryFile: string }> {
+export async function uiLockBuy(tab: TakerTab, w: World, o: { market: Market; xmr: string; destination?: string; makerPda?: string; beforeConfirm?: (page: Page) => Promise<void> }): Promise<{ ref: string; recoveryFile: string }> {
   const { page } = tab;
-  await openOffer(tab, w, o.market, 'buy');
+  await openOffer(tab, w, o.market, 'buy', o.makerPda);
   await page.getByLabel('XMR to buy').fill(o.xmr);
   await page.getByLabel('Your XMR address').fill(o.destination ?? w.takerXmr);
   const lock = page.getByTestId('lock-button');
