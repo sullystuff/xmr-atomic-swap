@@ -695,6 +695,8 @@ describe('identity link history', () => {
 
 describe('refund requested after the lock is confirmed (BUG-1 of tests/e2e/BUGS.md)', () => {
   it('the user\'s confirmed refund wins over setting ready; later, with ready set, it is refused with a reason', async () => {
+    // An earlier scenario left the SOL offer in advance-approval mode: publish it as auto-accept again.
+    await w.publishOffer({ asset: 0, direction: 0, mode: 0, price: 150_000_000n });
     const before = await w.balance(w.taker.publicKey);
     const { plan, s: active, session, share, pricing } = await lockA(0, X);
     const { s, txid, joint } = await makerNotices(active, share);
