@@ -3,9 +3,23 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "description": "Test-only loopback Solana JSON-RPC facade over an in-memory LiteSVM (docs/SPEC.md 9.2): the Rust binary and a helper that starts it",
+  "main": "./src-ts/index.mjs",
+  "types": "./src-ts/index.d.mts",
+  "exports": {
+    ".": {
+      "types": "./src-ts/index.d.mts",
+      "default": "./src-ts/index.mjs"
+    },
+    "./client": {
+      "types": "./src-ts/client.d.mts",
+      "default": "./src-ts/client.mjs"
+    },
+    "./package.json": "./package.json"
+  },
   "scripts": {
-    "build": "echo '@xmrswap/svm-rpc: not implemented yet (owned by WP4)' && exit 1",
-    "test": "echo '@xmrswap/svm-rpc: not implemented yet (owned by WP4)' && exit 1"
+    "build": "cargo build --locked",
+    "test": "cargo build --locked && tsc -p tsconfig.json && vitest run"
   },
   "dependencies": {},
   "devDependencies": {

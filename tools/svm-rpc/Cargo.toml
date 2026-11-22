@@ -1,0 +1,50 @@
+# Test-only JSON-RPC facade over one in-memory LiteSVM (docs/SPEC.md section 9.2).
+# A separate Cargo workspace with its own lockfile (SPEC 1.1): LiteSVM 0.16.0 sits on Agave 4.2.2.
+[package]
+name = "svm-rpc"
+version = "0.0.0"
+edition = "2021"
+publish = false
+rust-version = "1.94"
+description = "Loopback-only Solana JSON-RPC subset over an in-memory LiteSVM. A test fixture, not a validator."
+
+[workspace]
+
+[lib]
+name = "svm_rpc"
+path = "src/lib.rs"
+
+[[bin]]
+name = "svm-rpc"
+path = "src/main.rs"
+
+[dependencies]
+litesvm = { version = "=0.16.0", features = ["precompiles", "serde"] }
+solana-account = "4"
+solana-clock = "3"
+solana-hash = "4"
+solana-message = { version = "4", features = ["serde"] }
+solana-pubkey = { version = "4", features = ["curve25519"] }
+solana-rent = "4"
+solana-signature = "3"
+solana-transaction = { version = "4", features = ["serde"] }
+solana-transaction-error = { version = "3", features = ["serde"] }
+bincode = "1"
+bs58 = "0.5"
+base64 = "0.22"
+serde_json = "1"
+sha2 = "0.10"
+tiny_http = "0.12"
+
+[dev-dependencies]
+solana-keypair = "3"
+solana-signer = "3"
+solana-instruction = "3"
+solana-system-interface = { version = "3", features = ["bincode"] }
+
+# One profile for everything (disk is tight): dependencies optimised, no debug info.
+[profile.dev]
+debug = false
+
+[profile.dev.package."*"]
+opt-level = 3
