@@ -2,7 +2,9 @@
 import { describe, expect, it } from 'vitest';
 import * as p from '../src/index.js';
 import * as api from '../src/daemon-api.js';
-import { frozenIdl } from './helpers.js';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { frozenIdl, repoRoot } from './helpers.js';
 
 describe('constants', () => {
   it('counter ids of SPEC 3.7', () => {
@@ -172,5 +174,45 @@ describe('daemon API (SPEC 7.8)', () => {
 
   it('is also exported as a namespace from the package root', () => {
     expect(p.daemonApi.ROUTES).toBe(api.ROUTES);
+  });
+});
+
+describe('relay errors and the pinned deployment (M1 follow-up 10)', () => {
+  it('RelayError codes and statuses are the ones packages/relay sends', () => {
+    expect(p.RELAY_ERROR_STATUS).toEqual({
+      bad_request: 400, bad_onion: 400, bad_path: 400,
+      onion_not_listed: 403, monero_path_not_allowed: 403, monero_method_not_allowed: 403,
+      not_found: 404, no_such_node: 404, bad_method: 405, too_large: 413, rate_limited: 429, internal: 500,
+      upstream_unreachable: 502, upstream_too_large: 502, upstream_redirect: 502, upstream_timeout: 504,
+    });
+    expect(p.RELAY_ERROR_CODES.length).toBe(16);
+    // Held against the relay's source, so the two cannot drift apart unnoticed.
+    const src = ['app.ts', 'upstream.ts'].map((f) => readFileSync(path.join(repoRoot, 'packages/relay/src', f), 'utf8')).join('\n');
+    const sent = new Map<string, number>();
+    for (const m of src.matchAll(/fail\(res, (\d{3}), '([a-z_]+)'\)/g)) sent.set(m[2]!, Number(m[1]));
+    for (const m of src.matchAll(/^\s*(upstream_[a-z_]+): (\d{3}),/gm)) sent.set(m[1]!, Number(m[2]));
+    expect(Object.fromEntries([...sent].sort())).toEqual(Object.fromEntries(Object.entries(p.RELAY_ERROR_STATUS).sort()));
+    for (const m of src.matchAll(/new UpstreamError\('([a-z_]+)'\)/g)) expect(p.RELAY_ERROR_CODES).toContain(m[1]);
+  });
+
+  it('isRelayError tells a relay refusal from a maker reply', () => {
+    expect(p.isRelayError({ error: 'onion_not_listed' })).toBe(true);
+    expect(p.isRelayError({ error: 'rate_limited' })).toBe(true);
+    expect(p.isRelayError({ status: 400, body_b64: 'e30=' })).toBe(false); // a forwarded maker reply
+    expect(p.isRelayError({ code: 'stale_key' })).toBe(false); // a maker endpoint error
+    expect(p.isRelayError({ error: 'something_else' })).toBe(false);
+    expect(p.isRelayError(null)).toBe(false);
+    expect(p.isRelayError('rate_limited')).toBe(false);
+  });
+
+  it('the pinned program id is interfaces/solana/program-id.txt; the contract slot is empty', () => {
+    const pinned = readFileSync(path.join(repoRoot, 'interfaces/solana/program-id.txt'), 'utf8').trim();
+    expect(p.PROGRAM_ID).toBe(pinned);
+    expect(p.DEV_PROGRAM_ID).toBe(pinned);
+    expect(p.base58Decode(p.PROGRAM_ID).length).toBe(32);
+    // Nothing is deployed: the per-release slot is null until the owner fills it.
+    expect(p.CONTRACT_ADDRESS).toBeNull();
+    expect(p.CONTRACT_CHAIN_ID).toBeNull();
+    expect(p.DEPLOYMENT).toEqual({ programId: pinned, contract: null, chainId: null });
   });
 });

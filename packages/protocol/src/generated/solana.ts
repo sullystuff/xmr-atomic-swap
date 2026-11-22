@@ -2282,5 +2282,5 @@ export const ERROR_NAMES = [
 export type ProgramErrorName = (typeof ERROR_NAMES)[number];
 export const ERROR_CODE_BASE = 6000;
 
-/** The development program id frozen in interfaces/solana/program-id.txt. */
+/** The pinned development program id, from interfaces/solana/program-id.txt (no private key exists for it). */
 export const DEV_PROGRAM_ID = '5SDDBJfrRbEehBjzKwZKRLdRNyqHi6sNynGwmmUW947u';

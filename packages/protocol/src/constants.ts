@@ -3,6 +3,7 @@
  * contracts; `interfaces/vectors/deadlines.json` carries the same values and the tests compare
  * them. Changing one is a code change in every implementation plus regenerated vectors.
  */
+import { DEV_PROGRAM_ID } from './generated/solana.js';
 
 export type ChainName = 'solana' | 'ethereum';
 export type Market = 'sol' | 'usdc_sol' | 'eth' | 'usdc_eth';
@@ -198,6 +199,39 @@ export const OWED = { TAKER: 0, MAKER: 1, TREASURY: 2 } as const;
 
 /** Maker contact kinds (SPEC 4.2). */
 export const CONTACT_KIND = { WEBSITE: 0, EMAIL: 1, MATRIX: 2, DISCORD: 3, TELEGRAM: 4, BLOB_ENDPOINT: 5, OTHER: 255 } as const;
+
+// ------------------------------------------------------------------ deployment (SPEC 4.9, 5.1, 8.8)
+
+/**
+ * Where a release of the protocol lives. One source for the relay, the daemon, both UIs and the
+ * self-hosting bundle; the UIs show both values so users can check them against the published ones.
+ */
+export interface Deployment {
+  /** Solana program id, base58. */
+  readonly programId: string;
+  /** Ethereum contract (the proxy) address, `0x`-prefixed, or `null` while none is deployed. */
+  readonly contract: `0x${string}` | null;
+  /** EVM chain id the contract lives on, or `null`. */
+  readonly chainId: number | null;
+}
+
+/**
+ * The Solana program id this release is pinned to. Until the project owner deploys, it is the
+ * development id of `interfaces/solana/program-id.txt`; a release replaces it.
+ */
+export const PROGRAM_ID: string = DEV_PROGRAM_ID;
+
+/**
+ * The Ethereum contract address of this release: the per-release slot. `null` until the project
+ * owner deploys (nothing in this repository deploys to a live network); tests pass the address
+ * of their own anvil deployment explicitly.
+ */
+export const CONTRACT_ADDRESS: `0x${string}` | null = null;
+/** Chain id of `CONTRACT_ADDRESS`, or `null`. */
+export const CONTRACT_CHAIN_ID: number | null = null;
+
+/** The pinned deployment of this release. */
+export const DEPLOYMENT: Deployment = { programId: PROGRAM_ID, contract: CONTRACT_ADDRESS, chainId: CONTRACT_CHAIN_ID };
 
 // ------------------------------------------------------------------ Solana layout (SPEC 4.1, 4.2)
 

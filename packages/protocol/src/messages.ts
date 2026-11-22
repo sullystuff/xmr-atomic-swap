@@ -366,6 +366,48 @@ export interface RelayForwardResponse {
   status: number;
   body_b64: string;
 }
+/**
+ * Error codes of the relay itself, with the HTTP status each is sent with. A relay error means
+ * the relay refused or could not reach the maker; a maker's own refusal arrives inside a
+ * successful forward (`RelayForwardResponse.status` 4xx with a `MakerEndpointError` body).
+ */
+export const RELAY_ERROR_STATUS = {
+  /** Malformed request body or parameters. */
+  bad_request: 400,
+  /** `onion` is not 56 base32 characters + `.onion`. */
+  bad_onion: 400,
+  /** `path` does not match `MAKER_PATH_PATTERN`. */
+  bad_path: 400,
+  /** `onion` is not the address of a maker currently in the registry. */
+  onion_not_listed: 403,
+  monero_path_not_allowed: 403,
+  monero_method_not_allowed: 403,
+  not_found: 404,
+  /** No Monero node is configured at that index. */
+  no_such_node: 404,
+  /** `method` is not one the route defines. */
+  bad_method: 405,
+  too_large: 413,
+  /** Per-IP limit reached; the response carries `Retry-After` (seconds). */
+  rate_limited: 429,
+  internal: 500,
+  upstream_unreachable: 502,
+  upstream_too_large: 502,
+  /** The upstream answered with a redirect; the relay never follows or relays one. */
+  upstream_redirect: 502,
+  upstream_timeout: 504,
+} as const;
+export type RelayErrorCode = keyof typeof RELAY_ERROR_STATUS;
+export const RELAY_ERROR_CODES = Object.keys(RELAY_ERROR_STATUS) as RelayErrorCode[];
+/** Body of every non-2xx response of the relay. */
+export interface RelayError {
+  error: RelayErrorCode;
+}
+/** True for a parsed relay error body (use it to tell "the relay refused" from a maker's reply). */
+export function isRelayError(body: unknown): body is RelayError {
+  return typeof body === 'object' && body !== null && typeof (body as { error?: unknown }).error === 'string' && (body as { error: string }).error in RELAY_ERROR_STATUS;
+}
+
 /** Caps the relay enforces on decoded bodies. */
 export const RELAY_LIMITS = {
   msgBody: 16_384,
