@@ -20,8 +20,9 @@ export default async function setup(): Promise<() => Promise<void>> {
   if (!existsSync(process.env['SVM_RPC_BIN'] ?? path.join(repoRoot, 'tools/svm-rpc/target/debug/svm-rpc'))) run('cargo', ['build', '--locked'], path.join(repoRoot, 'tools/svm-rpc'));
   if (!existsSync(path.join(repoRoot, 'solana/program/target/deploy/xmr_swap.so'))) run('cargo', ['build-sbf'], path.join(repoRoot, 'solana/program'));
   if (!existsSync(path.join(repoRoot, 'ethereum/out/XmrSwap.sol/XmrSwap.json'))) run('forge', ['build'], path.join(repoRoot, 'ethereum'));
-  for (const p of ['protocol', 'sdk', 'rebalancer', 'relay', 'daemon']) if (!existsSync(path.join(repoRoot, 'packages', p, 'dist/index.js'))) run('pnpm', ['--filter', `@xmrswap/${p}`, 'build'], repoRoot);
   if (!process.env['E2E_SKIP_BUILD']) {
+    // The packages are consumed through their `dist`: compile them in dependency order so the run uses the current sources.
+    for (const p of ['protocol', 'sdk', 'rebalancer', 'relay', 'daemon']) run('pnpm', ['--filter', `@xmrswap/${p}`, 'build'], repoRoot);
     // (vitest sets NODE_ENV=test; the builds must not inherit it, or React's development build is bundled.)
     const env = { ...process.env, NODE_ENV: 'production' };
     run('pnpm', ['--filter', '@xmrswap/web', 'exec', 'vite', 'build'], repoRoot, env);

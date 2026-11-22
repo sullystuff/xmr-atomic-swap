@@ -2,9 +2,21 @@
 
 Each confirmed bug has: the package, the symptom, the reproduction command, a diagnosis, and a test in `scenarios/99-known-failures.test.ts` that states the correct behaviour at full strength and is reported separately as an expected failure until the owner fixes it (`scenarios/known.ts`). Nothing in another package was patched and no assertion was weakened to get the suite green.
 
-## Confirmed
+## Confirmed, open
 
-### BUG-1 · `packages/sdk` (`src/flows/taker.ts`, `takerA`, state NOTICED) · the taker's confirmed refund request is ignored once the XMR lock is confirmed
+### BUG-2 · `apps/console` (`src/lib/config/schema.ts`, `validate.ts`) · "Validate and save" refuses a configuration the daemon accepts
+
+**Symptom.** With `[pricing.sources.coingecko] base_url = "…"` in the maker's file (a key the daemon's schema defines, daemon DEVIATIONS C1; this harness needs it to point the price source at loopback), every save from the console's Configuration page stops with "Not saved: 1 error has to be fixed first" and, under Review, `pricing.sources.coingecko.base_url: Unknown key "base_url" in [pricing.sources.coingecko]. The daemon refuses keys it does not know.` The daemon does know it: it started on that file and `GET /api/config` reports `validation.ok = true`. The edit never reaches the daemon, so a maker with such a file cannot change any setting from the console. Before commit `a5dab22` the same scenario saved (three green runs of `03-modes-console`).
+
+**Reproduce.** `pnpm --filter @xmrswap/e2e test -- scenarios/99-known-failures.test.ts` (test "BUG-2", about one minute): opens the console in Chromium against the live daemon, changes SOL buy-XMR "Deviation from reference" to 5, clicks Validate and save, and expects the new price on-chain and the edit in the file.
+
+**Diagnosis.** The console's own schema for the keyed price sources lists `api_key_env` and `min_interval_seconds` only; `base_url` is missing, and since `a5dab22` a key missing from the console's schema is an error rather than a warning. The daemon's schema (`packages/daemon/src/config/schema.ts`, `keyedSource`) has `base_url`. The wXMR pool keys of daemon C1 (`base_vault`, `quote_vault`, `quote`) are worth checking against the console's schema in the same pass. The console should either carry every daemon key or let the daemon's validation (which it already asks for: "checking with the daemon…") be the judge of unknown keys.
+
+**Test.** `scenarios/99-known-failures.test.ts`, reported under "known failures" by `scripts/run.mjs`; it fails the run when the bug stops reproducing. Meanwhile `03-modes-console` proves hot-apply through the daemon's configuration API (the request the console's save would send) and still opens the console's form.
+
+## Fixed
+
+### BUG-1 (FIXED) · `packages/sdk` (`src/flows/taker.ts`, `takerA`, state NOTICED) · the taker's confirmed refund request is ignored once the XMR lock is confirmed
 
 **Symptom.** In the web UI, on a buy-XMR swap whose lock has reached its confirmation depth but for which `set_ready` is not yet allowed (the contract's minimum wait, `t_N + depth × 60 s`), the user clicks **Refund this swap**, reads "You get … back now. The deposit of … is held for 30 minutes…" and clicks **Yes, refund**. Nothing is sent. When the minimum wait ends the tab sets ready instead, and the maker claims: the swap completes although the user explicitly asked to back out (DESIGN refund table row 4, SPEC A10b, is allowed at every instant of NOTICED before `T_co`). No funds are lost (the user receives the XMR), but the page does the opposite of what it just confirmed, and the user cannot back out during that window at all. First seen on Ethereum in `01-happy` (there the minimum wait elapses in real time, so the swap ran to completion); the minimal reproduction is on Solana, where the clock stands still.
 
@@ -20,7 +32,7 @@ if (refundable && (f.cancel || now >= d.tCut!)) return call({ name: 'refund' }, 
 
 The engine (`apps/web/src/lib/engine.ts`) passes `cancel: true` correctly; the flow drops it. A refund asked for while the lock is still unconfirmed works (that path is covered in `01-happy` on Ethereum and `03-modes-console` on Solana). Suggested fix for the owner: test `f.cancel && refundable` before the `lockGood` branch (and decide whether the same applies to a confirmed lock in READY, where the model has no refund before `T_cd`: there the page should say so instead of offering the button).
 
-**Test.** `scenarios/99-known-failures.test.ts`, reported under "known failures" by `scripts/run.mjs`. It fails the run when the bug stops reproducing.
+**Fixed** by `0ecae9d` (SDK: an explicit request wins while the contract still accepts it, and is refused with a reason otherwise), with `d10d82b` (web: a visible outcome for every request) and `e15686d` (daemon: operator instructions journaled and always answered). The known-failure test reported "NOW PASSES" on the first run against those commits and is now two ordinary scenarios in `04-faults-taker` ("the taker asks to get out"): a refund asked after the lock is confirmed is carried out, the tab never sets ready, the daemon recovers its XMR and the deposit is held then collected; a refund asked after ready shows the refusal and the swap completes. The reproduction command above no longer applies.
 
 ## Observations (not bugs, or not reproduced; no test attached)
 

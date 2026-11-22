@@ -3,7 +3,7 @@
 // misbehaves). It does what the page does: derive keys from a seed and a fresh nonce, check the
 // maker's proofs, open the swap, and act with the session key. Messages to the maker go
 // browser-style: relay -> (fake Tor) -> the daemon's endpoint.
-import { type DerivedKeys, sweepJoint } from '@xmrswap/core-wasm';
+import { type DerivedKeys, type EthApproval, sweepJoint } from '@xmrswap/core-wasm';
 import type { Address, Market } from '@xmrswap/protocol';
 import {
   type CallMaterial, type FlowCall, MakerHttp, type SignedSolApproval, type SolanaSigner, type SwapView, buildNotice, decodeSignedQuote, ethSessionBudget, ethereumCall, fetchPool, fetchProof, hex, hex0x, jointSpendKey, leafArgument, newSwapNonce, openNotice,
@@ -70,13 +70,14 @@ export class SdkTaker {
     }, { timeoutMs: 60_000 });
   }
 
-  async open(market: Market, direction: 0 | 1, xmr: bigint, o: { maker?: Maker; approval?: SignedSolApproval; slippageBps?: number; /** Ethereum: do not upload the taker's DLEQ proof (unusable input). */ withoutProof?: boolean; /** Ethereum direction A: which free pool leaf to name (0 = the first). */ leafRandom?: () => number } = {}): Promise<Opened> {
+  async open(market: Market, direction: 0 | 1, xmr: bigint, o: { maker?: Maker; approval?: SignedSolApproval; slippageBps?: number; /** Ethereum: do not upload the taker's DLEQ proof (unusable input). */ withoutProof?: boolean; /** Ethereum direction A: which free pool leaf to name (0 = the first). */ leafRandom?: () => number; /** Ethereum: an advance approval to present. */ ethApproval?: { approval: EthApproval; sig: Uint8Array }; /** Runs after the open is planned (offer or quote read, proofs exchanged) and before it is sent. */ beforeSend?: () => Promise<void> } = {}): Promise<Opened> {
     const w = this.w;
     const m = o.maker ?? w.maker;
     if (market === 'sol' || market === 'usdc_sol') {
       const offer = await this.offer(m, market, direction);
       const maker = (await w.sol.client.getMaker(m.makerPda))!;
       const plan = planSolanaOpen({ program: w.sol.client.program, taker: this.solKey.publicKey, makerPda: m.makerPda, maker, seed: this.seed, xmr, source: { offer }, rentExemptMinimum: w.sol.rent0, slippageBps: o.slippageBps ?? 10, ...(o.approval ? { approval: o.approval } : {}) });
+      if (o.beforeSend) await o.beforeSend();
       await w.sol.send(plan.instructions, [this.solKey]);
       this.solSession.set(plan.swapPda, seedSigner(plan.keys.sessionSecret));
       this.register(plan.swapPda, plan.keys);
@@ -98,8 +99,9 @@ export class SdkTaker {
       leaf = leafArgument(pool, picked);
     }
     if (!o.withoutProof) await uploadOwnProof(http, keys.spend);
-    const plan = planEthereumOpen({ contract: eth.client.contract, taker: key.address.toLowerCase() as Address, quote, sig, maker: { encKeyVersion: solMaker.encKeyVersion, encKey: solMaker.encKey }, seed: this.seed, swapNonce, xmr, sessionBudget: ethSessionBudget(5_000_000_000n), slippageBps: o.slippageBps ?? 10, ...(leaf ? { leaf } : {}) });
+    const plan = planEthereumOpen({ contract: eth.client.contract, taker: key.address.toLowerCase() as Address, quote, sig, maker: { encKeyVersion: solMaker.encKeyVersion, encKey: solMaker.encKey }, seed: this.seed, swapNonce, xmr, sessionBudget: ethSessionBudget(5_000_000_000n), slippageBps: o.slippageBps ?? 10, ...(leaf ? { leaf } : {}), ...(o.ethApproval ? { approval: o.ethApproval } : {}) });
     if (market === 'usdc_eth') await eth.usdcApprove(key, direction === 0 ? plan.amount : plan.deposit);
+    if (o.beforeSend) await o.beforeSend();
     await eth.send(plan.call, key);
     const ref = hex0x(plan.swapId);
     this.ethSession.set(ref, privateKeyToAccount(hex0x(plan.keys.sessionSecret)));

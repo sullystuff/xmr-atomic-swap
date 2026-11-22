@@ -247,6 +247,90 @@ describe('V-1 on Ethereum: a lost tab, restored from the recovery file in a new 
   }));
 });
 
+describe('the tab\'s automatic refund at the cutoff, on Ethereum', () => {
+  it('eth: one of the page\'s Monero nodes never shows the lock; the tab does not set ready, and at T_cut its session key refunds on Ethereum without the wallet', scenario(() => w, async () => {
+    const { page } = tab;
+    const before = await balances(w, 'eth');
+    const c0 = await counters(w.maker, 'ethereum');
+    const inv0 = await holdings(w.maker.wallet);
+    const { ref } = await uiLockBuy(tab, w, { market: 'eth', xmr: '0.5' });
+    const prompts = tab.eth!.signed;
+    w.uiNodeB.mode = 'hide-tx';
+    try {
+      await untilState(w, ref, 'NOTICED');
+      await untilPhase(w, ref, 'xmr_relayed');
+      await w.mine(3);
+      const s0 = (await readSwap(w, ref))!;
+      const d = deadlines(s0);
+      // Long past the minimum wait for ready, with the real lock three blocks deep on the honest node: still no ready.
+      await advanceTo(w, s0, d.tReadyMin! + 300n);
+      await text(page, /Not counted as confirmed|have not seen the lock/).waitFor({ timeout: 60_000 });
+      await page.waitForTimeout(4000);
+      expect(await untilState(w, ref, 'NOTICED')).toBe('NOTICED');
+      await advanceTo(w, s0, d.tCut!);
+      await untilState(w, ref, 'HOLD');
+      await text(page, 'This tab refunded by itself').waitFor({ timeout: 60_000 });
+      expect(tab.eth!.signed).toBe(prompts);
+      const mid = await balances(w, 'eth');
+      expect(before.taker - mid.taker >= s0.deposit && before.taker - mid.taker < s0.deposit + NATIVE_SLACK['eth']!).toBe(true);
+    } finally {
+      w.uiNodeB.mode = 'honest';
+    }
+    await w.mine(10);
+    await waitFor('the daemon to sweep its XMR back', async () => (await w.maker.swapDetail(ref)).sweep_txid, { timeoutMs: 180_000, context: () => w.maker.swapDetail(ref) });
+    await w.mine(1);
+    expect(inv0 - (await holdings(w.maker.wallet)) < 2n * REGTEST_MAX_FEE).toBe(true);
+    await advanceTo(w, (await readSwap(w, ref))!, deadlines((await readSwap(w, ref))!).tHold!);
+    await waitFor('deposits_returned', async () => counterDelta(c0, await counters(w.maker, 'ethereum'))['deposits_returned'] === 1, { timeoutMs: 90_000 });
+    expect(counterDelta(c0, await counters(w.maker, 'ethereum'))).toEqual({ locks: 1, approvals: 1, notices: 1, taker_refunds_noticed: 1, deposits_returned: 1 });
+    expect(tab.eth!.signed).toBe(prompts);
+    await page.goto(w.ui.url);
+    expectClean(w, [tab]);
+  }));
+});
+
+describe('V-1 on Ethereum, direction B: a lost tab while selling XMR', () => {
+  it('eth: the first profile posts the deposit, pays the XMR and announces it, then is thrown away; a new profile restores from the recovery file and claims after the daemon\'s ready', scenario(() => w, async () => {
+    const eth = w.eth!;
+    const first = track(await openTab({ solKey: w.sol.taker2, ethKey: eth.taker2, eth }));
+    const before = await eth.balance(eth.taker2.address);
+    const c0 = await counters(w.maker, 'ethereum');
+    const { ref, recoveryFile } = await uiTakeSell(first, w, { market: 'eth', xmr: '0.25' });
+    registerRecoverySecrets(w, recoveryFile, 'V-1.eth.B');
+    await untilState(w, ref, 'ACTIVE');
+    const pay = first.page.getByTestId('pay-xmr');
+    await pay.waitFor({ timeout: 240_000 });
+    const address = (await pay.locator('code').first().getAttribute('title'))!;
+    const funded = (await readSwap(w, ref))!;
+    await w.takerWallet.pay(address, funded.xmr);
+    await untilState(w, ref, 'NOTICED');
+    await first.close();
+    await w.mine(2);
+    const noticed = (await readSwap(w, ref))!;
+    await advanceTo(w, noticed, deadlines(noticed).tReadyMin!);
+    await untilState(w, ref, 'READY');
+
+    const second = track(await openTab({ solKey: w.sol.taker2, ethKey: eth.taker2, eth }));
+    const p2 = second.page;
+    await p2.goto(`${w.ui.url}/#/activity`);
+    await p2.getByRole('heading', { name: 'Load your recovery file to resume' }).waitFor();
+    await p2.getByRole('button', { name: 'I already have one' }).click();
+    await p2.locator('input[type=file]').setInputFiles({ name: 'xmrswap-recovery.json', mimeType: 'application/json', buffer: Buffer.from(recoveryFile) });
+    await p2.getByTestId('activity-swap').first().waitFor({ timeout: 90_000 });
+    // The claim is sent by the session key re-derived from the seed and the on-chain nonce.
+    await untilState(w, ref, 'DONE');
+    expect(second.eth!.signed).toBe(0);
+    const fee = funded.amount / 2000n;
+    const gained = (await eth.balance(eth.taker2.address)) - before;
+    expect(gained <= funded.amount - fee && gained > funded.amount - fee - NATIVE_SLACK['eth']!).toBe(true);
+    expect(counterDelta(c0, await counters(w.maker, 'ethereum'))).toEqual({ takes: 1, approvals: 1, notices: 1, readies: 1, completed: 1 });
+    await w.mine(10);
+    await waitFor('the daemon to sweep the XMR', async () => (await w.maker.swapDetail(ref)).sweep_txid, { timeoutMs: 180_000, context: () => w.maker.swapDetail(ref) });
+    await w.mine(1);
+    expectClean(w, [second]);
+  }));
+});
+
 describe('the system as a whole after every swap of this file', () => {
   it('the daemon raised no critical alert, nothing needs review, and the relay carried the Ethereum messages', async () => {
     const status = await w.maker.status();

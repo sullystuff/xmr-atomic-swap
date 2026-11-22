@@ -206,6 +206,91 @@ describe('U-1, V-1: the tab is reloaded, then lost', () => {
   }));
 });
 
+describe('the taker asks to get out (formerly BUG-1): an explicit request wins while the contract still accepts it, and is refused with a reason when it does not', () => {
+  it('refund asked AFTER the XMR lock is confirmed: carried out at once (A10b); the tab never sets ready; the daemon recovers its XMR; the deposit is held, then collected', scenario(() => w, async () => {
+    const { page } = tab;
+    const c0 = await counters(w.maker, 'solana');
+    const before = (await balances(w, 'sol')).taker;
+    const inv0 = await holdings(w.maker.wallet);
+    const prompts = tab.sol.signed;
+    const { ref } = await uiLockBuy(tab, w, { market: 'sol', xmr: '0.4', makerPda: w.maker.makerPda });
+    await untilPhase(w, ref, 'xmr_relayed');
+    await w.mine(2);
+    // The lock is at depth on both nodes; the contract's minimum wait for ready is still running.
+    await text(page, /2 of 2 confirmations on every node/).waitFor({ timeout: 90_000 });
+    expect(await swapState(w, ref)).toBe('NOTICED');
+    const s0 = (await readSwap(w, ref))!;
+    await page.getByRole('button', { name: 'Refund this swap' }).click();
+    await text(page, /You get .+ SOL back now\. The deposit of .+ SOL is held for 30 minutes/).waitFor();
+    await page.getByRole('button', { name: 'Yes, refund' }).click();
+    await untilState(w, ref, 'HOLD', 30_000);
+    // The request has a visible outcome, and it is not a refusal.
+    const outcome = page.getByTestId('request-outcome');
+    await outcome.waitFor({ timeout: 30_000 });
+    expect(await outcome.getAttribute('data-refused')).toBe('');
+    expect(tab.sol.signed).toBe(prompts + 1);
+    const out = before - (await balances(w, 'sol')).taker;
+    expect(out >= s0.deposit && out < s0.deposit + 10_000_000n).toBe(true);
+    // Well past the minimum wait for ready: the tab did not set ready behind the user's back.
+    await w.sol.warpTo(deadlines(s0).tReadyMin! + 120n);
+    await page.waitForTimeout(3000);
+    expect(await swapState(w, ref)).toBe('HOLD');
+    await w.mine(10);
+    await waitFor('the daemon to sweep its XMR back', async () => (await w.maker.swapDetail(ref)).sweep_txid, { timeoutMs: 180_000, context: () => w.maker.swapDetail(ref) });
+    await w.mine(1);
+    expect(inv0 - (await holdings(w.maker.wallet)) < 200_000_000_000n).toBe(true);
+    await w.sol.warpTo(deadlines((await readSwap(w, ref))!).tHold!);
+    await text(page, 'Your deposit can be collected now').waitFor({ timeout: 60_000 });
+    await page.getByRole('button', { name: 'Sign with my wallet' }).click();
+    await waitFor('the deposit back', async () => ((await readSwap(w, ref))?.depositState ?? DEPOSIT_STATE.RETURNED) === DEPOSIT_STATE.RETURNED);
+    expect(counterDelta(c0, await counters(w.maker, 'solana'))).toEqual({ locks: 1, notices: 1, taker_refunds_noticed: 1, deposits_returned: 1 });
+    const end = before - (await balances(w, 'sol')).taker;
+    expect(end >= 0n && end < 10_000_000n).toBe(true);
+    await page.goto(w.ui.url);
+    expectClean(w, [tab]);
+  }));
+
+  it('refund asked TOO LATE (ready is already set): the page says why and what happens instead, the control is disabled with the reason, and the swap completes normally', scenario(() => w, async () => {
+    const { page } = tab;
+    const c0 = await counters(w.maker, 'solana');
+    const { ref } = await uiLockBuy(tab, w, { market: 'sol', xmr: '0.4', makerPda: w.maker.makerPda });
+    await untilPhase(w, ref, 'xmr_relayed');
+    await w.mine(2);
+    await text(page, /2 of 2 confirmations on every node/).waitFor({ timeout: 90_000 });
+    // The maker is away for a moment, so that "ready" can be looked at.
+    await w.maker.kill();
+    // The user opens the refund question and hesitates; meanwhile the minimum wait ends and the tab sets ready.
+    await page.getByRole('button', { name: 'Refund this swap' }).click();
+    const yes = page.getByRole('button', { name: 'Yes, refund' });
+    await yes.waitFor();
+    await w.sol.warpTo(deadlines((await readSwap(w, ref))!).tReadyMin!);
+    await untilState(w, ref, 'READY');
+    if (await yes.count()) {
+      await yes.click();
+      const outcome = page.locator('[data-testid="request-outcome"][data-refused="ready-already-set"]');
+      await outcome.waitFor({ timeout: 30_000 });
+      expect(await outcome.innerText()).toContain('This swap can no longer be refunded');
+      expect(await outcome.innerText()).toMatch(/The maker will claim and this tab will collect your XMR/);
+    }
+    // Whether or not the question was still open, the control now says why it cannot be used.
+    const blocked = page.getByRole('button', { name: 'Refund not possible: ready is set' });
+    await blocked.waitFor({ timeout: 30_000 });
+    expect(await blocked.isDisabled()).toBe(true);
+    await page.waitForTimeout(2500);
+    expect(await swapState(w, ref)).toBe('READY');
+    // The maker is back: it claims, and the tab collects the XMR as the message said.
+    await w.maker.start();
+    await untilState(w, ref, ['DONE', 'closed']);
+    await w.mine(10);
+    await text(page, /Sweep sent, waiting for a block/).waitFor({ timeout: 180_000 });
+    await w.mine(1);
+    await text(page, 'The XMR is in your wallet').waitFor({ timeout: 90_000 });
+    expect(counterDelta(c0, await counters(w.maker, 'solana'))).toEqual({ locks: 1, notices: 1, readies: 1, completed: 1 });
+    await page.goto(w.ui.url);
+    expectClean(w, [tab]);
+  }));
+});
+
 describe('R-7 in the browser: ready is set and the maker never claims', () => {
   it('"Safe to close" only while ready; at the end of the maker\'s claim window the open tab refunds everything by itself; missed_claims', scenario(() => w, async () => {
     const { page } = tab;
