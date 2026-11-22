@@ -577,8 +577,10 @@ export function ApprovalsPage() {
                             <div className="muted">{fmtMarketAmount(p.market, p.amount)}</div>
                           </td>
                           <td>
-                            <Badge tone={p.recommendation === 'approve' ? 'ok' : 'bad'}>{p.recommendation === 'approve' ? 'Approve' : 'Reject'}</Badge>
-                            {p.dleq_ok !== null ? <Badge tone={p.dleq_ok ? 'ok' : 'bad'}>{p.dleq_ok ? 'Proof valid' : 'Proof missing or invalid'}</Badge> : null}
+                            <span className="row" style={{ gap: 4 }}>
+                              <Badge tone={p.recommendation === 'approve' ? 'ok' : 'bad'}>{p.recommendation === 'approve' ? 'Approve' : 'Reject'}</Badge>
+                              {p.dleq_ok !== null ? <Badge tone={p.dleq_ok ? 'ok' : 'bad'}>{p.dleq_ok ? 'Proof valid' : 'Proof missing or invalid'}</Badge> : null}
+                            </span>
                             <ul style={{ margin: '2px 0 0', paddingLeft: 16 }} className="muted">
                               {p.reasons.map((r) => (
                                 <li key={r}>{r}</li>

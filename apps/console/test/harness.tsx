@@ -18,10 +18,11 @@ export interface Mounted extends RenderResult {
   now(): number;
 }
 
-export function mount(route = '', opts: MockOptions & { delayMs?: number; offline?: () => boolean; noSocket?: boolean } = {}): Mounted {
+export function mount(route = '', opts: MockOptions & { delayMs?: number; offline?: () => boolean; noSocket?: boolean; prepare?: (daemon: MockDaemon) => void } = {}): Mounted {
   let t = T0;
   const clock = (): number => t;
   const daemon = new MockDaemon({ now: clock, ...opts });
+  opts.prepare?.(daemon);
   const sockets = mockSockets(daemon);
   if (opts.noSocket) sockets.refuse = true;
   const client = new DaemonClient({
@@ -34,6 +35,13 @@ export function mount(route = '', opts: MockOptions & { delayMs?: number; offlin
   const view = render(<Console client={client} clock={clock} />);
   return { ...view, daemon, client, sockets, user: userEvent.setup(), advance: (s) => (t += s), now: clock };
 }
+
+/** Text of the summary tile with this label. */
+export const stat = (label: string): string => {
+  const el = [...document.querySelectorAll('.stat')].find((s) => s.querySelector('dt')?.textContent === label);
+  if (!el) throw new Error(`no tile labelled ${label}`);
+  return text(el);
+};
 
 /** Text of an element with whitespace collapsed. */
 export const text = (el: Element | null): string => (el?.textContent ?? '').replace(/\s+/g, ' ').trim();

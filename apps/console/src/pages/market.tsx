@@ -202,10 +202,10 @@ export function InventoryPage() {
                       disabled={missing === 0}
                       busy={busy === 'split'}
                       onConfirm={() =>
-                        void run('split', () => client.call('inventorySplit', { body: {} }), (res) => (res.created === 0 ? 'The ladder is already full.' : `Created ${res.created} outputs in ${res.txids.length} transaction${res.txids.length === 1 ? '' : 's'}. They unlock after 10 blocks.`)).then(inv.reload)
+                        void run('split', () => client.call('inventorySplit', { body: {} }), (res) => (res.created === 0 ? 'The ladder is already full.' : `Created ${res.created} output${res.created === 1 ? '' : 's'} in ${res.txids.length} transaction${res.txids.length === 1 ? '' : 's'}, spendable after 10 blocks.`)).then(inv.reload)
                       }
                     >
-                      Split unlocked XMR into the {missing} outputs the ladder is missing (up to 15 per transaction). New outputs are locked for 10 blocks, about 20 minutes.
+                      Split unlocked XMR into the {missing === 1 ? 'one output' : `${missing} outputs`} the ladder is missing (up to 15 per transaction). New outputs are locked for 10 blocks, about 20 minutes.
                     </ConfirmButton>
                   }
                 >

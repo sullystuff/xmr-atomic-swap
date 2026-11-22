@@ -295,6 +295,7 @@ code,
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
+  align-items: start;
 }
 .cols-3 {
   display: grid;
@@ -460,16 +461,19 @@ code,
 
 .stats {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 1px;
-  background: var(--border);
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 6px;
   overflow: hidden;
+  margin: 0;
 }
 .stat {
-  background: var(--surface);
   padding: 10px 12px;
+  /* Hairlines between tiles; the outer ones are clipped by the container. */
+  box-shadow:
+    1px 0 0 var(--border),
+    0 1px 0 var(--border);
 }
 .stat dt {
   color: var(--muted);
@@ -495,6 +499,7 @@ code,
 }
 
 .kv {
+  align-content: start;
   display: grid;
   grid-template-columns: minmax(120px, max-content) minmax(0, 1fr);
   gap: 4px 14px;
@@ -540,12 +545,24 @@ table.tbl {
 .tbl th.num {
   text-align: right;
 }
-.tbl td {
+.tbl td,
+.tbl tbody th {
   padding: 6px 12px;
   border-bottom: 1px solid var(--border);
   vertical-align: top;
 }
-.tbl tbody tr:last-child td {
+/* Row headers read as data, not as column headings. */
+.tbl tbody th {
+  color: var(--text);
+  font-size: inherit;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  background: transparent;
+  white-space: normal;
+}
+.tbl tbody tr:last-child td,
+.tbl tbody tr:last-child th {
   border-bottom: 0;
 }
 .tbl tbody tr:hover td {
@@ -557,6 +574,9 @@ table.tbl {
 .tbl .actions {
   white-space: nowrap;
   text-align: right;
+}
+.tbl .actions select {
+  max-width: 24ch;
 }
 
 /* ------------------------------------------------------------ controls */
@@ -657,7 +677,7 @@ textarea {
   resize: vertical;
 }
 input.w-num {
-  width: 9ch;
+  width: 12ch;
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
