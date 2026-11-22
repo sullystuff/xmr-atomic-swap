@@ -341,7 +341,7 @@ contract XmrSwap is
 
     /// @inheritdoc IXmrSwap
     function getSwap(bytes32 swapId) external view returns (Swap memory) {
-        return SwapStore.layout().swaps[swapId];
+        return SwapStore._load(SwapStore.layout().swaps[swapId]);
     }
 
     /// @inheritdoc IXmrSwap

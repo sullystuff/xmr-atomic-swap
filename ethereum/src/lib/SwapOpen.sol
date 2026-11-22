@@ -104,7 +104,7 @@ library SwapOpen {
         bytes calldata approvalSig
     ) external returns (bytes32 swapId) {
         SwapStore.Layout storage $ = SwapStore.layout();
-        IXmrSwap.Swap storage s;
+        SwapStore.Record storage s;
         (swapId, s) = _open($, q, sig, xmr, maxPay, swapNonce, a, approvalSig, 0);
         if (!SwapMath.viewValid(tk.viewShare)) revert IXmrSwap.ViewInvalid();
         // The named leaf of the quote's key pool: written provisionally, consumed at approval.
@@ -133,7 +133,7 @@ library SwapOpen {
         bytes calldata approvalSig
     ) external returns (bytes32 swapId) {
         SwapStore.Layout storage $ = SwapStore.layout();
-        IXmrSwap.Swap storage s;
+        SwapStore.Record storage s;
         (swapId, s) = _open($, q, sig, xmr, minReceive, swapNonce, a, approvalSig, 1);
         // Direction B: the locker's view share is the maker's, supplied by `fund`.
         if (tk.viewShare != 0) revert IXmrSwap.ViewInvalid();
@@ -151,7 +151,7 @@ library SwapOpen {
         IXmrSwap.Approval calldata a,
         bytes calldata approvalSig,
         uint8 direction
-    ) private returns (bytes32 swapId, IXmrSwap.Swap storage s) {
+    ) private returns (bytes32 swapId, SwapStore.Record storage s) {
         swapId = SwapMath.swapIdOf(msg.sender, swapNonce);
         s = $.swaps[swapId];
         if (s.state != 0) revert IXmrSwap.BadState(); // a swap id can never be reused
@@ -222,9 +222,9 @@ library SwapOpen {
         s.depth = uint8(depth);
         s.depBps = q.depositBps;
         s.xmr = xmr;
-        s.amount = amount;
-        s.deposit = SwapMath.bpsOf(amount, q.depositBps);
-        s.price = price;
+        s.amount = SwapStore._u128(amount);
+        s.deposit = SwapStore._u128(SwapMath.bpsOf(amount, q.depositBps));
+        s.price = SwapStore._u128(price);
         s.noticeWindow = q.noticeWindow;
         s.claimDelay = q.claimDelay;
         s.claimWindow = q.claimWindow;
@@ -256,7 +256,7 @@ library SwapOpen {
     function _finishOpen(
         SwapStore.Layout storage $,
         bytes32 swapId,
-        IXmrSwap.Swap storage s,
+        SwapStore.Record storage s,
         address sessionKey,
         uint256 sessionBudget,
         IXmrSwap.TakerKeys calldata tk,

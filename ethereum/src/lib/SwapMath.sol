@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {IXmrSwap} from "xmrswap-interfaces/ethereum/IXmrSwap.sol";
+import {SwapStore} from "./SwapStore.sol";
 
 /// @notice Constants, arithmetic, bounds and hashes of SPEC sections 2 and 3 (Ethereum column).
 /// Everything here is checked against the frozen vectors (`amounts.json`, `deadlines.json`,
@@ -184,11 +185,19 @@ library SwapMath {
     }
 
     /// The open hash of SPEC 3.12, from the stored swap.
-    function openHash(bytes32 swapId, IXmrSwap.Swap storage s, bytes32 takerView) internal view returns (bytes32) {
+    function openHash(bytes32 swapId, SwapStore.Record storage s, bytes32 takerView) internal view returns (bytes32) {
         return sha256(
             bytes.concat(
                 abi.encodePacked(
-                    "xmrswap/v1/open", bytes1(0), swapId, s.tLock, s.direction, s.token, s.xmr, s.amount, s.deposit
+                    "xmrswap/v1/open",
+                    bytes1(0),
+                    swapId,
+                    s.tLock,
+                    s.direction,
+                    s.token,
+                    s.xmr,
+                    uint256(s.amount), // stored as uint128; the hash covers 32 bytes each
+                    uint256(s.deposit)
                 ),
                 abi.encodePacked(
                     s.takerSpendPub, s.takerKey, s.takerKey2, takerView, s.takerEncKey, s.makerEncKey, s.keyLeaf

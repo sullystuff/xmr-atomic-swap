@@ -4,12 +4,14 @@ pragma solidity ^0.8.24;
 import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 import {IXmrSwap} from "xmrswap-interfaces/ethereum/IXmrSwap.sol";
 import {SwapMath} from "../src/lib/SwapMath.sol";
+import {SwapStore} from "../src/lib/SwapStore.sol";
+import {TestStore} from "./utils/Mocks.sol";
 import {Base} from "./utils/Base.sol";
 
 /// External entry points to the internal library the contract uses, so vectors can be run
 /// against it and its reverts can be caught.
 contract MathHarness {
-    IXmrSwap.Swap internal s;
+    SwapStore.Record internal s;
 
     function pay(uint256 xmr, uint256 price) external pure returns (bool, uint256) {
         return SwapMath.payAmount(xmr, price);
@@ -32,7 +34,7 @@ contract MathHarness {
     }
 
     function openHash(bytes32 swapId, IXmrSwap.Swap memory m, bytes32 takerView) external returns (bytes32) {
-        s = m;
+        TestStore.store(s, m);
         return SwapMath.openHash(swapId, s, takerView);
     }
 }

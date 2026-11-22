@@ -77,10 +77,84 @@ library SwapStore {
     /// Gas forwarded with an ETH payout: enough for an EOA or a simple wallet, not enough to grief.
     uint256 internal constant ETH_STIPEND = 30_000;
 
+    /// @notice A swap as it is stored: the fields of `IXmrSwap.Swap`, packed. `getSwap` returns the
+    /// frozen interface struct through `_load`. Amounts and the price are at most 2^128 - 1
+    /// (enforced at `lock`/`take`, see `_u128`).
+    ///
+    /// Slots 0 to 16 are written by `lock` (17 fresh slots; `take` leaves 6, 7, 11, 12 and 15 for
+    /// `fund`). Slot 2 is the status slot: every transition writes it, and the one that settles the
+    /// swap writes `tSettled` beside the state. ethereum/STORAGE.md records the layout; it must
+    /// not change once a proxy is deployed.
+    struct Record {
+        // slot 0
+        address taker;
+        uint64 tLock;
+        uint32 noticeWindow;
+        // slot 1
+        address maker;
+        uint64 xmr;
+        uint32 claimDelay;
+        // slot 2: status
+        address token;
+        uint64 tSettled;
+        uint8 state; // SPEC 3.3; 0 = no such swap
+        uint8 outcome; // counter id; 0xff while open
+        uint8 depositState;
+        uint8 flags;
+        // slot 3
+        address sessionKey;
+        uint64 tFinal;
+        uint32 claimWindow;
+        // slot 4
+        address takerKey;
+        uint64 tPendingDeadline;
+        uint32 makerEncVersion;
+        // slot 5
+        address takerKey2;
+        uint64 tActive;
+        uint8 direction;
+        uint8 mode;
+        uint8 depth;
+        // slot 6
+        address makerKey;
+        uint64 tNoteDeadline;
+        uint16 depBps;
+        // slot 7
+        address makerKey2;
+        uint64 tClaimDeadline;
+        // slot 8
+        uint128 amount;
+        uint128 deposit;
+        // slot 9
+        uint128 price;
+        bytes16 swapNonce;
+        // slots 10 to 16
+        bytes32 takerSpendPub;
+        bytes32 makerSpendPub;
+        bytes32 lockerView;
+        bytes32 takerEncKey;
+        bytes32 makerEncKey;
+        bytes32 keyLeaf; // direction A: hash of the pool leaf named at lock
+        bytes32 openHash; // SPEC 3.12
+        // slot 17: first written by the notice
+        uint64 tNotice;
+        uint64 tCut;
+        uint64 tClaimOpen;
+        uint64 tReady;
+        // slot 18: first written by a keyed refund
+        uint64 tRefund;
+        // slots 19 to 23
+        bytes32 noticeCommitment;
+        bytes noticeCiphertext; // 104 bytes, in storage: logs are prunable
+        bytes32 evidenceTxid;
+        bytes32 evidenceView;
+        uint256 revealed; // the revealed spend share; kept in storage
+    }
+
     /// @custom:storage-location erc7201:xmrswap.storage.v1
     struct Layout {
         mapping(address => IXmrSwap.Maker) makers; // key: the maker's registering (owner) address
-        mapping(bytes32 => IXmrSwap.Swap) swaps;
+        mapping(bytes32 => Record) swaps;
         mapping(address => mapping(address => bool)) keyUsed; // maker => keyAddr of a consumed share
         mapping(address => bytes32[]) swapsByTaker;
         mapping(address => mapping(uint64 => bool)) quoteCancelled;
@@ -105,28 +179,88 @@ library SwapStore {
 
     // ------------------------------------------------------------------ helpers
 
-    function _swap(Layout storage $, bytes32 swapId) internal view returns (IXmrSwap.Swap storage s) {
+    /// Narrow an amount or a price for storage. Values above 2^128 - 1 are refused, never
+    /// truncated.
+    function _u128(uint256 v) internal pure returns (uint128) {
+        if (v > type(uint128).max) revert IXmrSwap.AmountOutOfRange();
+        return uint128(v);
+    }
+
+    /// The stored swap as the frozen interface struct.
+    function _load(Record storage r) internal view returns (IXmrSwap.Swap memory s) {
+        s.taker = r.taker;
+        s.maker = r.maker;
+        s.token = r.token;
+        s.sessionKey = r.sessionKey;
+        s.swapNonce = r.swapNonce;
+        s.state = r.state;
+        s.direction = r.direction;
+        s.mode = r.mode;
+        s.outcome = r.outcome;
+        s.depositState = r.depositState;
+        s.depth = r.depth;
+        s.flags = r.flags;
+        s.depBps = r.depBps;
+        s.makerEncVersion = r.makerEncVersion;
+        s.xmr = r.xmr;
+        s.amount = r.amount;
+        s.deposit = r.deposit;
+        s.price = r.price;
+        s.noticeWindow = r.noticeWindow;
+        s.claimDelay = r.claimDelay;
+        s.claimWindow = r.claimWindow;
+        s.takerKey = r.takerKey;
+        s.takerKey2 = r.takerKey2;
+        s.takerSpendPub = r.takerSpendPub;
+        s.makerKey = r.makerKey;
+        s.makerKey2 = r.makerKey2;
+        s.makerSpendPub = r.makerSpendPub;
+        s.lockerView = r.lockerView;
+        s.takerEncKey = r.takerEncKey;
+        s.makerEncKey = r.makerEncKey;
+        s.noticeCommitment = r.noticeCommitment;
+        s.noticeCiphertext = r.noticeCiphertext;
+        s.evidenceTxid = r.evidenceTxid;
+        s.evidenceView = r.evidenceView;
+        s.keyLeaf = r.keyLeaf;
+        s.openHash = r.openHash;
+        s.revealed = r.revealed;
+        s.tLock = r.tLock;
+        s.tPendingDeadline = r.tPendingDeadline;
+        s.tActive = r.tActive;
+        s.tNoteDeadline = r.tNoteDeadline;
+        s.tNotice = r.tNotice;
+        s.tCut = r.tCut;
+        s.tClaimOpen = r.tClaimOpen;
+        s.tReady = r.tReady;
+        s.tClaimDeadline = r.tClaimDeadline;
+        s.tFinal = r.tFinal;
+        s.tRefund = r.tRefund;
+        s.tSettled = r.tSettled;
+    }
+
+    function _swap(Layout storage $, bytes32 swapId) internal view returns (Record storage s) {
         s = $.swaps[swapId];
         if (s.state == 0) revert IXmrSwap.BadState();
     }
 
-    function _operatorOnly(Layout storage $, IXmrSwap.Swap storage s) internal view returns (IXmrSwap.Maker storage m) {
+    function _operatorOnly(Layout storage $, Record storage s) internal view returns (IXmrSwap.Maker storage m) {
         m = $.makers[s.maker];
         if (msg.sender != m.operator) revert IXmrSwap.Unauthorized();
     }
 
     /// The taker's wallet or the swap's session key.
-    function _isTaker(IXmrSwap.Swap storage s) internal view returns (bool) {
+    function _isTaker(Record storage s) internal view returns (bool) {
         return msg.sender == s.taker || msg.sender == s.sessionKey;
     }
 
     /// The claimer locks XMR and can claim: the operator in A, the taker in B.
-    function _isClaimer(Layout storage $, IXmrSwap.Swap storage s) internal view returns (bool) {
+    function _isClaimer(Layout storage $, Record storage s) internal view returns (bool) {
         return s.direction == 0 ? msg.sender == $.makers[s.maker].operator : _isTaker(s);
     }
 
     /// The locker escrows the asset and can refund it: the taker in A, the operator in B.
-    function _isLocker(Layout storage $, IXmrSwap.Swap storage s) internal view returns (bool) {
+    function _isLocker(Layout storage $, Record storage s) internal view returns (bool) {
         return s.direction == 0 ? _isTaker(s) : msg.sender == $.makers[s.maker].operator;
     }
 
@@ -145,7 +279,7 @@ library SwapStore {
         }
     }
 
-    function _settle(Layout storage $, IXmrSwap.Swap storage s, uint8 counter) internal {
+    function _settle(Layout storage $, Record storage s, uint8 counter) internal {
         s.state = DONE;
         s.outcome = counter;
         s.tSettled = uint64(block.timestamp);

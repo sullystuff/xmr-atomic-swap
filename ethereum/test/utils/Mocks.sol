@@ -138,6 +138,63 @@ contract XmrSwapV2 is XmrSwap {
     }
 }
 
+/// Test-only: writes a whole interface struct into the packed storage record, field by field,
+/// refusing what the record cannot hold. Production code never writes a swap this way; tests use
+/// it to check that every field survives the packed form and comes back through `getSwap`.
+library TestStore {
+    function store(SwapStore.Record storage r, IXmrSwap.Swap memory v) internal {
+        r.taker = v.taker;
+        r.maker = v.maker;
+        r.token = v.token;
+        r.sessionKey = v.sessionKey;
+        r.swapNonce = v.swapNonce;
+        r.state = v.state;
+        r.direction = v.direction;
+        r.mode = v.mode;
+        r.outcome = v.outcome;
+        r.depositState = v.depositState;
+        r.depth = v.depth;
+        r.flags = v.flags;
+        r.depBps = v.depBps;
+        r.makerEncVersion = v.makerEncVersion;
+        r.xmr = v.xmr;
+        r.amount = SwapStore._u128(v.amount);
+        r.deposit = SwapStore._u128(v.deposit);
+        r.price = SwapStore._u128(v.price);
+        r.noticeWindow = v.noticeWindow;
+        r.claimDelay = v.claimDelay;
+        r.claimWindow = v.claimWindow;
+        r.takerKey = v.takerKey;
+        r.takerKey2 = v.takerKey2;
+        r.takerSpendPub = v.takerSpendPub;
+        r.makerKey = v.makerKey;
+        r.makerKey2 = v.makerKey2;
+        r.makerSpendPub = v.makerSpendPub;
+        r.lockerView = v.lockerView;
+        r.takerEncKey = v.takerEncKey;
+        r.makerEncKey = v.makerEncKey;
+        r.noticeCommitment = v.noticeCommitment;
+        r.noticeCiphertext = v.noticeCiphertext;
+        r.evidenceTxid = v.evidenceTxid;
+        r.evidenceView = v.evidenceView;
+        r.keyLeaf = v.keyLeaf;
+        r.openHash = v.openHash;
+        r.revealed = v.revealed;
+        r.tLock = v.tLock;
+        r.tPendingDeadline = v.tPendingDeadline;
+        r.tActive = v.tActive;
+        r.tNoteDeadline = v.tNoteDeadline;
+        r.tNotice = v.tNotice;
+        r.tCut = v.tCut;
+        r.tClaimOpen = v.tClaimOpen;
+        r.tReady = v.tReady;
+        r.tClaimDeadline = v.tClaimDeadline;
+        r.tFinal = v.tFinal;
+        r.tRefund = v.tRefund;
+        r.tSettled = v.tSettled;
+    }
+}
+
 /// Test-only implementation that can seed a maker record (the saturation sequence of
 /// `transitions.json` starts with counters at their maxima). The proxy is upgraded to it, seeded,
 /// and upgraded back, so the sequence itself runs on the real implementation.
@@ -157,4 +214,18 @@ contract XmrSwapSeeder is XmrSwap {
         $.volume[maker][token] = volume;
         $.withheldVolume[maker][token] = withheldVolume;
     }
+
+    /// Write a whole swap record (the packing tests).
+    function seedSwap(bytes32 swapId, IXmrSwap.Swap calldata v) external {
+        TestStore.store(SwapStore.layout().swaps[swapId], v);
+    }
+}
+
+/// State variables of the namespaced types, so that `forge inspect StorageLayoutProbe
+/// storage-layout` prints their packing (ethereum/STORAGE.md). The real contract reaches them
+/// through the ERC-7201 slot and has no state variables of its own to inspect.
+contract StorageLayoutProbe {
+    SwapStore.Record internal record;
+    IXmrSwap.Maker internal maker;
+    SwapStore.Layout internal layout;
 }

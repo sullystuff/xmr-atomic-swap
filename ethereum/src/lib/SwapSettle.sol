@@ -15,7 +15,7 @@ import {SwapStore} from "./SwapStore.sol";
 library SwapSettle {
     function approve(bytes32 swapId, bytes32 expectedOpen) external {
         SwapStore.Layout storage $ = SwapStore.layout();
-        IXmrSwap.Swap storage s = SwapStore._swap($, swapId);
+        SwapStore.Record storage s = SwapStore._swap($, swapId);
         if (s.direction != 0) revert IXmrSwap.WrongDirection();
         IXmrSwap.Maker storage m = SwapStore._operatorOnly($, s);
         _pendingBefore(s, expectedOpen);
@@ -31,7 +31,7 @@ library SwapSettle {
         external
     {
         SwapStore.Layout storage $ = SwapStore.layout();
-        IXmrSwap.Swap storage s = SwapStore._swap($, swapId);
+        SwapStore.Record storage s = SwapStore._swap($, swapId);
         if (s.direction == 0) revert IXmrSwap.WrongDirection();
         IXmrSwap.Maker storage m = SwapStore._operatorOnly($, s);
         _pendingBefore(s, expectedOpen);
@@ -51,7 +51,7 @@ library SwapSettle {
 
     function reject(bytes32 swapId, bytes32 expectedOpen, uint8 reason) external {
         SwapStore.Layout storage $ = SwapStore.layout();
-        IXmrSwap.Swap storage s = SwapStore._swap($, swapId);
+        SwapStore.Record storage s = SwapStore._swap($, swapId);
         SwapStore._operatorOnly($, s);
         if (s.state != SwapStore.PENDING || s.openHash != expectedOpen || reason > 2) revert IXmrSwap.BadState();
         uint8 counter = reason == 0 ? SwapStore.C_REJECTIONS : SwapStore.C_REJECTIONS_NO_FAULT;
@@ -62,7 +62,7 @@ library SwapSettle {
 
     function cancelPending(bytes32 swapId) external {
         SwapStore.Layout storage $ = SwapStore.layout();
-        IXmrSwap.Swap storage s = SwapStore._swap($, swapId);
+        SwapStore.Record storage s = SwapStore._swap($, swapId);
         if (!SwapStore._isTaker(s)) revert IXmrSwap.Unauthorized();
         if (s.state != SwapStore.PENDING) revert IXmrSwap.BadState();
         _closePending($, s, SwapStore.C_PENDING_CANCELS);
@@ -72,7 +72,7 @@ library SwapSettle {
 
     function expirePending(bytes32 swapId) external {
         SwapStore.Layout storage $ = SwapStore.layout();
-        IXmrSwap.Swap storage s = SwapStore._swap($, swapId);
+        SwapStore.Record storage s = SwapStore._swap($, swapId);
         if (s.state != SwapStore.PENDING) revert IXmrSwap.BadState();
         if (block.timestamp < s.tPendingDeadline) revert IXmrSwap.TooEarly();
         // EXPLICIT_APPROVE: every lapse is an approval timeout, never the fault `missed_funds`.
@@ -82,7 +82,7 @@ library SwapSettle {
     }
 
     /// SwapStore.PENDING, the open hash of SPEC 3.12, and the approval or funding deadline.
-    function _pendingBefore(IXmrSwap.Swap storage s, bytes32 expectedOpen) private view {
+    function _pendingBefore(SwapStore.Record storage s, bytes32 expectedOpen) private view {
         if (s.state != SwapStore.PENDING || s.openHash != expectedOpen) revert IXmrSwap.BadState();
         if (block.timestamp >= s.tPendingDeadline) revert IXmrSwap.TooLate();
     }
@@ -93,7 +93,7 @@ library SwapSettle {
     }
 
     /// SwapStore.PENDING -> SwapStore.ACTIVE (A2, B5).
-    function _activate(IXmrSwap.Swap storage s, IXmrSwap.Maker storage m) private {
+    function _activate(SwapStore.Record storage s, IXmrSwap.Maker storage m) private {
         s.state = SwapStore.ACTIVE;
         s.tActive = uint64(block.timestamp);
         s.tNoteDeadline = uint64(block.timestamp + s.noticeWindow);
@@ -105,7 +105,7 @@ library SwapSettle {
     }
 
     /// Every other exit from SwapStore.PENDING.
-    function _closePending(SwapStore.Layout storage $, IXmrSwap.Swap storage s, uint8 counter) private {
+    function _closePending(SwapStore.Layout storage $, SwapStore.Record storage s, uint8 counter) private {
         unchecked {
             $.makers[s.maker].openPending -= 1;
         }
@@ -113,7 +113,7 @@ library SwapSettle {
     }
 
     /// What a pending exit returns to the taker.
-    function _pendingStake(IXmrSwap.Swap storage s) private view returns (uint256) {
+    function _pendingStake(SwapStore.Record storage s) private view returns (uint256) {
         return s.direction == 0 ? s.amount : s.deposit;
     }
 
@@ -121,7 +121,7 @@ library SwapSettle {
 
     function postNotice(bytes32 swapId, bytes32 commitment, bytes calldata ciphertext) external {
         SwapStore.Layout storage $ = SwapStore.layout();
-        IXmrSwap.Swap storage s = SwapStore._swap($, swapId);
+        SwapStore.Record storage s = SwapStore._swap($, swapId);
         if (!SwapStore._isClaimer($, s)) revert IXmrSwap.Unauthorized();
         if (s.state != SwapStore.ACTIVE) revert IXmrSwap.BadState();
         uint256 tFinal = s.tFinal;
@@ -151,7 +151,7 @@ library SwapSettle {
 
     function setReady(bytes32 swapId) external {
         SwapStore.Layout storage $ = SwapStore.layout();
-        IXmrSwap.Swap storage s = SwapStore._swap($, swapId);
+        SwapStore.Record storage s = SwapStore._swap($, swapId);
         if (!SwapStore._isLocker($, s)) revert IXmrSwap.Unauthorized();
         if (s.state != SwapStore.NOTICED) revert IXmrSwap.BadState();
         if (block.timestamp < s.tNotice + s.depth * SwapMath.READY_MIN_SECS_PER_CONF) revert IXmrSwap.TooEarly();
@@ -166,7 +166,7 @@ library SwapSettle {
 
     function abort(bytes32 swapId) external {
         SwapStore.Layout storage $ = SwapStore.layout();
-        IXmrSwap.Swap storage s = SwapStore._swap($, swapId);
+        SwapStore.Record storage s = SwapStore._swap($, swapId);
         if (!SwapStore._isClaimer($, s)) revert IXmrSwap.Unauthorized();
         uint8 state = s.state;
         uint256 tFinal = s.tFinal;
@@ -204,7 +204,7 @@ library SwapSettle {
 
     function refundUnnoticed(bytes32 swapId) external {
         SwapStore.Layout storage $ = SwapStore.layout();
-        IXmrSwap.Swap storage s = SwapStore._swap($, swapId);
+        SwapStore.Record storage s = SwapStore._swap($, swapId);
         if (s.direction != 0) revert IXmrSwap.WrongDirection();
         if (s.state != SwapStore.ACTIVE) revert IXmrSwap.BadState();
         if (block.timestamp < s.tNoteDeadline) revert IXmrSwap.TooEarly();
@@ -215,7 +215,7 @@ library SwapSettle {
 
     function expireUnnoticed(bytes32 swapId) external {
         SwapStore.Layout storage $ = SwapStore.layout();
-        IXmrSwap.Swap storage s = SwapStore._swap($, swapId);
+        SwapStore.Record storage s = SwapStore._swap($, swapId);
         if (s.direction == 0) revert IXmrSwap.WrongDirection();
         if (s.state != SwapStore.ACTIVE) revert IXmrSwap.BadState();
         if (block.timestamp < s.tFinal + SwapMath.EXPIRY_SECS) revert IXmrSwap.TooEarly();
@@ -235,7 +235,7 @@ library SwapSettle {
 
     function refund(bytes32 swapId, uint256 secret) external {
         SwapStore.Layout storage $ = SwapStore.layout();
-        IXmrSwap.Swap storage s = SwapStore._swap($, swapId);
+        SwapStore.Record storage s = SwapStore._swap($, swapId);
         uint8 state = s.state;
         bool isA = s.direction == 0;
         uint256 tFinal = s.tFinal;
@@ -308,7 +308,7 @@ library SwapSettle {
 
     function claim(bytes32 swapId, uint256 secret) external {
         SwapStore.Layout storage $ = SwapStore.layout();
-        IXmrSwap.Swap storage s = SwapStore._swap($, swapId);
+        SwapStore.Record storage s = SwapStore._swap($, swapId);
         uint8 state = s.state;
         bool isA = s.direction == 0;
         uint256 tFinal = s.tFinal;
@@ -356,7 +356,7 @@ library SwapSettle {
 
     function releaseDeposit(bytes32 swapId) external {
         SwapStore.Layout storage $ = SwapStore.layout();
-        IXmrSwap.Swap storage s = SwapStore._swap($, swapId);
+        SwapStore.Record storage s = SwapStore._swap($, swapId);
         uint8 state = s.state;
         bool isOperator = msg.sender == $.makers[s.maker].operator;
         uint8 counter;
@@ -379,7 +379,7 @@ library SwapSettle {
 
     function withhold(bytes32 swapId, bytes32 txid, bytes32 viewShare) external {
         SwapStore.Layout storage $ = SwapStore.layout();
-        IXmrSwap.Swap storage s = SwapStore._swap($, swapId);
+        SwapStore.Record storage s = SwapStore._swap($, swapId);
         SwapStore._operatorOnly($, s);
         if (s.state != SwapStore.HOLD) revert IXmrSwap.BadState();
         // Refused at or after T_hold even if nobody has cranked releaseDeposit.
@@ -404,7 +404,7 @@ library SwapSettle {
 
     function splitDeposit(bytes32 swapId) external {
         SwapStore.Layout storage $ = SwapStore.layout();
-        IXmrSwap.Swap storage s = SwapStore._swap($, swapId);
+        SwapStore.Record storage s = SwapStore._swap($, swapId);
         if (s.state != SwapStore.WITHHELD) revert IXmrSwap.BadState();
         if (block.timestamp < s.tRefund + SwapMath.SPLIT_SECS) revert IXmrSwap.TooEarly();
         (uint256 toTaker, uint256 toTreasury) = SwapMath.splitOf(s.deposit);
@@ -419,7 +419,7 @@ library SwapSettle {
 
     function publishEvidence(bytes32 swapId, bytes32 txid, bytes32 viewShare) external {
         SwapStore.Layout storage $ = SwapStore.layout();
-        IXmrSwap.Swap storage s = SwapStore._swap($, swapId);
+        SwapStore.Record storage s = SwapStore._swap($, swapId);
         if (!SwapStore._isClaimer($, s)) revert IXmrSwap.Unauthorized();
         // SwapStore.NOTICED or later, any state including SwapStore.DONE: a notice is on record.
         if (s.flags & SwapStore.FLAG_NOTICE == 0) revert IXmrSwap.BadState();
@@ -427,7 +427,7 @@ library SwapSettle {
         emit IXmrSwap.EvidencePublished(swapId, s.maker, SwapStore.C_NONE, txid, viewShare);
     }
 
-    function _recordEvidence(bytes32 swapId, IXmrSwap.Swap storage s, bytes32 txid, bytes32 viewShare) private {
+    function _recordEvidence(bytes32 swapId, SwapStore.Record storage s, bytes32 txid, bytes32 viewShare) private {
         if (SwapMath.noticeCommitment(swapId, txid, viewShare) != s.noticeCommitment) {
             revert IXmrSwap.EvidenceMismatch();
         }
