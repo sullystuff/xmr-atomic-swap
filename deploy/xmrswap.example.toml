@@ -27,6 +27,13 @@ dist = "../apps/web/dist"
 # Environment: XMRSWAP_UI_PUBLIC_ORIGIN. Default: empty: the origin is http:// followed by `listen`.
 public_origin = ""
 
+# When true, the page is given the Solana and Ethereum RPC URLs from your environment as its
+# starting values, so you do not have to type them. Anyone who can load the page can read them,
+# including any API key in them. On your own machine that is only you. Set it to false if other
+# people can load the page; each visitor then enters an RPC URL on the Settings page.
+# Environment: XMRSWAP_UI_GIVE_PAGE_RPC_URLS
+give_page_rpc_urls = true
+
 # NAME of the environment variable holding the Ethereum RPC URL given to the page. If the variable
 # is not set, the ETH and USDC-on-Ethereum markets are switched off. The URL itself never goes in
 # this file, because provider URLs usually contain an API key.
@@ -52,6 +59,12 @@ monero_network = "mainnet"
 # agree.
 # Environment: XMRSWAP_UI_OWN_NODE
 own_node = false
+
+# How often the page re-reads chain state, in milliseconds (1000 to 60000). Raise it if your
+# Solana RPC provider rate-limits you. A slower page notices the maker's steps later, so do not
+# raise it far.
+# Environment: XMRSWAP_UI_POLL_MS
+poll_ms = 4000
 
 [relay]
 

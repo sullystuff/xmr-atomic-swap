@@ -229,6 +229,40 @@ describe('pnpm --filter @xmrswap/deploy start', () => {
     expect(await p.exited).toBe(0);
   });
 
+  it('names a Monero node that cannot be reached at all', async () => {
+    const f = await fakes();
+    const env = { ...f.env, RELAY_MONERO_NODES: `${f.nodes[0]!.url},http://127.0.0.1:${await closedPort()}` };
+    const p = run(['start'], env);
+    await waitFor(p, 'Press Ctrl-C to stop');
+    const st = run(['status'], env);
+    expect(await st.exited).toBe(1);
+    expect(st.out()).toContain('FAIL  Monero nodes');
+    expect(st.out()).toContain('node 1 did not answer (HTTP 502 upstream_unreachable). While a node is unreachable no lock counts as confirmed.');
+    p.kill('SIGTERM');
+    await p.exited;
+    // With the bundle stopped the nodes are asked directly, so the check still says which one is dead.
+    const direct = run(['status'], env);
+    expect(await direct.exited).toBe(1);
+    expect(direct.out()).toContain('node 1 did not answer (ECONNREFUSED)');
+    expect(direct.out()).not.toContain('node 0 did not answer');
+  });
+
+  it('warns at start when the page is public and would hand out the RPC URLs', async () => {
+    const f = await fakes();
+    const env = { ...f.env, XMRSWAP_UI_PUBLIC_ORIGIN: 'https://swap.example.org' };
+    const p = run(['start'], env);
+    await waitFor(p, 'Press Ctrl-C to stop');
+    expect(p.out()).toContain('WARNING: the page is reachable from other machines and is given your RPC URLs.');
+    expect(p.out()).toContain('    https://swap.example.org/\n');
+    p.kill('SIGTERM');
+    await p.exited;
+    const quiet = run(['start'], { ...env, XMRSWAP_UI_GIVE_PAGE_RPC_URLS: 'false' });
+    await waitFor(quiet, 'Press Ctrl-C to stop');
+    expect(quiet.out()).not.toContain('WARNING');
+    quiet.kill('SIGTERM');
+    await quiet.exited;
+  });
+
   it('refuses a second copy on the same address with a plain message', async () => {
     const f = await fakes();
     const p = run(['start'], f.env);
@@ -298,5 +332,41 @@ describe('settings and pinned', () => {
     expect(st.out()).toContain('could take your funds');
     p.kill('SIGTERM');
     await p.exited;
+  });
+});
+
+describe('scripts/ensure-ui.mjs', () => {
+  const script = path.join(deployDir, 'scripts/ensure-ui.mjs');
+  const runScript = (env: Record<string, string>, cwd: string) => {
+    const child = spawn(process.execPath, [script], { cwd, env: { PATH: '/nonexistent', ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    child.stdout.on('data', (d: Buffer) => (out += d.toString()));
+    child.stderr.on('data', (d: Buffer) => (out += d.toString()));
+    return new Promise<{ code: number | null; out: string }>((r) => child.on('exit', (code) => r({ code, out })));
+  };
+
+  it('builds nothing when everything it needs exists (it never rebuilds)', async () => {
+    // With an empty PATH there is no pnpm to call, so exit 0 proves nothing was built.
+    const r = await runScript({}, deployDir);
+    expect(r.out).toBe('');
+    expect(r.code).toBe(0);
+  });
+
+  it('requires a source build of the UI by default, and not when the settings point at an unpacked release', async () => {
+    const plan = async (env: Record<string, string>, cwd: string): Promise<string[]> => {
+      const child = spawn(process.execPath, [script, '--plan'], { cwd, env: { PATH: '/nonexistent', ...env }, stdio: ['ignore', 'pipe', 'inherit'] });
+      let out = '';
+      child.stdout.on('data', (d: Buffer) => (out += d.toString()));
+      await new Promise((r) => child.on('exit', r));
+      return out.trim().split('\n').map((l) => l.split(' ')[0]!);
+    };
+    expect(await plan({}, deployDir)).toEqual(['@xmrswap/protocol', '@xmrswap/relay', '@xmrswap/web']);
+    const dir = mkdtempSync(path.join(tmpdir(), 'xmrswap-deploy-'));
+    writeFileSync(path.join(dir, 'xmrswap.toml'), '[ui]\ndist = "/srv/verified-release/web"\n');
+    const withoutUi = ['@xmrswap/protocol', '@xmrswap/relay'];
+    expect(await plan({ XMRSWAP_UI_DIST: '/srv/verified-release/web' }, deployDir)).toEqual(withoutUi);
+    expect(await plan({ XMRSWAP_SELFHOST_CONFIG: path.join(dir, 'xmrswap.toml') }, deployDir)).toEqual(withoutUi);
+    // The file is also found as ./xmrswap.toml in the working directory, as the start command finds it.
+    expect(await plan({}, dir)).toEqual(withoutUi);
   });
 });

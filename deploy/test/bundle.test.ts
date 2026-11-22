@@ -106,6 +106,7 @@ describe('the static web UI', () => {
       moneroNetwork: 'mainnet',
       programId: PROGRAM_ID,
       contract: '',
+      pollMs: 4000,
     });
     // The Monero addresses follow the name the browser used, so they stay same-origin.
     const viaLocalhost = await call(s.bundle.port, '/config.json', { headers: { host: `localhost:${s.bundle.port}` } });
@@ -117,6 +118,15 @@ describe('the static web UI', () => {
     const cfg = (await call(s.bundle.port, '/config.json')).json();
     expect(cfg).not.toHaveProperty('solanaRpc');
     expect(cfg).not.toHaveProperty('ethereumRpc');
+  });
+
+  it('keeps the RPC URLs out of config.json when told to, while the relay still uses them', async () => {
+    const s = await stack({ XMRSWAP_UI_GIVE_PAGE_RPC_URLS: 'false', ETHEREUM_RPC_URL: 'http://127.0.0.1:1/eth' });
+    const res = await call(s.bundle.port, '/config.json');
+    expect(res.text).not.toContain(s.solana.url);
+    expect(res.text).not.toContain('/eth');
+    expect(res.json()).not.toHaveProperty('solanaRpc');
+    await expect.poll(async () => (await call(s.bundle.port, '/relay/v1/status')).json().makers).toBe(1);
   });
 
   it('answers only for its own host names (no DNS rebinding)', async () => {

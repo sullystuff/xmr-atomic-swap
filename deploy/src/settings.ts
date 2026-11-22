@@ -79,6 +79,14 @@ export const SETTINGS: readonly SettingDef[] = [
   },
   {
     table: 'ui',
+    key: 'give_page_rpc_urls',
+    env: 'XMRSWAP_UI_GIVE_PAGE_RPC_URLS',
+    defaultToml: 'true',
+    effect:
+      'When true, the page is given the Solana and Ethereum RPC URLs from your environment as its starting values, so you do not have to type them. Anyone who can load the page can read them, including any API key in them. On your own machine that is only you. Set it to false if other people can load the page; each visitor then enters an RPC URL on the Settings page.',
+  },
+  {
+    table: 'ui',
     key: 'ethereum_rpc_url_env',
     env: 'XMRSWAP_UI_ETHEREUM_RPC_URL_ENV',
     defaultToml: '"ETHEREUM_RPC_URL"',
@@ -115,6 +123,14 @@ export const SETTINGS: readonly SettingDef[] = [
     defaultToml: 'false',
     effect:
       'Set to true only if `monero_nodes` lists exactly one node and you run that node yourself. With false, the page needs two or more nodes and refuses to count a lock as confirmed unless they agree.',
+  },
+  {
+    table: 'ui',
+    key: 'poll_ms',
+    env: 'XMRSWAP_UI_POLL_MS',
+    defaultToml: '4000',
+    effect:
+      'How often the page re-reads chain state, in milliseconds (1000 to 60000). Raise it if your Solana RPC provider rate-limits you. A slower page notices the maker\'s steps later, so do not raise it far.',
   },
   {
     table: 'relay',
@@ -213,12 +229,15 @@ export interface UiSettings {
   dist: string;
   /** Empty = derived from the request's Host. */
   publicOrigin: string;
+  /** Whether `config.json` carries the RPC URLs. */
+  givePageRpcUrls: boolean;
   /** Read from the environment variable named by `ethereum_rpc_url_env`; `null` = not set. */
   ethereumRpcUrl: string | null;
   ethereumChainId: number;
   contractAddress: string;
   moneroNetwork: MoneroNetwork;
   ownNode: boolean;
+  pollMs: number;
 }
 
 export interface BundleSettings {
@@ -323,6 +342,10 @@ export function loadSettings(opts: LoadOptions = {}): BundleSettings {
   const network = str(pick('monero_network'), 'ui.monero_network') as MoneroNetwork;
   if (!NETWORKS.includes(network)) throw new ConfigError(`ui.monero_network: expected one of ${NETWORKS.join(', ')}`);
   const ownNode = bool(pick('own_node'), 'ui.own_node');
+  const givePageRpcUrls = bool(pick('give_page_rpc_urls'), 'ui.give_page_rpc_urls');
+  const pollRaw = pick('poll_ms');
+  const pollMs = typeof pollRaw === 'string' && /^\d+$/.test(pollRaw) ? Number(pollRaw) : pollRaw;
+  if (typeof pollMs !== 'number' || !Number.isSafeInteger(pollMs) || pollMs < 1000 || pollMs > 60_000) throw new ConfigError('ui.poll_ms: expected a whole number of milliseconds from 1000 to 60000');
   const ethereumRpcUrl = httpUrlFromEnv(env, str(pick('ethereum_rpc_url_env'), 'ui.ethereum_rpc_url_env'), 'ui.ethereum_rpc_url_env');
 
   // The [relay] table is a relay.toml: the relay's own loader validates it and applies RELAY_*.
@@ -350,11 +373,13 @@ export function loadSettings(opts: LoadOptions = {}): BundleSettings {
       listenPort: listen.port,
       dist: path.resolve(DEPLOY_DIR, distRaw),
       publicOrigin,
+      givePageRpcUrls,
       ethereumRpcUrl,
       ethereumChainId: chainId,
       contractAddress: contract,
       moneroNetwork: network,
       ownNode,
+      pollMs,
     },
     relay,
     file: opts.file ?? null,
@@ -452,8 +477,8 @@ export interface PageSettingDef {
  * defaults to the page's real `DEFAULT_SETTINGS`.
  */
 export const PAGE_SETTINGS: readonly PageSettingDef[] = [
-  { key: 'solanaRpc', defaultJson: '""', bundle: 'the URL in the variable named by `[relay] solana_rpc_url_env`, if set', effect: 'Solana RPC URL. Reads the registry and swaps, submits transactions. No default: nothing works until it is set.' },
-  { key: 'ethereumRpc', defaultJson: '""', bundle: 'the URL in the variable named by `[ui] ethereum_rpc_url_env`, if set', effect: 'Ethereum RPC URL. Empty switches the ETH and USDC-on-Ethereum markets off.' },
+  { key: 'solanaRpc', defaultJson: '""', bundle: 'the URL in the variable named by `[relay] solana_rpc_url_env`, if set and `[ui] give_page_rpc_urls` is true', effect: 'Solana RPC URL. Reads the registry and swaps, submits transactions. No default: nothing works until it is set.' },
+  { key: 'ethereumRpc', defaultJson: '""', bundle: 'the URL in the variable named by `[ui] ethereum_rpc_url_env`, if set and `[ui] give_page_rpc_urls` is true', effect: 'Ethereum RPC URL. Empty switches the ETH and USDC-on-Ethereum markets off.' },
   { key: 'ethereumChainId', defaultJson: String(CONTRACT_CHAIN_ID ?? 1), bundle: '`[ui] ethereum_chain_id`', effect: 'Chain id the Ethereum RPC must report.' },
   { key: 'moneroNodes', defaultJson: '[]', bundle: 'one proxy address per entry of `[relay] monero_nodes`: `<origin>/monero/0`, `<origin>/monero/1`, ...', effect: 'Monero nodes the page checks every XMR lock against. The first one is used for the final sweep. No default: locking is disabled until set.' },
   { key: 'ownNode', defaultJson: 'false', bundle: '`[ui] own_node`', effect: 'Declares a single configured node to be your own, so one node is accepted.' },
@@ -467,7 +492,7 @@ export const PAGE_SETTINGS: readonly PageSettingDef[] = [
   { key: 'refSolUsd', defaultJson: '""', bundle: null, effect: 'Your reference SOL price in USD.' },
   { key: 'refEthUsd', defaultJson: '""', bundle: null, effect: 'Your reference ETH price in USD.' },
   { key: 'theme', defaultJson: '"system"', bundle: null, effect: 'Appearance: `system`, `light` or `dark`.' },
-  { key: 'pollMs', defaultJson: '4000', bundle: null, effect: 'How often the page re-reads chain state, in milliseconds. Raise it if your RPC provider rate-limits you.' },
+  { key: 'pollMs', defaultJson: '4000', bundle: '`[ui] poll_ms`', effect: 'How often the page re-reads chain state, in milliseconds. Raise it if your RPC provider rate-limits you.' },
   { key: 'sweepMaxFee', defaultJson: '""', bundle: null, effect: 'Override of the Monero sweep fee cap, in piconero. Empty uses the protocol cap. For test networks only.' },
 ];
 

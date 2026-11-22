@@ -43,8 +43,8 @@ export function pageConfig(s: BundleSettings, origin: string): Record<string, un
   return {
     mode: 'self-hosted',
     relayUrl: '/',
-    ...(s.relay.solanaRpcUrl ? { solanaRpc: s.relay.solanaRpcUrl } : {}),
-    ...(s.ui.ethereumRpcUrl ? { ethereumRpc: s.ui.ethereumRpcUrl } : {}),
+    ...(s.ui.givePageRpcUrls && s.relay.solanaRpcUrl ? { solanaRpc: s.relay.solanaRpcUrl } : {}),
+    ...(s.ui.givePageRpcUrls && s.ui.ethereumRpcUrl ? { ethereumRpc: s.ui.ethereumRpcUrl } : {}),
     ethereumChainId: s.ui.ethereumChainId,
     // Absolute addresses: the page accepts only http(s) URLs for Monero nodes.
     moneroNodes: s.relay.moneroNodes.map((_, i) => `${origin}/monero/${i}`),
@@ -52,6 +52,7 @@ export function pageConfig(s: BundleSettings, origin: string): Record<string, un
     moneroNetwork: s.ui.moneroNetwork,
     programId: s.relay.programId,
     contract: s.ui.contractAddress,
+    pollMs: s.ui.pollMs,
   };
 }
 

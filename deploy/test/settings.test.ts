@@ -23,10 +23,12 @@ const SAMPLES: Record<string, { toml: string; env: string }> = {
   'ui.listen': { toml: '"127.0.0.1:9999"', env: '127.0.0.1:9999' },
   'ui.dist': { toml: '"/srv/ui"', env: '/srv/ui' },
   'ui.public_origin': { toml: '"https://swap.example.org"', env: 'https://swap.example.org' },
+  'ui.give_page_rpc_urls': { toml: 'false', env: 'false' },
   'ui.ethereum_rpc_url_env': { toml: '"MY_ETH_URL"', env: 'MY_ETH_URL' },
   'ui.ethereum_chain_id': { toml: '11155111', env: '11155111' },
   'ui.contract_address': { toml: `"0x${'12'.repeat(20)}"`, env: `0x${'12'.repeat(20)}` },
   'ui.monero_network': { toml: '"stagenet"', env: 'stagenet' },
+  'ui.poll_ms': { toml: '10000', env: '10000' },
   'ui.own_node': { toml: 'true', env: 'true' },
   'relay.bind': { toml: '"127.0.0.1:9998"', env: '127.0.0.1:9998' },
   'relay.tor_socks': { toml: '"127.0.0.1:9150"', env: '127.0.0.1:9150' },
@@ -172,6 +174,7 @@ describe('every documented setting is real', () => {
     expect(() => loadSettings({ toml: '[ui]\npublic_origin = "https://swap.example.org/path"' })).toThrow(/bare origin/);
     expect(() => loadSettings({ toml: '[ui]\nmonero_network = "mainet"' })).toThrow(/expected one of/);
     expect(() => loadSettings({ toml: '[ui]\ncontract_address = "0x12"' })).toThrow(/40 hex digits/);
+    expect(() => loadSettings({ toml: '[ui]\npoll_ms = 50' })).toThrow(/from 1000 to 60000/);
     expect(() => loadSettings({ toml: '[relay]\nmonero_nodes = ["http://user:pw@node.example:18081"]' })).toThrow(/credentials/);
   });
 });

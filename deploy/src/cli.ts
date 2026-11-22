@@ -14,24 +14,11 @@ import path from 'node:path';
 import { CONTRACT_ADDRESS, CONTRACT_CHAIN_ID, PROGRAM_ID } from '@xmrswap/protocol';
 import { probeSocks } from '@xmrswap/relay';
 import { formatChecks, runChecks } from './checks.js';
+import { torGuidance } from './guidance.js';
 import { BundleError, startBundle } from './server.js';
 import { type BundleSettings, ConfigError, DEPLOY_DIR, DOCS_BEGIN, DOCS_END, exampleToml, generatedDocs, isLoopback, loadSettingsFromProcess } from './settings.js';
 
 const out = (line = ''): void => void process.stdout.write(`${line}\n`);
-
-export function torGuidance(addr: string): string[] {
-  return [
-    `Tor: nothing answers as a SOCKS proxy at ${addr}.`,
-    '  The UI still works without it: messages to makers fall back to on-chain',
-    '  (Solana swaps only; each message costs a transaction fee and who messaged whom is public).',
-    '  This command never starts or changes a Tor client. To use the Tor channel, do one of:',
-    '    - start the Tor service your system already has (its SOCKS port is normally 127.0.0.1:9050);',
-    '    - run your own copy, no root needed:',
-    '        tor --SocksPort 127.0.0.1:9050 --DataDirectory "$HOME/.local/share/xmrswap-tor"',
-    '    - keep Tor Browser open and set [relay] tor_socks = "127.0.0.1:9150".',
-    '  No restart is needed: the relay tries the proxy again on every request.',
-  ];
-}
 
 function describe(s: BundleSettings): string[] {
   const set = (v: string | null): string => (v ? 'set' : 'NOT SET');
@@ -40,6 +27,7 @@ function describe(s: BundleSettings): string[] {
     `ui.listen          ${s.ui.listenHost}:${s.ui.listenPort}`,
     `ui.dist            ${s.ui.dist}`,
     `ui.public_origin   ${s.ui.publicOrigin || '(same as listen)'}`,
+    `RPC URLs to page   ${s.ui.givePageRpcUrls ? 'yes (anyone who can load the page can read them)' : 'no'}`,
     `Solana RPC URL     ${set(s.relay.solanaRpcUrl)}`,
     `Ethereum RPC URL   ${set(s.ui.ethereumRpcUrl)}`,
     `ethereum chain id  ${s.ui.ethereumChainId}`,
@@ -73,6 +61,9 @@ async function start(): Promise<number> {
   out(`Status check: pnpm --filter @xmrswap/deploy run status`);
   out('');
   if (!isLoopback(s.ui.listenHost)) out(`WARNING: the UI is listening on ${s.ui.listenHost}, not on localhost. Anyone who can reach it can use your relay. Read docs/self-hosting/exposing-the-relay.md.`);
+  const publicHost = s.ui.publicOrigin ? new URL(s.ui.publicOrigin).hostname.replace(/^\[|\]$/g, '') : s.ui.listenHost;
+  if (!isLoopback(publicHost) && s.ui.givePageRpcUrls && (s.relay.solanaRpcUrl || s.ui.ethereumRpcUrl))
+    out('WARNING: the page is reachable from other machines and is given your RPC URLs. Every visitor can read them, including any API key. Set [ui] give_page_rpc_urls = false.');
   if (!s.relay.solanaRpcUrl) out(`Solana RPC: not set. Export SOLANA_RPC_URL before starting, or type a URL into the Settings page. Until then the relay knows no makers and forwards nothing.`);
   if (s.relay.moneroNodes.length === 0) out('Monero nodes: none set. Add [relay] monero_nodes, or type node URLs into the Settings page. Locking is disabled until then.');
   else if (s.relay.moneroNodes.length === 1 && !s.ui.ownNode) out('Monero nodes: only one is set. Add a second, independently run node, or set [ui] own_node = true if the node is yours.');
