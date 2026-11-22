@@ -69,4 +69,5 @@ Final balances on the paying chain (taker, maker payout or operator, treasury; e
 - anvil runs with `--slots-in-an-epoch 1` and one block a second: `finalized` is two blocks behind the head. Solana time moves only by `advance`; Ethereum time also drifts forward one second per block.
 - The fake Tor is a SOCKS5 server that maps each maker's test onion name to its endpoint port. Nothing touches the system Tor or the Tor network.
 - Price sources are a loopback stand-in for CoinGecko's `simple/price`; venues and the rebalancer are not exercised (**package only**, `rebalancer`).
+- The reorg scenario pops the last block on both regtest nodes and empties both pools; because a popped transaction can travel back from the peer a moment later, it keeps the pools empty until the daemon's own second relay is in its journal.
 - Scenarios that prove "the daemon does nothing before T" wait one polling interval (a few seconds of real time) after moving the clock to just before T. No scenario sleeps to reach a deadline.

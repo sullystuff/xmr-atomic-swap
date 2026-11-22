@@ -12,7 +12,9 @@ import { connect, deadlines, dump, ensureBackup, expectClean, registerRecoverySe
 let w: World;
 let tab: TakerTab;
 beforeAll(async () => {
-  const sell = (deviation_pct: number) => ({ sol: { sell_xmr: { max_xmr: 0.3, deviation_pct } } });
+  // Offers valid for an hour: this scenario jumps the chain clock by minutes at a time, and a re-plan must not find the
+  // surviving makers' offers lapsed just because their next refresh is a second away.
+  const sell = (deviation_pct: number) => ({ sol: { sell_xmr: { max_xmr: 0.3, deviation_pct, offer_valid_seconds: 3600 } } });
   // Prices 1.53, 1.545 and 1.56 SOL per XMR; each maker takes at most 0.3 XMR per swap.
   w = await startWorld({ ethereum: false, inventoryBlocks: 8, makers: [{ markets: sell(2) }, { markets: sell(3) }, { markets: sell(4) }] });
   tab = track(await openTab({ solKey: w.sol.taker }), true);
@@ -126,7 +128,8 @@ describe('L-1: a large swap across three real makers', () => {
     // The stalled maker got nothing more; the remainder went to the makers that delivered.
     const done = await Promise.all(w.makers.map(async (m) => (await m.counters('solana'))[COUNTER.completed]!));
     expect(done[1]).toBe(0);
-    expect(done[0]! + done[2]!).toBeGreaterThanOrEqual(3);
+    // Maker 1 (the best rate) took the re-planned remainder as a second leg once its first had settled.
+    expect(done).toEqual([2, 0, 1]);
     expect(reportText).toMatch(/Filled 1\.19\d* SOL for 0\.7[67]\d* XMR/);
     expect(reportText).toMatch(/Unfilled 0\.0\d+ SOL/);
     expect(await board.locator('[data-leg-state="refunded"]').count()).toBe(1);

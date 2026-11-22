@@ -8,7 +8,7 @@ import { existsSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { ata, ethereumCall, hex, moneroTx, solanaInstruction, swapJointAddress, verifyLock } from '@xmrswap/sdk';
-import { NODE_A, NODE_B, REGTEST_MAX_FEE, isMined, nodeOther, poolTxids, reorg, txInfo } from '../src/monero.js';
+import { NODE_A, NODE_B, REGTEST_MAX_FEE, isMined, nodeOther, nodeRpc, poolTxids, reorg, txInfo } from '../src/monero.js';
 import { type Opened, SdkTaker } from '../src/taker.js';
 import { XMR, e2eRoot, stateRoot, waitFor } from '../src/util.js';
 import { type World, startWorld, stopShared } from '../src/world.js';
@@ -87,11 +87,20 @@ describe('N-1: Monero trouble on the maker\'s side', () => {
     await w.mine(1);
     expect(await isMined(lockTxid)).toBe(true);
     // Both nodes forget the block and the pool; a longer chain without the lock replaces it.
-    await reorg(1, w.takerXmr);
-    expect(await txInfo(lockTxid, NODE_A)).toBeNull();
-    expect(await txInfo(lockTxid, NODE_B)).toBeNull();
-    // The daemon sees its lock gone from every node and relays the stored bytes again (a second relay in its journal).
-    await waitFor('the daemon to rebroadcast its lock', async () => (await intentsOf(o)).filter((i) => i.startsWith('xmr_relay')).length >= 2 && ((await poolTxids()).includes(lockTxid) || (await isMined(lockTxid))), { timeoutMs: 120_000, context: () => w.maker.swapDetail(o.ref) });
+    // (A popped transaction can travel back from the other node a moment later; if it was mined again the reorg is repeated.)
+    for (let attempt = 0; attempt < 4; attempt++) {
+      await reorg(1, w.takerXmr);
+      if (!(await isMined(lockTxid))) break;
+    }
+    expect(await isMined(lockTxid)).toBe(false);
+    const relays = async (): Promise<number> => (await intentsOf(o)).filter((i) => i.startsWith('xmr_relay')).length;
+    // Keep both pools empty until the daemon itself has seen its lock gone from every node and relayed the stored bytes again.
+    await waitFor('the daemon to rebroadcast its lock', async () => {
+      if ((await relays()) >= 2) return true;
+      for (const n of [NODE_A, NODE_B]) await nodeRpc(n, 'flush_txpool', {});
+      return false;
+    }, { timeoutMs: 120_000, intervalMs: 300, context: () => w.maker.swapDetail(o.ref) });
+    await waitFor('the lock back in the pool', async () => (await poolTxids()).includes(lockTxid) || (await isMined(lockTxid)), { timeoutMs: 60_000, context: () => w.maker.swapDetail(o.ref) });
     await w.mine(2);
     expect((await taker.notice(o)).txid).toBe(lockTxid);
     expect((await w.maker.swapDetail(o.ref)).lock_txid).toBe(lockTxid);

@@ -166,7 +166,7 @@ describe('H-B: sell XMR in the browser to the real daemon', () => {
 });
 
 describe('R-4 through the UI on Ethereum: the page\'s own refund with the session key', () => {
-  it('eth: the taker clicks Refund after the maker\'s notice; the session key refunds on Ethereum; the daemon takes its XMR back; the wallet collects the deposit after the hold', scenario(() => w, async () => {
+  it('eth: the taker clicks Refund after the maker\'s notice; the session key refunds on Ethereum; the daemon takes its XMR back; the page collects the deposit after the hold', scenario(() => w, async () => {
     const { page } = tab;
     const before = await balances(w, 'eth');
     const c0 = await counters(w.maker, 'ethereum');
@@ -191,12 +191,11 @@ describe('R-4 through the UI on Ethereum: the page\'s own refund with the sessio
     await w.mine(1);
     const lost = inv0 - (await holdings(w.maker.wallet));
     expect(lost > 0n && lost < 2n * REGTEST_MAX_FEE).toBe(true);
-    // After the hold the page offers the deposit; the user's wallet sends the release.
+    // After the hold the page collects the deposit by itself: on Ethereum the session key still has its budget, so nobody is asked.
     await advanceTo(w, s0, deadlines((await readSwap(w, ref))!).tHold!);
-    await text(page, 'Your deposit can be collected now').waitFor({ timeout: 90_000 });
-    await page.getByRole('button', { name: 'Sign with my wallet' }).click();
-    await waitFor('deposits_returned', async () => counterDelta(c0, await counters(w.maker, 'ethereum'))['deposits_returned'] === 1, { timeoutMs: 60_000 });
-    expect(tab.eth!.signed).toBe(prompts + 1);
+    await waitFor('deposits_returned', async () => counterDelta(c0, await counters(w.maker, 'ethereum'))['deposits_returned'] === 1, { timeoutMs: 90_000 });
+    await text(page, /Your 0\.0255 ETH is back in your wallet/).waitFor({ timeout: 60_000 });
+    expect(tab.eth!.signed).toBe(prompts);
     const after = await balances(w, 'eth');
     expect(before.taker - after.taker >= 0n && before.taker - after.taker < NATIVE_SLACK['eth']!).toBe(true);
     expect(after.makerPayout).toBe(before.makerPayout);

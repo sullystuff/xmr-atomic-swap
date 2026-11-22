@@ -57,6 +57,8 @@ export interface OfferCfg {
   withhold_policy?: 'never' | 'always' | 'price_moved';
   without_ready?: 'claim' | 'abort';
   depth?: number;
+  /** How long a published offer stays valid without a refresh (chain seconds; the daemon's default is 60 on Solana). */
+  offer_valid_seconds?: number;
 }
 export interface MakerOpts {
   /** 1-based; decides keys, ports and directory. */
@@ -142,6 +144,7 @@ export class Maker {
       if (c.approval_window_seconds) lines.push(`approval_window_seconds = ${c.approval_window_seconds}`);
       if (c.withhold_policy) lines.push(`withhold_policy = "${c.withhold_policy}"`);
       if (c.without_ready) lines.push(`without_ready = "${c.without_ready}"`);
+      if (c.offer_valid_seconds) lines.push(`offer_valid_seconds = ${c.offer_valid_seconds}`);
       return `${lines.join('\n')}\n`;
     };
     const eth = this.eth && o.ethereum !== false;
