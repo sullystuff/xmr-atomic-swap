@@ -1,11 +1,24 @@
 {
   "name": "@xmrswap/daemon",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
+  "description": "Maker daemon: swap executor with a durable intent log, offer engine, inventory, risk, approvals, deposits, inbox, key rotation, rebalancer integration and the local API (SPEC 7, WP8)",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": { "xmrswap-daemon": "./dist/cli.js" },
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./package.json": "./package.json"
+  },
+  "files": ["dist"],
   "scripts": {
-    "build": "echo '@xmrswap/daemon: not implemented yet (owned by WP8)' && exit 1",
-    "test": "echo '@xmrswap/daemon: not implemented yet (owned by WP8)' && exit 1"
+    "build": "node scripts/ensure-deps.mjs && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "test": "node scripts/ensure-deps.mjs && tsc -p tsconfig.test.json && vitest run",
+    "test:integration": "node scripts/ensure-deps.mjs && flock /tmp/xmrswap-integration.lock vitest run --config vitest.integration.config.ts",
+    "start": "tsx src/cli.ts start",
+    "config:check": "tsx src/cli.ts config check"
   },
   "dependencies": {
     "@xmrswap/core-wasm": "workspace:*",
@@ -13,6 +26,7 @@
     "@xmrswap/sdk": "workspace:*",
     "@xmrswap/rebalancer": "workspace:*",
     "@solana/web3.js": "1.98.4",
+    "@solana/spl-token": "0.4.15",
     "viem": "2.58.4",
     "express": "4.22.3",
     "ws": "8.23.0",
@@ -21,6 +35,7 @@
     "zod": "4.6.7"
   },
   "devDependencies": {
+    "@xmrswap/svm-rpc": "workspace:*",
     "typescript": "7.0.2",
     "tsx": "4.23.15",
     "vitest": "5.1.1",
