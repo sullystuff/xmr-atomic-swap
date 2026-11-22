@@ -120,7 +120,6 @@ fn terms_from_offer(offer: &Offer, maker_key: &Pubkey, a: &OpenArgs, now: i64) -
     let tier = tier_index(a.xmr, &offer.price_above, offer.prices_used()).ok_or(SwapError::TiersInvalid)?;
     let price = offer.prices[tier];
     let amount = asset_amount(a.xmr, price, a.direction == DIR_A)?;
-    require!(amount > 0, SwapError::AmountOutOfRange);
     if a.direction == DIR_A {
         require!(amount <= a.limit, SwapError::PriceMoved);
     } else {

@@ -332,6 +332,36 @@ pub fn pok_prove(s: &[u8; 32], ctx: &[u8; 32]) -> [u8; 64] {
     out
 }
 
+/// SPEC 3.12 (Solana): what `approve`, `fund` and `reject` bind to.
+#[allow(clippy::too_many_arguments)]
+pub fn open_hash_of(
+    swap: &[u8; 32],
+    t_lock: i64,
+    direction: u8,
+    asset: u8,
+    xmr: u64,
+    amount: u64,
+    deposit: u64,
+    taker_spend_pub: &[u8; 32],
+    locker_view: &[u8; 32],
+    taker_enc_key: &[u8; 32],
+    maker_enc_key: &[u8; 32],
+) -> [u8; 32] {
+    sha256(&[
+        &ds("open"),
+        swap,
+        &t_lock.to_le_bytes(),
+        &[direction, asset],
+        &xmr.to_le_bytes(),
+        &amount.to_le_bytes(),
+        &deposit.to_le_bytes(),
+        taker_spend_pub,
+        locker_view,
+        taker_enc_key,
+        maker_enc_key,
+    ])
+}
+
 pub fn notice_commitment(swap: &Pubkey, txid: &[u8; 32], view: &[u8; 32]) -> [u8; 32] {
     sha256(&[&ds("notice"), swap.as_ref(), txid, view])
 }
@@ -530,19 +560,19 @@ impl SwapAcc {
     }
     /// SPEC 3.12, computed independently of the program.
     pub fn open_hash(&self, swap: &Pubkey) -> [u8; 32] {
-        sha256(&[
-            &ds("open"),
-            swap.as_ref(),
-            &self.t_lock.to_le_bytes(),
-            &[self.direction, self.asset],
-            &self.xmr.to_le_bytes(),
-            &self.amount.to_le_bytes(),
-            &self.deposit.to_le_bytes(),
+        open_hash_of(
+            &swap.to_bytes(),
+            self.t_lock,
+            self.direction,
+            self.asset,
+            self.xmr,
+            self.amount,
+            self.deposit,
             &self.taker_spend_pub,
             &self.locker_view,
             &self.taker_enc_key,
             &self.maker_enc_key,
-        ])
+        )
     }
     pub fn t_exp(&self) -> i64 {
         self.t_final + EXPIRY_SECS
@@ -1162,6 +1192,19 @@ impl World {
         MakerFx { owner, operator, payout, pda: maker, enc_key, shares: HashMap::new() }
     }
 
+    /// An instruction on the two-account lists `(signer, maker)` of the maker setters.
+    pub fn maker_ix(&self, signer: &Pubkey, maker: &Pubkey, data: Vec<u8>) -> Instruction {
+        Instruction {
+            program_id: PROGRAM_ID,
+            accounts: vec![meta(*signer, true, false), meta(*maker, false, true)],
+            data,
+        }
+    }
+    pub fn bump_epochs(&mut self, m: &MakerFx, approvals: bool, quotes: bool) -> TxResult {
+        let ix = self.maker_ix(&m.operator.pubkey(), &m.pda, Enc::ix("bump_epochs").bool(approvals).bool(quotes).0);
+        self.send(&[ix], &[&m.operator])
+    }
+
     pub fn set_offer_ix(&self, m: &MakerFx, asset: u8, direction: u8, terms: &Terms) -> Instruction {
         Instruction {
             program_id: PROGRAM_ID,
@@ -1235,6 +1278,69 @@ impl World {
             ok(self.refill(m, asset, 0, 2));
         }
         self.offer_pda(&m.pda, asset, direction)
+    }
+
+    /// Write a live offer account directly (terms that `set_offer` refuses), with two pool keys.
+    pub fn craft_offer(&mut self, m: &mut MakerFx, asset: u8, direction: u8, t: &Terms, price: u64) -> Pubkey {
+        let w = self;
+        let key = w.offer_pda(&m.pda, asset, direction);
+        let bump = Pubkey::find_program_address(&[b"offer", m.pda.as_ref(), &[asset], &[direction]], &PROGRAM_ID).1;
+        let mut e = Enc(account_disc("Offer").to_vec())
+            .key(&m.pda)
+            .u8(asset)
+            .u8(direction)
+            .u8(1) // enabled
+            .u8(t.mode)
+            .u8(bump)
+            .u64(2) // seq
+            .i64(w.now()) // updated_at
+            .u32(t.valid_secs)
+            .u64(t.min_xmr)
+            .u64(t.max_xmr)
+            .u64(1_000_000 * XMR); // capacity
+        for v in t.price_above {
+            e = e.u64(v);
+        }
+        for v in [price, 0, 0] {
+            e = e.u64(v);
+        }
+        for v in t.depth_above {
+            e = e.u64(v);
+        }
+        e = e.bytes(&t.depths).u16(t.dep_bps).u32(t.w_a).u32(t.w_n).u32(t.d_c).u32(t.w_c).u32(t.w_f);
+        e = e.bytes(&t.hash(asset, direction)).u16(0b11).u16(0);
+        for i in 0..16 {
+            if i < 2 {
+                let (_, s_pub, _) = m.new_share();
+                e = e.bytes(&s_pub);
+            } else {
+                e = e.bytes(&[0; 32]);
+            }
+        }
+        let mut data = e.0;
+        data.resize(768, 0);
+        let lamports = w.rent(768);
+        w.svm
+            .set_account(key, solana_account::Account { lamports, data, owner: PROGRAM_ID, executable: false, rent_epoch: 0 })
+            .unwrap();
+        key
+    }
+
+    /// Run a transaction without committing it: what would happen at this instant.
+    pub fn simulate(&mut self, ixs: &[Instruction], signers: &[&Keypair]) -> TxResult {
+        let msg = Message::new(ixs, Some(&signers[0].pubkey()));
+        let tx = Transaction::new(signers, msg, self.svm.latest_blockhash());
+        self.svm.simulate_transaction(tx).map(|info| info.meta)
+    }
+    /// Whether `call` by `signer` would succeed right now; nothing is committed.
+    pub fn would(&mut self, m: &MakerFx, fx: &SwapFx, call: &Call, signer: &Keypair) -> TxResult {
+        let ix = self.call_ix(m, fx, call, &signer.pubkey());
+        self.simulate(&[ix], &[signer])
+    }
+
+    /// Write a token account's balance directly (amounts no mint authority would issue).
+    pub fn set_tokens(&mut self, token_account: &Pubkey, amount: u64) {
+        self.patch(token_account, |d| d[64..72].copy_from_slice(&amount.to_le_bytes()));
     }
 
     /// `post_quote`. Returns the quote PDA.
@@ -1590,4 +1696,133 @@ pub fn compute_budget_ixs() -> [Instruction; 2] {
         Instruction { program_id: COMPUTE_BUDGET, accounts: vec![], data: limit },
         Instruction { program_id: COMPUTE_BUDGET, accounts: vec![], data: price },
     ]
+}
+
+/// How far to drive a fresh swap.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum Stage {
+    /// As opened: PENDING for a window-mode lock and for every take, ACTIVE otherwise.
+    Opened,
+    Active,
+    Noticed,
+    Ready,
+}
+
+/// The price the vectors use: 1.5 SOL (or 1,500 USDC) per XMR, so 1 XMR is 1,500,000,000 units.
+pub const PRICE: u64 = 1_500_000_000;
+
+impl World {
+    /// A registered maker with a live offer and a 1 XMR swap driven to `stage`: approved or
+    /// funded 12 s after the open, noticed 90 s later, ready `depth × 60` s after the notice.
+    pub fn swap_at(&mut self, asset: u8, direction: u8, terms: &Terms, stage: Stage) -> (MakerFx, SwapFx) {
+        let mut m = self.register_maker();
+        let fx = self.swap_with(&mut m, asset, direction, terms, stage);
+        (m, fx)
+    }
+
+    pub fn swap_with(&mut self, m: &mut MakerFx, asset: u8, direction: u8, terms: &Terms, stage: Stage) -> SwapFx {
+        self.live_offer(m, asset, direction, terms, PRICE);
+        let mut fx = self.open(m, asset, direction, XMR);
+        if stage == Stage::Opened {
+            return fx;
+        }
+        if self.swap(&fx.pda).unwrap().state == PENDING {
+            self.warp(12);
+            if direction == DIR_A {
+                ok(self.approve(m, &fx));
+            } else {
+                ok(self.fund_swap(m, &fx));
+            }
+        }
+        if stage == Stage::Active {
+            return fx;
+        }
+        self.warp(90);
+        ok(self.notice(m, &mut fx));
+        if stage == Stage::Noticed {
+            return fx;
+        }
+        self.warp(terms.depths[0] as i64 * 60);
+        ok(self.ready(m, &fx));
+        fx
+    }
+}
+
+// ------------------------------------------------------------------ who received what
+
+/// Asset units received by each party between a snapshot and now, with transaction fees and
+/// account rent taken out (SOL), so a test states only what the protocol moved.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Moved {
+    pub taker: i128,
+    /// The maker's payout wallet (direction-A claims).
+    pub payout: i128,
+    /// The maker's operator wallet (direction-B refunds, and `fund`).
+    pub operator: i128,
+    pub treasury: i128,
+}
+impl Moved {
+    pub fn taker(amount: u64) -> Self {
+        Moved { taker: amount as i128, ..Moved::default() }
+    }
+}
+
+pub struct Ledger {
+    asset: u8,
+    keys: [Pubkey; 6],
+    before: [i128; 6],
+    swap_rent: i128,
+}
+
+impl World {
+    fn ledger_read(&self, asset: u8, keys: &[Pubkey; 6]) -> [i128; 6] {
+        let mut out = [0i128; 6];
+        for (i, k) in keys.iter().enumerate() {
+            out[i] = if asset == ASSET_USDC && i != 5 { self.tokens(k) as i128 } else { self.lamports(k) as i128 };
+        }
+        out
+    }
+    /// Snapshot the balances a swap can move.
+    pub fn ledger(&self, m: &MakerFx, fx: &SwapFx) -> Ledger {
+        let usdc = fx.asset == ASSET_USDC;
+        let at = |wallet: &Pubkey| if usdc { self.ata(wallet) } else { *wallet };
+        let keys = [
+            at(&fx.taker.pubkey()),
+            at(&m.payout.pubkey()),
+            at(&m.operator.pubkey()),
+            if usdc { self.treasury_vault } else { self.treasury },
+            if usdc { fx.vault } else { fx.pda },
+            // The session key's lamports count as the taker's (the sweep returns them).
+            fx.session.pubkey(),
+        ];
+        Ledger { asset: fx.asset, keys, before: self.ledger_read(fx.asset, &keys), swap_rent: self.rent(736) as i128 }
+    }
+}
+
+impl Ledger {
+    /// What moved since the snapshot. `taker_fees` / `operator_fees`: transactions the taker (or
+    /// its session key) and the operator paid for; `closed`: the swap account was closed (its
+    /// rent returned to the taker). Asserts that exactly what left escrow reached the parties.
+    #[track_caller]
+    pub fn moved(&self, w: &World, taker_fees: u64, operator_fees: u64, closed: bool) -> Moved {
+        let now = w.ledger_read(self.asset, &self.keys);
+        let d: Vec<i128> = now.iter().zip(self.before.iter()).map(|(a, b)| a - b).collect();
+        let moved = if self.asset == ASSET_USDC {
+            Moved { taker: d[0], payout: d[1], operator: d[2], treasury: d[3] }
+        } else {
+            Moved {
+                taker: d[0] + d[5] + (taker_fees * FEE) as i128 - if closed { self.swap_rent } else { 0 },
+                payout: d[1],
+                operator: d[2] + (operator_fees * FEE) as i128,
+                treasury: d[3],
+            }
+        };
+        let left_escrow = if self.asset == ASSET_SOL && closed { -(d[4] + self.swap_rent) } else { -d[4] };
+        assert_eq!(
+            left_escrow,
+            moved.taker + moved.payout + moved.operator + moved.treasury,
+            "what left escrow is what the parties received: {moved:?}"
+        );
+        moved
+    }
 }

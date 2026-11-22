@@ -26,7 +26,6 @@ use crate::common::*;
 use serde_json::Value;
 use solana_instruction::Instruction;
 use solana_keypair::Keypair;
-use solana_pubkey::Pubkey;
 use solana_signer::Signer;
 
 const STATES: [&str; 10] =
@@ -161,51 +160,6 @@ fn terms_of(args: &Value) -> Terms {
     }
 }
 
-/// Write a live offer account directly (terms that `set_offer` refuses), with two pool keys.
-fn craft_offer(w: &mut World, m: &mut MakerFx, asset: u8, direction: u8, t: &Terms, price: u64) -> Pubkey {
-    let key = w.offer_pda(&m.pda, asset, direction);
-    let bump = Pubkey::find_program_address(&[b"offer", m.pda.as_ref(), &[asset], &[direction]], &PROGRAM_ID).1;
-    let mut e = Enc(account_disc("Offer").to_vec())
-        .key(&m.pda)
-        .u8(asset)
-        .u8(direction)
-        .u8(1) // enabled
-        .u8(t.mode)
-        .u8(bump)
-        .u64(2) // seq
-        .i64(w.now()) // updated_at
-        .u32(t.valid_secs)
-        .u64(t.min_xmr)
-        .u64(t.max_xmr)
-        .u64(1_000_000 * XMR); // capacity
-    for v in t.price_above {
-        e = e.u64(v);
-    }
-    for v in [price, 0, 0] {
-        e = e.u64(v);
-    }
-    for v in t.depth_above {
-        e = e.u64(v);
-    }
-    e = e.bytes(&t.depths).u16(t.dep_bps).u32(t.w_a).u32(t.w_n).u32(t.d_c).u32(t.w_c).u32(t.w_f);
-    e = e.bytes(&t.hash(asset, direction)).u16(0b11).u16(0);
-    for i in 0..16 {
-        if i < 2 {
-            let (_, s_pub, _) = m.new_share();
-            e = e.bytes(&s_pub);
-        } else {
-            e = e.bytes(&[0; 32]);
-        }
-    }
-    let mut data = e.0;
-    data.resize(768, 0);
-    let lamports = w.rent(768);
-    w.svm
-        .set_account(key, solana_account::Account { lamports, data, owner: PROGRAM_ID, executable: false, rent_epoch: 0 })
-        .unwrap();
-    key
-}
-
 /// What a step did, as far as the balance check needs.
 struct Sent {
     res: TxResult,
@@ -272,7 +226,7 @@ fn send_open(w: &mut World, sim: &mut Sim, step: &Value) -> Result<Sent, String>
                 if !format!("{:?}", e.err).contains(&format!("Custom({})", error_code(name))) {
                     return Err(format!("set_offer: expected {name}, got {:?}", e.err));
                 }
-                craft_offer(w, &mut sim.m, asset, direction, &terms, amount);
+                w.craft_offer(&mut sim.m, asset, direction, &terms, amount);
             }
         }
         source = Source::Offer(w.offer_pda(&sim.m.pda, asset, direction));

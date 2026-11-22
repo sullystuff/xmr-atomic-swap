@@ -5,3 +5,13 @@ mod common;
 mod happy;
 #[path = "suite/replay.rs"]
 mod replay;
+#[path = "suite/approval.rs"]
+mod approval;
+#[path = "suite/crypto.rs"]
+mod crypto;
+#[path = "suite/refund_table.rs"]
+mod refund_table;
+#[path = "suite/deposits.rs"]
+mod deposits;
+#[path = "suite/binding.rs"]
+mod binding;

@@ -461,7 +461,6 @@ pub fn post_quote(ctx: Context<PostQuote>, terms: QuoteTerms) -> Result<()> {
     require_keys_eq!(a.operator.key(), a.maker.operator, SwapError::Unauthorized);
     require!(terms.asset <= ASSET_USDC, SwapError::WrongAsset);
     require!(terms.direction <= DIR_B, SwapError::WrongDirection);
-    require!(terms.xmr > 0 && terms.amount > 0, SwapError::AmountOutOfRange);
     let p = Params {
         w_a: 0,
         w_n: terms.w_n,
