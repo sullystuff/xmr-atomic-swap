@@ -182,6 +182,7 @@ export class Executor {
 
     // 3. Facts, decision, action.
     const facts: MakerFacts = { swap: view, now, ...(await this.baseFacts(row, view)) };
+    this.setPhase(row, view, facts);
     for (let i = 0; i < 8; i++) {
       const d = makerStep(facts);
       if (d.do !== 'need') return this.perform(row, chain, view, now, d, facts);
