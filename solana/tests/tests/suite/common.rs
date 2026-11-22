@@ -1826,3 +1826,86 @@ impl Ledger {
         moved
     }
 }
+
+// ------------------------------------------------------------------ admin and registry builders
+
+impl World {
+    /// One of the four admin setters: `(admin, config)`.
+    pub fn admin_ix(&self, admin: &Pubkey, data: Vec<u8>) -> Instruction {
+        Instruction { program_id: PROGRAM_ID, accounts: vec![meta(*admin, true, false), meta(self.config, false, true)], data }
+    }
+    pub fn sweep_treasury_ix(&self, authority: &Pubkey, asset: u8, amount: u64, destination: &Pubkey) -> Instruction {
+        let usdc = asset == ASSET_USDC;
+        Instruction {
+            program_id: PROGRAM_ID,
+            accounts: vec![
+                meta(*authority, true, false),
+                meta(self.config, false, false),
+                meta(self.treasury, false, true),
+                meta(*destination, false, true),
+                opt(usdc.then_some(self.mint), false),
+                opt(usdc.then_some(self.treasury_vault), true),
+                opt(usdc.then_some(TOKEN), false),
+            ],
+            data: Enc::ix("sweep_treasury").u8(asset).u64(amount).0,
+        }
+    }
+    pub fn eth_board(&self, maker: &Pubkey) -> Pubkey {
+        pda(&[b"eth_board", maker.as_ref()])
+    }
+    pub fn set_eth_quote_ix(&self, m: &MakerFx, slot: u8, quote: &[u8; 251], sig: &[u8; 65]) -> Instruction {
+        Instruction {
+            program_id: PROGRAM_ID,
+            accounts: vec![
+                meta(m.operator.pubkey(), true, true),
+                meta(m.pda, false, false),
+                meta(self.eth_board(&m.pda), false, true),
+                meta(SYSTEM, false, false),
+            ],
+            data: Enc::ix("set_eth_quote").u8(slot).bytes(quote).bytes(sig).0,
+        }
+    }
+    /// `refresh_offers` with Ethereum board entries: `(slot, tier_price, valid_until, quote_id, sig)`.
+    pub fn refresh_full_ix(
+        &self,
+        m: &MakerFx,
+        offers: &[(u8, u8, bool, [u64; 3], u64)],
+        eth: &[(u8, [u128; 3], u64, u64, [u8; 65])],
+    ) -> Instruction {
+        let mut ix = self.refresh_ix(m, offers);
+        // Replace the empty `eth` vector the offers-only builder wrote.
+        ix.data.truncate(ix.data.len() - 4);
+        let mut e = Enc(ix.data).u32(eth.len() as u32);
+        for (slot, prices, valid_until, quote_id, sig) in eth {
+            e = e.u8(*slot);
+            for p in prices {
+                e = e.u128(*p);
+            }
+            e = e.u64(*valid_until).u64(*quote_id).bytes(sig);
+        }
+        ix.data = e.0;
+        if !eth.is_empty() {
+            ix.accounts[2] = meta(self.eth_board(&m.pda), false, true);
+        }
+        ix
+    }
+    pub fn cancel_quote_ix(&self, m: &MakerFx, caller: &Pubkey, quote: &Pubkey) -> Instruction {
+        Instruction {
+            program_id: PROGRAM_ID,
+            accounts: vec![
+                meta(*caller, true, false),
+                meta(m.pda, false, false),
+                meta(*quote, false, true),
+                meta(m.operator.pubkey(), false, true),
+            ],
+            data: Enc::ix("cancel_quote").0,
+        }
+    }
+    pub fn post_message_ix(&self, sender: &Pubkey, recipient: &Pubkey, swap: Option<Pubkey>, payload: &[u8]) -> Instruction {
+        Instruction {
+            program_id: PROGRAM_ID,
+            accounts: vec![meta(*sender, true, false), meta(*recipient, false, false), opt(swap, false)],
+            data: Enc::ix("post_message").vec(payload).0,
+        }
+    }
+}

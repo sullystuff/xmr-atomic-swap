@@ -23,3 +23,7 @@ mod deadlines;
 mod session;
 #[path = "suite/park.rs"]
 mod park;
+#[path = "suite/sizes.rs"]
+mod sizes;
+#[path = "suite/registry.rs"]
+mod registry;
