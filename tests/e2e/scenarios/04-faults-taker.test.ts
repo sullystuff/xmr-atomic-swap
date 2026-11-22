@@ -130,7 +130,7 @@ describe('N-1: the taker\'s Monero nodes do not agree', () => {
     await w.mine(2);
     const noticed = (await readSwap(w, ref))!;
     await w.sol.warpTo(deadlines(noticed).tReadyMin! + 30n);
-    await text(page, /could not be checked/).waitFor({ timeout: 60_000 });
+    await text(page, /Not counted as confirmed: node-failed/).waitFor({ timeout: 60_000 });
     await page.waitForTimeout(3000);
     expect(await swapState(w, ref)).toBe('NOTICED');
     w.uiNodeB.mode = 'honest';
