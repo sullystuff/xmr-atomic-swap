@@ -45,6 +45,25 @@ window.coreTest = async (input) => {
   out.notice = hex(core.noticeSeal({ ownSecret: sol.encSecret, peerPub: eth.encPub, side: 'taker', swapRef: ctx, txid: ctx, view: sol.view, nonce }));
   out.pay = core.payAmount(123_456_789_012n, 987_654_321_987n, 'solana').toString();
   out.joint = core.jointAddress(sol.spendPub, eth.spendPub, sol.view, eth.view, 'stagenet').address;
+  // The reference model and the tier lookup in the web build.
+  out.model = input.modelSteps.reduce(
+    (acc, step) => {
+      const fx = core.modelApply(input.modelChain, acc.state, { call: step.call, args: step.args }, step.caller, step.at, step.env);
+      acc.results.push(fx);
+      acc.state = fx.swap;
+      return acc;
+    },
+    { state: null, results: [] },
+  ).results;
+  let refused = 'accepted';
+  try {
+    core.modelApply(input.modelChain, null, { call: 'claim', args: { secret_ok: true } }, 'operator', 1);
+  } catch (e) {
+    refused = e.code;
+  }
+  out.modelRefused = refused;
+  out.modelEnabled = core.modelEnabled(input.modelChain, out.model[0].swap, { call: 'claim', args: { secret_ok: true } }, 'operator', input.modelSteps[0].at + 5);
+  out.tier = core.tierValue([0n, 1_000_000_000_000n, 50_000_000_000_000n], [2n, 10n, 25n], 1_000_000_000_000n).toString();
   return out;
 };
 document.getElementById('status').textContent = 'ready';

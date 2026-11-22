@@ -12,6 +12,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { chromium } from 'playwright-core';
+import { readFileSync } from 'node:fs';
 import * as core from '../dist/index.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -64,6 +65,11 @@ const expected = {
   joint: core.jointAddress(sol.spendPub, eth.spendPub, sol.view, eth.view, 'stagenet').address,
 };
 
+// A happy-path sequence of the transition vectors, replayed through the model in the tab.
+const transitions = JSON.parse(readFileSync(path.join(here, '../../../interfaces/vectors/transitions.json'), 'utf8'));
+const happy = transitions.sequences.find((s) => s.name === 'happy/B/window' && s.chain === 'ethereum');
+const modelSteps = happy.steps.map(({ call, args, caller, at, env }) => ({ call, args, caller, at, env }));
+
 const browser = await chromium.launch({ executablePath: await findChromium(), headless: true });
 let code = 0;
 try {
@@ -73,7 +79,7 @@ try {
   page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
   await page.goto(origin + '/');
   await page.waitForFunction(() => document.getElementById('status').textContent === 'ready');
-  const got = await page.evaluate((input) => window.coreTest(input), { seed: hex(seed), shareId: hex(shareId), ctx: hex(ctx), nodeBlob: hex(nodeBlob) });
+  const got = await page.evaluate((input) => window.coreTest(input), { seed: hex(seed), shareId: hex(shareId), ctx: hex(ctx), nodeBlob: hex(nodeBlob), modelChain: happy.chain, modelSteps });
   assert.deepEqual(errors, []);
 
   assert.equal(got.version, core.coreVersion());
@@ -95,6 +101,17 @@ try {
   // The proof made in Node verifies in the tab; a flipped bit does not.
   assert.equal(got.nodeBlobKeyAddr, expected.twin.keyAddr);
   assert.match(got.tampered, /^Dleq(Invalid|Malformed)$/);
+  // The model in the web build reproduces the vector sequence step by step.
+  assert.equal(got.model.length, happy.steps.length);
+  got.model.forEach((fx, i) => {
+    const { maker: _maker, ...want } = happy.steps[i].expect;
+    assert.deepEqual(fx, want, `model step ${i} (${happy.steps[i].call})`);
+  });
+  assert.equal(got.model.at(-1).state, 'DONE');
+  assert.equal(got.modelRefused, 'BadState');
+  assert.equal(got.modelEnabled, false);
+  assert.equal(got.tier, '10');
+  assert.equal(core.tierValue([0n, 1_000_000_000_000n, 50_000_000_000_000n], [2n, 10n, 25n], 1_000_000_000_000n), 10n);
   console.log(`browser ${browser.version()}: web build matches the nodejs build; DLEQ prove ${got.dleq.proveMs} ms, verify ${got.dleq.verifyMs} ms`);
   console.log('CORE-WASM BROWSER TEST OK');
 } catch (e) {

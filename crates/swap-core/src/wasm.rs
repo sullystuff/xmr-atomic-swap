@@ -857,3 +857,38 @@ fn variant(e: &sweep::SweepError) -> &'static str {
 pub fn core_version() -> String {
   env!("CARGO_PKG_VERSION").to_string()
 }
+
+// ---------------------------------------------------------------- reference model (SPEC 3)
+
+/// The reference model, in the JSON form of `transitions.json` (see `model_json`). Takes
+/// `{ chain, state: swap | null, call, args, caller, at, env? }` as a JSON string and returns
+/// the `expect` object as a JSON string: `{ ok: true, state, counter, payouts, …, swap }`, or
+/// `{ ok: false, error }` with the chain's error name. Throws only when the input is malformed.
+/// The typed wrapper's `modelApply` and `modelEnabled` are built on this.
+#[wasm_bindgen(js_name = modelApplyJson)]
+pub fn model_apply_json(input: &str) -> JsResult<String> {
+  let value: serde_json::Value = serde_json::from_str(input).map_err(|e| bad(&format!("model input is not JSON: {e}")))?;
+  let out = crate::model_json::apply_json(&value).map_err(|e| bad(&e))?;
+  Ok(out.to_string())
+}
+
+/// `tierValue(above, values, xmr)`: the value of the highest used tier whose threshold is
+/// `<= xmr` (SPEC 3.1). Throws `TiersInvalid` when the tiers are malformed.
+#[wasm_bindgen(js_name = tierValue)]
+pub fn tier_value(above: JsValue, values: JsValue, xmr: JsValue) -> JsResult<JsValue> {
+  let triple = |v: &JsValue, name: &str| -> JsResult<[u128; 3]> {
+    if !Array::is_array(v) || Array::from(v).length() != 3 {
+      return Err(bad(&format!("{name} must be an array of 3")));
+    }
+    let a = Array::from(v);
+    Ok([to_u128(&a.get(0), name)?, to_u128(&a.get(1), name)?, to_u128(&a.get(2), name)?])
+  };
+  let above = triple(&above, "above")?;
+  let values = triple(&values, "values")?;
+  let xmr = u64::try_from(to_u128(&xmr, "xmr")?).map_err(|_| bad("xmr is out of range"))?;
+  let mut thresholds = [0u64; 3];
+  for (t, a) in thresholds.iter_mut().zip(above) {
+    *t = u64::try_from(a).map_err(|_| bad("above is out of range"))?;
+  }
+  amounts::tier_value(xmr, &thresholds, &values).map(big).ok_or_else(|| JsError::new("TiersInvalid"))
+}

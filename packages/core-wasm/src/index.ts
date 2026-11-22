@@ -319,6 +319,122 @@ export interface SweepOutcome {
   ignored: { output: string; amount: bigint }[];
 }
 
+// ------------------------------------------------------------------ reference model (SPEC 3)
+// The shapes are those of interfaces/vectors/transitions.json, so a vector row can be fed to
+// the model as it stands: snake_case keys, amounts as decimal strings, times as Unix seconds.
+
+export type ModelState = 'NONE' | 'PENDING' | 'ACTIVE' | 'NOTICED' | 'READY' | 'ABORTED_FREE' | 'ABORTED_HOLD' | 'HOLD' | 'WITHHELD' | 'DONE';
+/** Who signs a call. `owner`: Solana, the maker's owner key; Ethereum, the account a parked payout is owed to. */
+export type ModelCaller = 'taker' | 'session' | 'operator' | 'owner' | 'anyone';
+export type ModelParty = 'taker' | 'maker' | 'treasury';
+
+/** The swap record the model reads and writes (the `swap` object of a vector step). */
+export interface ModelSwap {
+  state: ModelState;
+  state_code: number;
+  direction: 'A' | 'B';
+  /** Effective mode: 0 auto, 1 window, 2 advance, 3 quote. */
+  mode: number;
+  /** Counter id of the settling transition; 255 while open. */
+  outcome: number;
+  deposit_state: number;
+  depth: number;
+  flags: number;
+  amount: string;
+  deposit: string;
+  fee_bps: number;
+  w_n: number;
+  d_c: number;
+  w_c: number;
+  t_lock: number;
+  t_pending_deadline: number;
+  t_active: number;
+  t_note_deadline: number;
+  t_notice: number;
+  t_cut: number;
+  t_claim_open: number;
+  t_ready: number;
+  t_claim_deadline: number;
+  t_final: number;
+  t_refund: number;
+  t_settled: number;
+  owed_taker: string;
+  owed_maker: string;
+  owed_treasury: string;
+}
+
+/** Arguments of `lock` (direction A) and `take` (direction B). */
+export interface ModelOpenArgs {
+  direction: 'A' | 'B';
+  /** 0 AUTO, 1 WINDOW, 2 ADVANCE, 3 taker-bound quote. */
+  offer_mode: number;
+  /** A valid advance approval accompanies the call. */
+  approval: boolean;
+  /** Piconero, decimal. Zero is refused. */
+  xmr: string;
+  /** Escrowed amount, decimal. Zero is refused. */
+  amount: string;
+  w_a: number;
+  w_n: number;
+  d_c: number;
+  w_c: number;
+  w_f: number;
+  depth: number;
+  dep_bps: number;
+}
+
+/** A call into the state machine: its name and arguments. */
+export type ModelCall =
+  | { call: 'lock' | 'take'; args: ModelOpenArgs }
+  /** `open_ok`: `expected_open` equals the swap's open hash. */
+  | { call: 'approve' | 'fund'; args: { open_ok: boolean } }
+  | { call: 'reject'; args: { open_ok: boolean; reason: 0 | 1 | 2 } }
+  /** `secret_ok`: the scalar opens the commitment. */
+  | { call: 'refund' | 'claim'; args: { secret_ok: boolean } }
+  | { call: 'withhold'; args: { evidence: 'absent' | 'opens' | 'mismatch' } }
+  | { call: 'publish_evidence'; args: { opens: boolean } }
+  | { call: 'withdraw_owed'; args: { who: ModelParty } }
+  | {
+      call: 'cancel_pending' | 'expire_pending' | 'post_notice' | 'set_ready' | 'abort' | 'refund_unnoticed' | 'expire_unnoticed' | 'release_deposit' | 'split_deposit';
+      args?: Record<string, never>;
+    };
+
+/** What the model cannot know. Everything defaults to "can receive" and no pending swaps. */
+export interface ModelEnv {
+  taker_can_receive?: boolean;
+  maker_can_receive?: boolean;
+  treasury_can_receive?: boolean;
+  /** The maker's `open_pending` before a `lock` or `take`. */
+  open_pending?: number;
+}
+
+export interface ModelPayout {
+  to: ModelParty;
+  amount: string;
+  /** False: transferred. True: left in escrow and added to `owed_*`. */
+  parked: boolean;
+}
+
+/** Everything a successful call does (the `expect` object of a vector step). */
+export interface ModelEffects {
+  ok: true;
+  state: ModelState;
+  /** The counter the transition moves, or null. */
+  counter: number | null;
+  counter_name: string | null;
+  payouts: ModelPayout[];
+  escrow_in: string;
+  response_secs: number | null;
+  volume: string;
+  withheld_volume: string;
+  /** Change of the maker's `open_pending`: +1, 0 or -1. */
+  open_pending: number;
+  /** A row marked "closed" with nothing parked: Solana closes the account in the same instruction. */
+  closed: boolean;
+  /** The swap after the call. */
+  swap: ModelSwap;
+}
+
 /** Size caps of SPEC 2.8. */
 export const ENVELOPE_MAX_ONCHAIN = 900;
 export const ENVELOPE_MAX_TOR = 16_384;
@@ -369,6 +485,8 @@ interface Raw {
   passphraseSeal(passphrase: Bytes, plaintext: Bytes): Bytes;
   passphraseOpen(passphrase: Bytes, sealed: Bytes): Bytes;
   sweepJoint(params: SweepParams): Promise<SweepOutcome>;
+  modelApplyJson(input: string): string;
+  tierValue(above: readonly bigint[], values: readonly bigint[], xmr: bigint): bigint;
   coreVersion(): string;
 }
 
@@ -538,6 +656,48 @@ export const passphraseSeal = (passphrase: string | Bytes, plaintext: Bytes): By
   call((r) => r.passphraseSeal(utf8(passphrase), plaintext));
 export const passphraseOpen = (passphrase: string | Bytes, sealed: Bytes): Bytes =>
   call((r) => r.passphraseOpen(utf8(passphrase), sealed));
+
+// ------------------------------------------------------------------ SPEC 3 state machine
+
+function modelRun(chain: ChainName, state: ModelSwap | null, call: ModelCall, caller: ModelCaller, at: number | bigint, env?: ModelEnv): ModelEffects | { ok: false; error: string } {
+  const input = JSON.stringify({ chain, state, call: call.call, args: call.args ?? {}, caller, at: at.toString(), env: env ?? null });
+  return JSON.parse(core().modelApplyJson(input)) as ModelEffects | { ok: false; error: string };
+}
+
+/**
+ * The reference model of SPEC section 3: apply one call to a swap at chain time `at`.
+ * `state` is `null` for `lock` and `take`. Returns the effects (new record, payouts, counter);
+ * throws a `CoreError` whose `code` is the chain's error name (`TooLate`, `Unauthorized`,
+ * `ScalarMismatch` on Solana / `BadSecret` on Ethereum, …) when the contracts would refuse it.
+ * The contracts replay the same vectors, so this is what they do.
+ */
+export function modelApply(chain: ChainName, state: ModelSwap | null, call: ModelCall, caller: ModelCaller, at: number | bigint, env?: ModelEnv): ModelEffects {
+  let result: ReturnType<typeof modelRun>;
+  try {
+    result = modelRun(chain, state, call, caller, at, env);
+  } catch (e) {
+    throw toCoreError(e);
+  }
+  if (!result.ok) throw new CoreError(result.error, `${result.error}: ${call.call} by ${caller} is refused`);
+  return result;
+}
+
+/** Whether `modelApply` would succeed with every destination able to receive (or with `env`). */
+export function modelEnabled(chain: ChainName, state: ModelSwap | null, call: ModelCall, caller: ModelCaller, at: number | bigint, env?: ModelEnv): boolean {
+  try {
+    return modelRun(chain, state, call, caller, at, env).ok;
+  } catch (e) {
+    throw toCoreError(e);
+  }
+}
+
+/**
+ * The value of the highest used tier whose threshold is `<= xmr` (SPEC 3.1): the price or the
+ * depth for a size. `above[0]` must be 0; a value of 0 marks an unused tier and unused tiers
+ * trail. Throws `TiersInvalid` when the tiers are malformed.
+ */
+export const tierValue = (above: readonly [bigint, bigint, bigint], values: readonly [bigint, bigint, bigint], xmr: bigint): bigint =>
+  call((r) => r.tierValue(above, values, xmr));
 
 /** Version of the Rust crate inside the wasm. */
 export const coreVersion = (): string => call((r) => r.coreVersion());

@@ -402,7 +402,11 @@ describe('terms.json', () => {
 });
 
 describe('amounts.json', () => {
-  it('pay, receive, deposit, fee and split; overflow per chain', () => {
+  const windows = {
+    solana: { w_a: 60, w_n: 600, d_c: 5400, w_c: 1800, w_f: 604800, depth: 10, dep_bps: 100 },
+    ethereum: { w_a: 120, w_n: 1800, d_c: 10800, w_c: 5400, w_f: 604800, depth: 10, dep_bps: 100 },
+  };
+  it('pay, receive, swap, deposit, fee, split and tiers; overflow per chain', () => {
     const s = suite('amounts');
     const seen = new Set<string>();
     for (const c of s.cases) {
@@ -419,10 +423,31 @@ describe('amounts.json', () => {
         const r = core.splitOf(BigInt(i.deposit));
         expect([r.toTaker.toString(), r.toTreasury.toString()], c.name).toEqual([c.output.to_taker, c.output.to_treasury]);
       }
-      // `tier` cases have no wasm function: tier selection happens inside the contracts and is
-      // replayed there and in the Rust tests.
+      else if (i.op === 'tier') {
+        const three = (a: string[]): [bigint, bigint, bigint] => [BigInt(a[0]!), BigInt(a[1]!), BigInt(a[2]!)];
+        if (c.valid) expect(core.tierValue(three(i.above), three(i.values), BigInt(i.xmr)).toString(), c.name).toBe(c.output.value);
+        else expect(codeOf(() => core.tierValue(three(i.above), three(i.values), BigInt(i.xmr))), c.name).toBe(c.error);
+      } else if (i.op === 'swap') {
+        // The amount of a swap is pay (A) or receive (B); the zero rule is the model's, checked
+        // by opening a swap of that size.
+        const f = i.direction === 'A' ? core.payAmount : core.receiveAmount;
+        const open = (amount: string) =>
+          core.modelApply(i.chain, null, { call: i.direction === 'A' ? 'lock' : 'take', args: { direction: i.direction, offer_mode: 1, approval: false, xmr: i.xmr, amount, ...windows[i.chain as 'solana' | 'ethereum'] } }, 'taker', 1_800_000_000);
+        if (c.valid) {
+          expect(f(BigInt(i.xmr), BigInt(i.price), i.chain).toString(), c.name).toBe(c.output.amount);
+          expect(open(c.output.amount).swap.amount, c.name).toBe(c.output.amount);
+        } else {
+          expect(c.error, c.name).toBe('AmountOutOfRange');
+          const amount = i.xmr === '0' ? '0' : f(BigInt(i.xmr), BigInt(i.price), i.chain).toString();
+          if (i.xmr !== '0') expect(amount, c.name).toBe('0');
+          expect(codeOf(() => open(amount)), c.name).toBe('AmountOutOfRange');
+          // A zero xmr is refused even with a nonzero amount.
+          if (i.xmr === '0') expect(codeOf(() => open('5')), c.name).toBe('AmountOutOfRange');
+        }
+      }
+      expect(Array.isArray(c.chains) && c.chains.length > 0, c.name).toBe(true);
     }
-    expect([...seen].sort()).toEqual(['bps', 'pay', 'receive', 'split', 'tier']);
+    expect([...seen].sort()).toEqual(['bps', 'pay', 'receive', 'split', 'swap', 'tier']);
   });
 });
 
@@ -460,5 +485,70 @@ describe('deadlines.json', () => {
     }
     expect(bounds).toBeGreaterThanOrEqual(60);
     expect(derived).toBeGreaterThanOrEqual(12);
+  });
+});
+
+describe('transitions.json through the wasm model', () => {
+  const t = suite('transitions');
+  /** Run a vector step; the result in the shape of its `expect`. */
+  const run = (chain: core.ChainName, state: core.ModelSwap | null, step: any): any => {
+    const call = { call: step.call, args: step.args } as core.ModelCall;
+    const enabled = core.modelEnabled(chain, state, call, step.caller, step.at, step.env);
+    try {
+      const fx = core.modelApply(chain, state, call, step.caller, step.at, step.env);
+      expect(enabled).toBe(true);
+      return fx;
+    } catch (e) {
+      expect(enabled).toBe(false);
+      return { ok: false, error: (e as core.CoreError).code };
+    }
+  };
+
+  it('every row: the wasm model gives the native result', () => {
+    expect(t.rows.length).toBeGreaterThanOrEqual(800);
+    let accepted = 0;
+    let rejected = 0;
+    for (const row of t.rows) {
+      const label = `${row.chain} ${row.id}: ${row.case}`;
+      let state: core.ModelSwap | null = null;
+      for (const step of [...(row.open ? [row.open] : []), ...row.setup]) state = core.modelApply(row.chain, state, { call: step.call, args: step.args } as core.ModelCall, step.caller, step.at, step.env).swap;
+      if (row.from) expect(state, label).toEqual(row.from);
+      expect(run(row.chain, state, row.step), label).toEqual(row.step.expect);
+      if (row.ok) accepted++;
+      else rejected++;
+    }
+    expect(accepted).toBeGreaterThan(350);
+    expect(rejected).toBeGreaterThan(350);
+  });
+
+  it('every sequence: states, payouts and counters step by step', () => {
+    expect(t.sequences.length).toBe(364);
+    for (const seq of t.sequences) {
+      let state: core.ModelSwap | null = null;
+      for (const [i, step] of seq.steps.entries()) {
+        const got = run(seq.chain, state, step);
+        // The maker record is kept by the caller, not by the model: compare everything else.
+        const { maker: _maker, ...want } = step.expect;
+        expect(got, `${seq.chain} ${seq.name} step ${i} ${step.call}`).toEqual(want);
+        if (got.ok) state = got.swap;
+      }
+      expect(state, `${seq.chain} ${seq.name}`).toEqual(seq.final.swap);
+    }
+  });
+
+  it('refusals carry the chain error name; malformed input is a BadArgument', () => {
+    const open: core.ModelCall = { call: 'lock', args: { direction: 'A', offer_mode: 0, approval: false, xmr: '1000000000000', amount: '1500000000', w_a: 60, w_n: 600, d_c: 5400, w_c: 1800, w_f: 604800, depth: 10, dep_bps: 100 } };
+    const s = core.modelApply('solana', null, open, 'taker', 1_800_000_000n).swap;
+    expect(s.state).toBe('ACTIVE');
+    expect(codeOf(() => core.modelApply('solana', s, { call: 'refund', args: { secret_ok: false } }, 'session', 1_800_000_010))).toBe('ScalarMismatch');
+    expect(codeOf(() => core.modelApply('solana', s, { call: 'claim', args: { secret_ok: true } }, 'operator', 1_800_000_010))).toBe('BadState');
+    expect(core.modelEnabled('solana', s, { call: 'refund', args: { secret_ok: true } }, 'session', 1_800_000_010)).toBe(true);
+    expect(core.modelEnabled('solana', s, { call: 'refund', args: { secret_ok: true } }, 'operator', 1_800_000_010)).toBe(false);
+    // Pay or park through env.
+    const parked = core.modelApply('solana', s, { call: 'refund', args: { secret_ok: true } }, 'session', 1_800_000_010, { taker_can_receive: false });
+    expect(parked.payouts).toEqual([{ to: 'taker', amount: '1485000000', parked: true }]);
+    expect(codeOf(() => core.modelApply('solana', s, { call: 'steal' } as never, 'session', 1))).toBe('BadArgument');
+    expect(codeOf(() => core.modelApply('bitcoin' as never, s, { call: 'abort' }, 'operator', 1))).toBe('BadArgument');
+    expect(codeOf(() => core.modelEnabled('solana', { ...s, state: 'LOST' as never }, { call: 'abort' }, 'operator', 1))).toBe('BadArgument');
   });
 });
