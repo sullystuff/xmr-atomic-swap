@@ -391,6 +391,23 @@ export class EthereumClient {
     return (await via.request({ method: 'eth_sendRawTransaction', params: [signed] })) as Hex;
   }
 
+  /**
+   * Poll for the receipt of a sent transaction. Resolves with its block once mined; a reverted
+   * transaction throws `TransactionReverted`. Mined is not final: see `isFinal`.
+   */
+  async waitMined(txHash: Hex, opts: { timeoutMs?: number; intervalMs?: number } = {}): Promise<{ blockNumber: bigint; blockHash: Hex; gasUsed: bigint }> {
+    const deadline = Date.now() + (opts.timeoutMs ?? 120_000);
+    for (;;) {
+      const r = (await this.transport.request({ method: 'eth_getTransactionReceipt', params: [txHash] })) as { blockNumber: string; blockHash: Hex; status: string; gasUsed: string } | null;
+      if (r) {
+        if (BigInt(r.status) !== 1n) throw new ContractError('TransactionReverted', txHash);
+        return { blockNumber: BigInt(r.blockNumber), blockHash: r.blockHash, gasUsed: BigInt(r.gasUsed) };
+      }
+      if (Date.now() > deadline) throw new SdkError('NotMined', `${txHash} was not mined in time`);
+      await new Promise((res) => setTimeout(res, opts.intervalMs ?? 250));
+    }
+  }
+
   // ---------------------------------------------------------------- readers
 
   /** The swap as a chain-neutral view, or `null` when no such swap exists (state 0). `withOwed` also reads the parked payouts. */

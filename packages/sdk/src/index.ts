@@ -22,6 +22,7 @@ export * from './flows/taker.js';
 export * from './flows/maker.js';
 export * from './flows/keys.js';
 export * from './flows/open.js';
+export * from './flows/execute.js';
 
 // Solana.
 export * from './solana/pdas.js';

@@ -269,6 +269,26 @@ export class SolanaClient {
     return this.signAndSend(await this.prepare(signers[0]!.publicKey, instructions, opts), signers);
   }
 
+  /**
+   * `send`, then poll until the transaction is at `level` (no WebSocket needed). A transaction
+   * that landed with an error throws a `ProgramError`; one that never lands throws `NotConfirmed`.
+   */
+  async sendAndConfirm(instructions: TransactionInstruction[], signers: SolanaSigner[], opts: { cuPrice?: bigint | number; level?: Level; timeoutMs?: number; intervalMs?: number } = {}): Promise<string> {
+    const signature = await this.send(instructions, signers, opts);
+    await this.waitConfirmed(signature, opts);
+    return signature;
+  }
+
+  /** Poll `isConfirmed` until it holds. */
+  async waitConfirmed(signature: string, opts: { level?: Level; timeoutMs?: number; intervalMs?: number } = {}): Promise<void> {
+    const deadline = Date.now() + (opts.timeoutMs ?? 60_000);
+    for (;;) {
+      if (await this.isConfirmed(signature, opts.level ?? 'finalized')) return;
+      if (Date.now() > deadline) throw new SdkError('NotConfirmed', `${signature} did not reach ${opts.level ?? 'finalized'} in time`);
+      await new Promise((r) => setTimeout(r, opts.intervalMs ?? 200));
+    }
+  }
+
   /** Send a transaction a wallet already signed. */
   submit(wire: Bytes): Promise<string> {
     return this.transport.send(wire);
