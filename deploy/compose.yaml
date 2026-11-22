@@ -1,0 +1,68 @@
+# The self-hosting bundle for people who use containers: the web UI with the relay, and a Tor
+# client, on a private network. Equivalent to `pnpm --filter @xmrswap/deploy start`.
+#
+# NOT RUN on the machine where this was written (it has no Docker). The file is checked as YAML
+# against deploy/compose.schema.json by the tests; the images have never been built.
+# Read docs/self-hosting/quick-start.md ("With containers") before using it.
+#
+#   SOLANA_RPC_URL=<your Solana RPC URL> docker compose -f deploy/compose.yaml up --build
+#
+# Then open http://127.0.0.1:8780/ . Monero nodes: RELAY_MONERO_NODES=<url>,<url> (see below).
+
+name: xmrswap-selfhost
+
+services:
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/docker/Dockerfile
+    depends_on:
+      - tor
+    environment:
+      # Inside the container the UI must listen on all of the container's addresses; the port
+      # mapping below is what keeps it on this machine's localhost.
+      XMRSWAP_UI_LISTEN: "0.0.0.0:8780"
+      XMRSWAP_UI_PUBLIC_ORIGIN: "http://127.0.0.1:8780"
+      RELAY_BIND: "127.0.0.1:8787"
+      RELAY_TOR_SOCKS: "tor:9050"
+      # Secrets come from your shell or an env file, never from this file.
+      SOLANA_RPC_URL: "${SOLANA_RPC_URL:-}"
+      ETHEREUM_RPC_URL: "${ETHEREUM_RPC_URL:-}"
+      # Comma-separated http(s)://host[:port]. A node on this machine is not "127.0.0.1" from
+      # inside the container; see the quick start.
+      RELAY_MONERO_NODES: "${RELAY_MONERO_NODES:-}"
+      XMRSWAP_UI_OWN_NODE: "${XMRSWAP_UI_OWN_NODE:-false}"
+    ports:
+      # Localhost only. Do not remove the 127.0.0.1 prefix.
+      - "127.0.0.1:8780:8780"
+    networks:
+      - internal
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  tor:
+    build:
+      context: docker
+      dockerfile: tor.Dockerfile
+    # No ports: only the web service reaches the SOCKS port, over the private network.
+    networks:
+      - internal
+    volumes:
+      - tor-data:/var/lib/tor
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+networks:
+  internal: {}
+
+volumes:
+  tor-data: {}

@@ -3,17 +3,32 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "description": "Self-hosting bundle: the taker web UI and the relay on one loopback origin, a status check, release checksums (SPEC 8.8)",
   "scripts": {
-    "build": "echo '@xmrswap/deploy: not implemented yet (owned by WP12)' && exit 1",
-    "test": "echo '@xmrswap/deploy: not implemented yet (owned by WP12)' && exit 1"
+    "start": "node scripts/ensure-ui.mjs && tsx src/cli.ts start",
+    "status": "tsx src/cli.ts status",
+    "settings": "tsx src/cli.ts settings",
+    "pinned": "tsx src/cli.ts pinned",
+    "docs": "tsx src/cli.ts docs",
+    "release": "node scripts/ensure-ui.mjs && node scripts/release.mjs",
+    "checksums": "node scripts/checksums.mjs",
+    "verify": "node scripts/verify.mjs",
+    "build": "tsc -p tsconfig.json",
+    "test": "node scripts/ensure-ui.mjs && tsc -p tsconfig.json && vitest run"
   },
   "dependencies": {
-    "@xmrswap/relay": "workspace:*"
+    "@xmrswap/protocol": "workspace:*",
+    "@xmrswap/relay": "workspace:*",
+    "smol-toml": "1.9.1"
   },
   "devDependencies": {
     "typescript": "7.0.2",
     "tsx": "4.23.15",
     "vitest": "5.1.1",
-    "@types/node": "22.20.5"
+    "@types/node": "22.20.5",
+    "yaml": "2.9.1",
+    "ajv": "8.20.0",
+    "playwright-core": "1.56.1",
+    "@solana/web3.js": "1.98.4"
   }
 }

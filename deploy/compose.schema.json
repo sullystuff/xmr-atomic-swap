@@ -1,0 +1,110 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "xmrswap-selfhost-compose.schema.json",
+  "title": "Compose file of the xmrswap self-hosting bundle",
+  "description": "The part of the Compose file format this bundle uses, and the rules the bundle adds on top: every published port is bound to 127.0.0.1, no container is privileged, no host directory is mounted, and unknown keys are refused. It is deliberately narrower than the Compose Specification; widen it when the compose file needs a key it does not list.",
+  "type": "object",
+  "required": ["services"],
+  "additionalProperties": false,
+  "properties": {
+    "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$" },
+    "services": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "pattern": "^[a-zA-Z0-9._-]+$" },
+      "additionalProperties": { "$ref": "#/definitions/service" }
+    },
+    "networks": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[a-zA-Z0-9._-]+$" },
+      "additionalProperties": { "$ref": "#/definitions/network" }
+    },
+    "volumes": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[a-zA-Z0-9._-]+$" },
+      "additionalProperties": { "$ref": "#/definitions/volume" }
+    }
+  },
+  "definitions": {
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "oneOf": [{ "required": ["image"] }, { "required": ["build"] }],
+      "properties": {
+        "image": { "type": "string", "minLength": 1 },
+        "build": {
+          "type": "object",
+          "required": ["context"],
+          "additionalProperties": false,
+          "properties": {
+            "context": { "type": "string", "minLength": 1 },
+            "dockerfile": { "type": "string", "minLength": 1 },
+            "target": { "type": "string" },
+            "args": { "type": "object", "additionalProperties": { "type": ["string", "number", "boolean"] } }
+          }
+        },
+        "command": { "oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }] },
+        "depends_on": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "environment": {
+          "type": "object",
+          "propertyNames": { "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+          "additionalProperties": { "type": ["string", "number", "boolean", "null"] }
+        },
+        "env_file": { "oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }] },
+        "ports": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "description": "Short syntax only, and only bound to this machine's loopback address.",
+            "pattern": "^127\\.0\\.0\\.1:[0-9]{1,5}:[0-9]{1,5}(/tcp)?$"
+          }
+        },
+        "expose": { "type": "array", "items": { "type": ["string", "number"] } },
+        "networks": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "volumes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "description": "Named volumes only: no host path may be mounted into a container.",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]*:/[^:]*(:(ro|rw))?$"
+          }
+        },
+        "tmpfs": { "oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }] },
+        "read_only": { "type": "boolean" },
+        "user": { "type": "string" },
+        "working_dir": { "type": "string" },
+        "cap_drop": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "security_opt": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "restart": { "enum": ["no", "always", "on-failure", "unless-stopped"] },
+        "healthcheck": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "test": { "oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }] },
+            "interval": { "type": "string" },
+            "timeout": { "type": "string" },
+            "retries": { "type": "integer", "minimum": 0 },
+            "start_period": { "type": "string" }
+          }
+        }
+      }
+    },
+    "network": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "driver": { "type": "string" },
+        "internal": { "type": "boolean" }
+      }
+    },
+    "volume": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "driver": { "type": "string" }
+      }
+    }
+  }
+}

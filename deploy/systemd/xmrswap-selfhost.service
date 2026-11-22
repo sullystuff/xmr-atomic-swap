@@ -1,0 +1,29 @@
+# Example systemd USER unit for the self-hosting bundle. It is an example file: nothing in this
+# repository installs it. See docs/self-hosting/quick-start.md ("Start it at login").
+#
+# Assumptions to adjust:
+#   - the repository is checked out at ~/xmr-atomic-swap  (WorkingDirectory below)
+#   - pnpm is at /usr/bin/pnpm                            (ExecStart below; check with `command -v pnpm`)
+#   - ~/.config/xmrswap/env holds the RPC URLs, one NAME=value per line, readable by you only:
+#       SOLANA_RPC_URL=...
+#       ETHEREUM_RPC_URL=...
+#
+# It does not start Tor. Run a Tor client separately, or point [relay] tor_socks at one.
+
+[Unit]
+Description=xmrswap self-hosted web UI and relay (localhost only)
+Documentation=file:%h/xmr-atomic-swap/docs/self-hosting/README.md
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/xmr-atomic-swap
+EnvironmentFile=%h/.config/xmrswap/env
+ExecStart=/usr/bin/pnpm --filter @xmrswap/deploy start
+Restart=on-failure
+RestartSec=5
+# The bundle needs no privileges.
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

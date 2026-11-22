@@ -1,0 +1,4 @@
+# The user's own settings and environment file, and release output.
+/xmrswap.toml
+/xmrswap.env
+/release/

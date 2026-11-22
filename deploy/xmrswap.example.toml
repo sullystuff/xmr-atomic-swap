@@ -1,0 +1,125 @@
+# Settings for the self-hosting bundle (@xmrswap/deploy). Copy this file to xmrswap.toml in the
+# same directory and edit the copy. Every key is optional; the values shown are the defaults.
+# Each key can also be set by the environment variable named beside it, which wins over the file.
+# The file is found as ./xmrswap.toml in deploy/, or through XMRSWAP_SELFHOST_CONFIG.
+#
+# RPC URLs are secrets (they usually contain an API key) and never go in this file: they are
+# read from environment variables. The full reference is docs/self-hosting/configuration.md.
+# This file is generated: `pnpm --filter @xmrswap/deploy run docs` rewrites it.
+
+[ui]
+
+# Address the web UI is served on. This is the address you open in the browser. The same server
+# passes /relay/ and /monero/ on to the relay, so the page and the relay share one origin. Keep it
+# on 127.0.0.1 unless you have read the page on exposing the relay publicly.
+# Environment: XMRSWAP_UI_LISTEN
+listen = "127.0.0.1:8780"
+
+# Directory holding the built web UI (index.html and assets). A relative path is taken from the
+# deploy/ directory. Point it at an unpacked release after you have verified its checksums.
+# Environment: XMRSWAP_UI_DIST
+dist = "../apps/web/dist"
+
+# The origin the browser uses to reach the UI, for example "https://swap.example.org", when that
+# differs from `listen` (a reverse proxy or a container port mapping). The server answers only
+# requests whose Host header matches `listen` or this origin, and the Monero proxy addresses given
+# to the page are built from it.
+# Environment: XMRSWAP_UI_PUBLIC_ORIGIN. Default: empty: the origin is http:// followed by `listen`.
+public_origin = ""
+
+# NAME of the environment variable holding the Ethereum RPC URL given to the page. If the variable
+# is not set, the ETH and USDC-on-Ethereum markets are switched off. The URL itself never goes in
+# this file, because provider URLs usually contain an API key.
+# Environment: XMRSWAP_UI_ETHEREUM_RPC_URL_ENV
+ethereum_rpc_url_env = "ETHEREUM_RPC_URL"
+
+# Chain id the Ethereum RPC must report. The page refuses an RPC that reports another chain.
+# Environment: XMRSWAP_UI_ETHEREUM_CHAIN_ID. Default: pinned by the release; 1 while no contract is deployed.
+ethereum_chain_id = 1
+
+# Ethereum contract address given to the page. Leave it alone unless you are testing: it must
+# equal the published address, and the page shows it for checking.
+# Environment: XMRSWAP_UI_CONTRACT_ADDRESS. Default: pinned by the release; empty while no contract is deployed.
+contract_address = ""
+
+# Monero network the page expects its nodes to be on: "mainnet", "stagenet", "testnet" or
+# "regtest".
+# Environment: XMRSWAP_UI_MONERO_NETWORK
+monero_network = "mainnet"
+
+# Set to true only if `monero_nodes` lists exactly one node and you run that node yourself. With
+# false, the page needs two or more nodes and refuses to count a lock as confirmed unless they
+# agree.
+# Environment: XMRSWAP_UI_OWN_NODE
+own_node = false
+
+[relay]
+
+# Address the relay itself listens on. The browser never calls it directly; the UI server passes
+# requests on to it. Localhost only unless changed on purpose.
+# Environment: RELAY_BIND
+bind = "127.0.0.1:8787"
+
+# Address of the Tor client's SOCKS5 proxy. 9050 is Tor's standard port; Tor Browser uses 9150.
+# The bundle does not start Tor: it only connects to this address. Onion names are resolved by
+# Tor, never by the relay.
+# Environment: RELAY_TOR_SOCKS
+tor_socks = "127.0.0.1:9050"
+
+# NAME of the environment variable holding the Solana RPC URL. The relay reads the list of makers
+# through it and the page uses it for everything on Solana. There is no default URL: whoever runs
+# the endpoint sees your queries and transactions. Without it the relay forwards nothing and you
+# must type an RPC URL into the Settings page.
+# Environment: RELAY_SOLANA_RPC_URL_ENV
+solana_rpc_url_env = "SOLANA_RPC_URL"
+
+# The Solana swap program. The relay forwards only to makers registered in it, and the page uses
+# it for every swap. Leave it alone unless you are testing: it must equal the published program
+# id.
+# Environment: RELAY_PROGRAM_ID. Default: pinned by the release.
+program_id = "5SDDBJfrRbEehBjzKwZKRLdRNyqHi6sNynGwmmUW947u"
+
+# Monero nodes, as http(s)://host[:port] with no path. The relay serves the n-th one at
+# /monero/<n>/ (counting from 0) and the page is told to use those addresses, so the browser can
+# reach plain-http and .onion nodes. Use your own node, or at least two nodes run by different
+# people. A .onion node is reached through Tor. The environment variable takes a comma-separated
+# list.
+# Environment: RELAY_MONERO_NODES. Default: none; must be set.
+monero_nodes = []
+
+# Largest Monero node response the proxy will carry. A larger response is refused with
+# `upstream_too_large`.
+# Environment: RELAY_MONERO_MAX_RESPONSE_BYTES. Default: 16 MiB.
+monero_max_response_bytes = 16777216
+
+# Other web origins allowed to call the relay from a browser. Not needed with this bundle, because
+# the page and the relay share one origin. Never use "*" on your own machine: any web page you
+# visit could then use your relay and your Monero nodes.
+# Environment: RELAY_ALLOWED_ORIGINS. Default: none: same-origin only.
+allowed_origins = []
+
+# Number of reverse proxies you have put in front of the UI server, whose X-Forwarded-For header
+# is trusted when counting requests per client address. 0 means none. The UI server itself is
+# counted automatically; do not add 1 for it.
+# Environment: RELAY_TRUST_PROXY_HOPS
+trust_proxy_hops = 0
+
+# When true the relay logs, for every forwarded request, the client address and the onion address
+# it contacted, and prints a warning at start. Message bodies are never logged. Leave it off.
+# Environment: RELAY_DEBUG_LOG
+debug_log = false
+
+[relay.rate_limit]
+
+# Requests one client address may make per minute, counting messages and Monero node calls
+# together. Beyond it the relay answers 429 `rate_limited` until the minute ends. The page checks
+# every lock against every Monero node every few seconds through this relay, which needs far more
+# than a public relay allows a stranger; lower it before exposing the relay publicly.
+# Environment: RELAY_RATE_REQUESTS_PER_MINUTE. Default: this bundle's default for one user on localhost; the relay's own default is 60.
+requests_per_minute = 6000
+
+# Bytes (requests and relayed responses together) one client address may move per minute. The
+# final XMR sweep downloads several megabytes from the Monero node in one go. Lower it before
+# exposing the relay publicly.
+# Environment: RELAY_RATE_BYTES_PER_MINUTE. Default: 1 GiB; this bundle's default for one user on localhost; the relay's own default is 4194304 (4 MiB).
+bytes_per_minute = 1073741824
