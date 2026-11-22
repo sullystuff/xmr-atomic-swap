@@ -2,10 +2,10 @@
  * Per-swap secrets and what is computed from them (SPEC 2.2, 2.5, 2.8, 8.4). Everything
  * cryptographic is a call into `@xmrswap/core-wasm`; this file only says which bytes go where.
  */
-import { CHAIN_TAG, type DerivedKeys, type JointAddress, type Network, addScalars, contactShareId, deriveKeys, isLowOrderX25519, jointAddress, noticeCommitment, noticeOpen, noticeSeal, scalarMatches, validatePoint } from '@xmrswap/core-wasm';
-import { type ChainName, type ExportedJointWallet, NOTICE_CIPHERTEXT_LEN, SWAP_FLAG, base58Decode } from '@xmrswap/protocol';
+import { CHAIN_TAG, type DerivedKeys, type JointAddress, type Network, addScalars, contactShareId, deriveKeys, isLowOrderX25519, jointAddress, noticeCommitment, noticeOpen, noticeSeal, openHashEthereum, openHashSolana, scalarMatches, validatePoint } from '@xmrswap/core-wasm';
+import { type ChainName, type ExportedJointWallet, NOTICE_CIPHERTEXT_LEN, SWAP_FLAG, SWAP_STATE, base58Decode } from '@xmrswap/protocol';
 import { type SwapView, hasFlag } from '../machine/view.js';
-import { type Bytes, SdkError, bytesEqual, hex, isZero } from '../util.js';
+import { type Bytes, SdkError, bytesEqual, hex, isZero, unhex } from '../util.js';
 
 /** The taker's keys for one swap: derived from the recovery seed and the swap's on-chain nonce, so nothing needs storing. */
 export function takerSwapKeys(seed: Bytes, chain: ChainName, swapNonce: Bytes): DerivedKeys {
@@ -119,4 +119,39 @@ export function jointSpendKey(s: SwapView, ownSpend: Bytes, own: Side): Bytes {
 /** "Export keys": what restores the joint wallet in standard Monero wallet software (SPEC 8.4). */
 export function exportJointWallet(joint: JointAddress, spendKey: Bytes, lockTxid: Bytes, lockHeight: number): ExportedJointWallet {
   return { address: joint.address, view_key: hex(joint.viewPriv), spend_key: hex(spendKey), lock_txid: hex(lockTxid), lock_height: lockHeight };
+}
+
+/**
+ * The open hash of a pending swap (SPEC 3.12): what `approve`, `fund` and `reject` pass as
+ * `expected_open`, so the maker's transaction applies only to the lock its rules and proof
+ * checks examined. Computed from the swap the caller read, never taken from the chain: on
+ * Ethereum the stored `openHash` must equal it, and a mismatch means the state read is not the
+ * lock that will be approved.
+ */
+export function expectedOpen(s: SwapView): Bytes {
+  if (s.state !== SWAP_STATE.PENDING) throw new SdkError('BadState', 'only a pending swap has an open hash to approve');
+  // The locker's view share as stored at lock: the taker's in A, zeros in B (the maker's arrives with fund).
+  const lockerView = s.direction === 0 ? s.lockerView : new Uint8Array(32);
+  if (s.chain === 'solana') {
+    return openHashSolana({ swap: s.swapRef, tLock: s.tLock, direction: s.direction, asset: Number(s.asset), xmr: s.xmr, amount: s.amount, deposit: s.deposit, takerSpendPub: s.takerSpendPub, lockerView, takerEncKey: s.takerEncKey, makerEncKey: s.makerEncKey });
+  }
+  if (!s.eth) throw new SdkError('BadState', 'an Ethereum swap view carries its twin commitments');
+  const computed = openHashEthereum({
+    swapId: s.swapRef,
+    tLock: s.tLock,
+    direction: s.direction,
+    token: unhex(s.asset),
+    xmr: s.xmr,
+    amount: s.amount,
+    deposit: s.deposit,
+    takerSpendPub: s.takerSpendPub,
+    takerKey: unhex(s.eth.takerKey),
+    takerKey2: unhex(s.eth.takerKey2),
+    takerView: lockerView,
+    takerEncKey: s.takerEncKey,
+    makerEncKey: s.makerEncKey,
+    keyLeaf: s.eth.keyLeaf,
+  });
+  if (!bytesEqual(computed, s.eth.openHash)) throw new SdkError('OpenHashMismatch', 'the stored open hash is not the hash of the stored lock');
+  return computed;
 }

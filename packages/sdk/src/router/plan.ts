@@ -161,7 +161,8 @@ export function planRoute(order: RouterOrder, offers: readonly RouterOffer[]): R
     else usable.push(o);
   }
 
-  const capacity = new Map(usable.map((o) => [o.id, o.capacityXmr < o.maxXmr ? o.capacityXmr : o.maxXmr]));
+  // Capacity is consumed across waves; `max_xmr` caps each leg.
+  const capacity = new Map(usable.map((o) => [o.id, o.capacityXmr]));
   const waves: PlannedWave[] = [];
   let remaining = order.totalPay;
   const maxWaves = order.maxWaves ?? 16;
@@ -229,7 +230,8 @@ function planWave(order: RouterOrder, offers: readonly RouterOffer[], capacity: 
     let best: { o: RouterOffer; xmr: bigint; pricing: Pricing; rate: bigint } | null = null;
     for (const o of left) {
       if (makers.has(o.makerId)) continue;
-      const cap = capacity.get(o.id)!;
+      const left = capacity.get(o.id)!;
+      const cap = left < o.maxXmr ? left : o.maxXmr;
       if (cap < o.minXmr || cap <= 0n) continue;
       const fit = affordable(o, budget, cap);
       if (!fit) {
