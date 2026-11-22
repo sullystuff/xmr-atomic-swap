@@ -345,3 +345,110 @@ describe('console contract', () => {
     expect([...called].sort()).toEqual(Object.keys(ROUTES).sort());
   });
 });
+
+describe('console requests (apps/console DEVIATIONS "Requests to the daemon")', () => {
+  const get = async (p: string) => (await fetch(`${api.url}${p}`, { headers: { Authorization: `Bearer ${d.token}` } })).json() as Promise<any>;
+  const LOADER = 'BPFLoaderUpgradeab1e11111111111111111111111';
+  const programData = seedSigner(new Uint8Array(32).fill(0x70)).publicKey;
+  const authority = seedSigner(new Uint8Array(32).fill(1)).publicKey;
+  function setProgram(auth: string | null): void {
+    const { PublicKey } = require('@solana/web3.js') as typeof import('@solana/web3.js');
+    const program = new Uint8Array(36);
+    new DataView(program.buffer).setUint32(0, 2, true);
+    program.set(new PublicKey(programData).toBytes(), 4);
+    w.sim.fake.setAccount(w.sim.programId, LOADER, program);
+    const pd = new Uint8Array(45 + 16);
+    new DataView(pd.buffer).setUint32(0, 3, true);
+    if (auth) {
+      pd[12] = 1;
+      pd.set(new PublicKey(auth).toBytes(), 13);
+    }
+    w.sim.fake.setAccount(programData, LOADER, pd);
+  }
+
+  it('1. upgrade status is read from the ProgramData account: unknown with a reason, upgradable with its authority, immutable', async () => {
+    await d.refreshUpgrade();
+    let c = (await get('/api/status')).chains[0];
+    expect(c).toMatchObject({ upgradeable: null, upgrade_authority: null, upgrade_status: 'unknown', upgrade_reason: 'the program account was not found at this endpoint' });
+    setProgram(authority);
+    await d.refreshUpgrade();
+    c = (await get('/api/status')).chains[0];
+    expect(c).toMatchObject({ upgradeable: true, upgrade_authority: authority, upgrade_status: 'upgradable', upgrade_reason: null, upgrade_implementation: programData, upgrade_checked_at: expect.any(Number) });
+    // The authority is revoked: immutable, and nobody is named.
+    setProgram(null);
+    await d.housekeeping(); // the periodic refresh
+    c = (await get('/api/status')).chains[0];
+    expect(c).toMatchObject({ upgradeable: false, upgrade_authority: null, upgrade_status: 'immutable' });
+    // A program under a non-upgradeable loader is immutable; an unrecognised owner is unknown, with the reason.
+    w.sim.fake.setAccount(w.sim.programId, 'BPFLoader2111111111111111111111111111111111', new Uint8Array(8));
+    await d.refreshUpgrade();
+    expect((await get('/api/status')).chains[0].upgrade_status).toBe('immutable');
+    w.sim.fake.setAccount(w.sim.programId, '11111111111111111111111111111111', new Uint8Array(8));
+    await d.refreshUpgrade();
+    expect((await get('/api/status')).chains[0]).toMatchObject({ upgradeable: null, upgrade_status: 'unknown', upgrade_reason: expect.stringMatching(/unrecognised loader/) });
+    w.sim.fake.deleteAccount(w.sim.programId);
+  });
+
+  it('2. a published-settings edit in dry run is refused BEFORE it is stored', async () => {
+    const onion = `${'d'.repeat(56)}.onion`;
+    const res = await fetch(`${dry.api.url}/api/registration/published`, { method: 'PUT', headers: { Authorization: `Bearer ${dry.d.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ onion, contacts: [{ kind: 4, value: '@later' }] }) });
+    expect([res.status, ((await res.json()) as { error: string }).error]).toEqual([409, 'dry_run']);
+    expect(dry.d.store.kv('published:onion')).toBeUndefined();
+    expect(dry.d.store.kv('published:contacts')).toBeUndefined();
+    expect(dry.d.desiredPublished()).toMatchObject({ onion: null, contacts: [] });
+  });
+
+  it('3. tor.published says whether the registry lists the wanted onion address', async () => {
+    const s = await get('/api/status');
+    // The contract test above published this address through the API.
+    expect(s.tor).toMatchObject({ onion: `${'c'.repeat(56)}.onion`, published: true, registry_onion: `${'c'.repeat(56)}.onion`, reachable: null });
+    d.store.setKv('published:onion', JSON.stringify(`${'e'.repeat(56)}.onion`));
+    expect((await get('/api/status')).tor).toMatchObject({ onion: `${'e'.repeat(56)}.onion`, published: false, registry_onion: `${'c'.repeat(56)}.onion` });
+    d.store.setKv('published:onion', JSON.stringify(`${'c'.repeat(56)}.onion`));
+  });
+
+  it('4. refills say whether they still need an acknowledgement', async () => {
+    const { refillView } = await import('../src/rebalance/index.js');
+    const rec = (state: string, unresolved: boolean) => refillView({ id: 'r', venue: 'changenow', request: { from: 'usdc_sol', to: 'xmr' }, state, quote: { amountIn: 1n, amountOut: 2n, costPct: 0, feesUsd: 0 }, handle: null, startedAt: 1, finishedAt: null, received: null, txids: [], detail: null, unresolved } as never) as unknown as Record<string, unknown>;
+    expect(rec('failed', true)).toMatchObject({ needs_acknowledgement: true, acknowledged: false });
+    expect(rec('held', true)).toMatchObject({ needs_acknowledgement: true, acknowledged: false });
+    expect(rec('failed', false)).toMatchObject({ needs_acknowledgement: false, acknowledged: true });
+    expect(rec('done', false)).toMatchObject({ needs_acknowledgement: false, acknowledged: false });
+  });
+
+  it('5. swap summaries carry the mode and the latest instruction (list and WebSocket payload)', async () => {
+    const list = await get('/api/swaps');
+    expect(list.swaps.length).toBeGreaterThan(0);
+    for (const s of list.swaps) expect(s).toMatchObject({ mode: expect.any(Number) });
+    const withInstruction = list.swaps.find((s: { instruction: unknown }) => s.instruction !== null);
+    expect(withInstruction.instruction).toEqual({ action: expect.any(String), at: expect.any(Number), status: expect.stringMatching(/carried_out|refused|pending/), reason: null, tx: expect.any(String) });
+    expect(list.swaps.find((s: { mode: number }) => s.mode === 1)).toBeDefined(); // window-mode locks
+  });
+
+  it('6, 8, 9. one documented list of refusal reasons; validate carries the SOL price; a parked payout has an unsigned-transaction action', async () => {
+    const { REFUSALS } = await import('../src/api/server.js');
+    expect(Object.keys(REFUSALS).sort()).toEqual(['abort-window-closed', 'already-settled', 'cannot-exit-after-funding', 'dry-run', 'hold-ended', 'no-deposit-held', 'not-available-in-state', 'ready-already-set', 'refund-window-closed', 'reject-not-available']);
+    const v = await client.call('configValidate', { body: { toml: d.load.toml } });
+    expect(v).toMatchObject({ ok: true, sol_usd: 100, compute_units_per_update: 24_120 });
+    // Nothing is parked on any swap here: the action exists and says so.
+    const ref = d.store.swaps({ open: true })[0]?.ref ?? d.store.swaps()[0]!.ref;
+    const res = await fetch(`${api.url}/api/swaps/${ref}/withdraw-owed-tx`, { method: 'POST', headers: { Authorization: `Bearer ${d.token}`, 'Content-Type': 'application/json' }, body: '{}' });
+    expect([409]).toContain(res.status);
+    expect(['nothing_owed', 'action_unavailable']).toContain(((await res.json()) as { error: string }).error);
+    // A claim whose payout was parked (the payout account could not receive): the owner pulls it with a transaction the daemon builds unsigned.
+    const parked = w.sim.open({ direction: 0, mode: 1, xmr: XMR, depBps: 200 });
+    await d.executor.scan();
+    w.sim.putSwap(parked.pda, { ...w.sim.swap(parked.pda)!, state: 9, owedMaker: 123_456n });
+    const built = await fetch(`${api.url}/api/swaps/${parked.pda}/withdraw-owed-tx`, { method: 'POST', headers: { Authorization: `Bearer ${d.token}`, 'Content-Type': 'application/json' }, body: '{}' });
+    expect(built.status).toBe(200);
+    const tx = (await built.json()) as { request_id: string; summary: string; unsigned: { chain: string; fee_payer: string; message_b64: string } };
+    expect(tx).toMatchObject({ request_id: expect.any(String), summary: expect.stringMatching(/123456 base units.*owner key/), unsigned: { chain: 'solana', fee_payer: w.sim.owner } });
+    const { Message } = await import('@solana/web3.js');
+    const { decodeInstructionData } = await import('@xmrswap/protocol');
+    const msg = Message.from(Buffer.from(tx.unsigned.message_b64, 'base64'));
+    expect(msg.header.numRequiredSignatures).toBe(1);
+    const { default: bs58 } = { default: { decode: (x: string) => (require('@xmrswap/protocol') as typeof import('@xmrswap/protocol')).base58Decode(x) } };
+    expect(decodeInstructionData(bs58.decode(msg.instructions[0]!.data))).toMatchObject({ name: 'withdrawOwed' });
+    w.sim.fake.deleteAccount(parked.pda);
+  });
+});

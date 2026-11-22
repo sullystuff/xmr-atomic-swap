@@ -11,7 +11,7 @@
  */
 import { timingSafeEqual } from 'node:crypto';
 import type { Server } from 'node:http';
-import { COUNTER_NAMES, type ChainName, type Contact, MAX_CONTACTS, MAX_CONTACT_LEN, MAX_ONION_LEN, type Market, SWAP_STATE, SWAP_STATE_NAMES } from '@xmrswap/protocol';
+import { COUNTER_NAMES, base58Encode, type ChainName, type Contact, MAX_CONTACTS, MAX_CONTACT_LEN, MAX_ONION_LEN, type Market, SWAP_STATE, SWAP_STATE_NAMES } from '@xmrswap/protocol';
 import { type AdvanceApprovalRequest, type ApiError, type ApprovalRevokeRequest, type ApprovalsResponse, type AssetId, type ConfigResponse, type FeesResponse, type InventoryResponse, type OffersResponse, type PauseResponse, type RebalanceManualRequest, type RebalanceRunRequest, type RegistrationAction, type SwapAction, type SwapActionResponse, type TxResult, WS_CHANNELS, WS_PING_SECS, type WsChannel, type WsClientMessage, type WsServerMessage } from '@xmrswap/protocol/daemon-api';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { WebSocketServer } from 'ws';
@@ -50,6 +50,7 @@ export const REFUSALS: Record<string, string> = {
   'reject-not-available': 'a pending take cannot be rejected on Solana outside window mode; it can only be left to lapse',
   'hold-ended': 'the 30-minute hold has ended; a deposit can no longer be withheld',
   'no-deposit-held': 'no deposit is held or withheld on this swap',
+  'cannot-exit-after-funding': 'after funding, the taker has no call that ends the swap',
   'not-available-in-state': 'the swap is not in a state that accepts it',
   'dry-run': 'the daemon is in dry run and sends no transaction',
 };
@@ -135,7 +136,7 @@ export async function startApi(d: Daemon, opts: { bind?: string } = {}): Promise
     const toml = body(req)['toml'];
     if (typeof toml !== 'string') return fail(400, 'bad_request', 'toml is required.');
     const r = loadConfig(toml);
-    return r.config ? withCost(r.validation, r.config) : r.validation;
+    return { ...(r.config ? withCost(r.validation, r.config) : r.validation), ...({ sol_usd: solUsd(), compute_units_per_update: REFRESH_CU } as object) };
   });
   route('get', '/api/config/log', () => ({ entries: d.store.configLog().map((e) => ({ at: e.at, revision: e.revision, changes: e.changes, source: e.source })) }));
   route('get', '/api/config/export', () => ({ toml: d.load.toml, exported_at: d.store.now() }));
@@ -171,6 +172,8 @@ export async function startApi(d: Daemon, opts: { bind?: string } = {}): Promise
   /** Edit what the operator key publishes: contact channels and the onion address (not in the frozen API). */
   route('put', '/api/registration/published', async (req) => {
     const b = body(req);
+    // Refused BEFORE anything is stored: an edit made in dry run must not go out later by surprise when the daemon turns live.
+    needLive('the registry update');
     if (b['contacts'] !== undefined) {
       const c = b['contacts'];
       if (!Array.isArray(c) || c.length > MAX_CONTACTS || !c.every((x) => isObj(x) && Number.isInteger(x['kind']) && (x['kind'] as number) >= 0 && (x['kind'] as number) <= 255 && typeof x['value'] === 'string' && Buffer.byteLength(x['value']) <= MAX_CONTACT_LEN)) return fail(400, 'bad_request', `contacts: at most ${MAX_CONTACTS} entries of { kind, value }, each value at most ${MAX_CONTACT_LEN} bytes.`);
@@ -182,16 +185,22 @@ export async function startApi(d: Daemon, opts: { bind?: string } = {}): Promise
       if (o === null) d.store.db.prepare("DELETE FROM kv WHERE key = 'published:onion'").run();
       else d.store.setKv('published:onion', JSON.stringify(o));
     }
-    needLive('the registry update');
     const tx = await d.registration.syncPublished();
     return { tx: tx ? ({ chain: 'solana', id: tx, status: 'sent' } satisfies TxResult) : null, registration: await d.registration.status() };
   });
   /** The identity link's trace: every recorded `LinkChanged`, newest first (not in the frozen API). */
   route('get', '/api/registration/links', async () => {
-    const entries: { chain: ChainName; old: string; new: string; effective_at: number }[] = [];
+    // `old` / `new` are what each chain's record points at: an Ethereum address (0x) in the Solana record, a Solana
+    // owner key (base58) in the Ethereum record; the raw bytes stay beside them. `superseded`: replaced by a later
+    // change before it took effect (the next event's `old` is not this entry's `new`).
+    type Entry = { chain: ChainName; old: string; new: string; old_hex: string; new_hex: string; effective_at: number; superseded: boolean };
+    const entries: Entry[] = [];
     const hexOf = (b: Uint8Array) => `0x${Buffer.from(b).toString('hex')}`;
-    if (d.sol) for (const c of await d.sol.client.linkChanges(d.sol.makerPda).catch(() => [])) entries.push({ chain: 'solana', old: hexOf(c.old), new: hexOf(c.next), effective_at: Number(c.effectiveAt) });
-    if (d.eth) for (const c of await d.eth.client.linkChanges(d.eth.makerAddress, { fromBlock: BigInt(d.config.raw.ethereum.from_block), toBlock: d.eth.tag }).catch(() => [])) entries.push({ chain: 'ethereum', old: hexOf(c.old), new: hexOf(c.next), effective_at: Number(c.effectiveAt) });
+    const shown = (b: Uint8Array): string => (b.every((x) => x === 0) ? '' : b.length === 32 ? base58Encode(b) : hexOf(b));
+    const add = (chain: ChainName, list: { old: Uint8Array; next: Uint8Array; effectiveAt: bigint }[]) =>
+      list.forEach((c, i) => entries.push({ chain, old: shown(c.old), new: shown(c.next), old_hex: hexOf(c.old), new_hex: hexOf(c.next), effective_at: Number(c.effectiveAt), superseded: i + 1 < list.length && hexOf(list[i + 1]!.old) !== hexOf(c.next) }));
+    if (d.sol) add('solana', await d.sol.client.linkChanges(d.sol.makerPda).catch(() => []));
+    if (d.eth) add('ethereum', await d.eth.client.linkChanges(d.eth.makerAddress, { fromBlock: BigInt(d.config.raw.ethereum.from_block), toBlock: d.eth.tag }).catch(() => []));
     entries.sort((x, y) => y.effective_at - x.effective_at);
     return { entries };
   });
@@ -277,6 +286,19 @@ export async function startApi(d: Daemon, opts: { bind?: string } = {}): Promise
   swapAction('withhold', () => ({ withhold: true }));
   swapAction('release', () => ({ release: true, withhold: false }));
   swapAction('publish-evidence', () => ({ publishEvidence: true }));
+
+  /** The unsigned transaction that pulls a payout parked for the maker (not in the frozen API); submit it through `POST /api/registration/submit`. */
+  route('post', '/api/swaps/:ref/withdraw-owed-tx', async (req) => {
+    const row = swapRow(req.params['ref']!);
+    const chain = row.chain === 'solana' ? d.sol : d.eth;
+    const view = chain ? await chain.getSwap(row.ref) : null;
+    if (!view) return fail(409, 'action_unavailable', 'The swap cannot be read on its chain right now.');
+    try {
+      return await d.registration.buildWithdrawOwed(view);
+    } catch (e) {
+      return fail(409, 'nothing_owed', errMsg(e));
+    }
+  });
 
   // ---------------------------------------------------------------- inventory
   route('get', '/api/inventory', async (): Promise<InventoryResponse> => {

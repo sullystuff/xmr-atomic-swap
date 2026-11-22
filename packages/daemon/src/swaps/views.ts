@@ -9,6 +9,9 @@ import { fromJson } from '../util.js';
 const n = (t: bigint | null | undefined): number | null => (t === null || t === undefined || t === 0n ? null : Number(t));
 export const snapshotOf = (row: SwapRow): SwapView | null => (row.snapshot ? fromJson<SwapView>(row.snapshot) : null);
 
+export const instructionView = (row: SwapRow): { action: string; at: number; status: string; reason: string | null; tx: string | null } | null =>
+  row.facts.instruction ? { action: row.facts.instruction.action, at: row.facts.instruction.at, status: row.facts.instruction.status, reason: row.facts.instruction.reason ?? null, tx: row.facts.instruction.tx ?? null } : null;
+
 /** Manual actions the state allows right now (the executor still checks every one against the flow). */
 export function actionsFor(row: SwapRow, v: SwapView | null, now: number): SwapAction[] {
   if (!v || row.terminal) return [];
@@ -44,6 +47,8 @@ export function swapSummary(row: SwapRow, now: number): SwapSummary {
     chain: row.chain, ref: row.ref, market: row.market as Market, direction: row.direction === 0 ? 'A' : 'B', state: SWAP_STATE_NAMES[row.state] ?? 'NONE', phase: row.phase, taker: row.taker,
     xmr: row.xmr, amount: row.amount, deposit: row.deposit, depth: row.depth, opened_at: row.opened_at, next_deadline: v && !row.terminal ? nextDeadline(v, now) : null,
     outcome: v && v.outcome !== COUNTER_NONE ? (COUNTER_NAMES[v.outcome] ?? null) : null, needs_review: row.needs_review === 1, actions: actionsFor(row, v, now),
+    // Additions to the frozen summary: the swap's effective mode, and the operator's latest instruction with what became of it.
+    ...({ mode: v?.mode ?? 0, instruction: instructionView(row) } as object),
   };
 }
 
@@ -62,7 +67,6 @@ export function swapDetail(store: Store, row: SwapRow, now: number, lock: LockRe
     intents: store.intents({ swapRef: row.ref }).map((i) => ({ id: String(i.id), kind: `${i.kind}${typeof i.payload['call'] === 'string' ? `:${i.payload['call']}` : ''}`, status: i.status, tx: i.tx, at: i.created_at })),
     messages: store.messages(row.ref).map(inboxItem), last_error: row.last_error,
     // An addition to the frozen shape: the operator's latest instruction and what became of it.
-    ...({ instruction: row.facts.instruction ? { action: row.facts.instruction.action, at: row.facts.instruction.at, status: row.facts.instruction.status, reason: row.facts.instruction.reason ?? null, tx: row.facts.instruction.tx ?? null } : null } as object),
   };
 }
 

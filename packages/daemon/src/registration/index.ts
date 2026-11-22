@@ -10,7 +10,7 @@ import { createAssociatedTokenAccountIdempotentInstruction } from '@solana/spl-t
 import { PublicKey, Transaction, type TransactionInstruction } from '@solana/web3.js';
 import { CONTACT_KIND, type Contact, base58Decode } from '@xmrswap/protocol';
 import type { EthereumRegistration, LinkStatus, RegistrationAction, RegistrationResponse, RegistrationTxResponse, SolanaRegistration, TxResult, UnsignedTransaction } from '@xmrswap/protocol/daemon-api';
-import { type EthCall, ata, bytesEqual, effectiveEthLink, effectiveSolanaLink, hex0x, linkStatus, unhex } from '@xmrswap/sdk';
+import { type EthCall, type SwapView, ata, bytesEqual, solanaInstruction, effectiveEthLink, effectiveSolanaLink, hex0x, linkStatus, unhex } from '@xmrswap/sdk';
 import type { EthereumChain } from '../chains/ethereum.js';
 import type { SolanaChain } from '../chains/solana.js';
 import type { EncKeys } from '../rotation/index.js';
@@ -141,6 +141,37 @@ export class Registration {
     }
     this.pending.set(requestId, { chain: 'ethereum', call });
     return { request_id: requestId, unsigned: { chain: 'ethereum', chain_id: chainId, to: call.to, data: call.data, value: call.value.toString() }, summary };
+  }
+
+  /**
+   * A parked payout is pulled by the account it is owed to, which is never a key the daemon
+   * would use for that (the cold owner on Solana; payout, operator or owner on Ethereum). Built
+   * unsigned, like the registration actions, and submitted through the same route.
+   */
+  async buildWithdrawOwed(view: SwapView): Promise<RegistrationTxResponse> {
+    const requestId = randomBytes(16).toString('hex');
+    if (view.chain === 'solana') {
+      const sol = this.o.solana();
+      const owner = this.o.solanaOwner();
+      if (!sol || !owner) throw new Error('Solana is not configured');
+      if (view.owedMaker === 0n) throw new Error('nothing is parked for the maker on this swap');
+      const m = await sol.maker(true);
+      const ix = solanaInstruction(sol.client.program, view, { operator: m.operator, payout: m.payout }, owner, { name: 'withdraw_owed', who: 'maker' });
+      const { blockhash } = await sol.client.transport.getLatestBlockhash();
+      const message = new Transaction({ feePayer: new PublicKey(owner), recentBlockhash: blockhash }).add(ix).serializeMessage();
+      this.pending.set(requestId, { chain: 'solana', message });
+      return { request_id: requestId, unsigned: { chain: 'solana', message_b64: message.toString('base64'), recent_blockhash: blockhash, fee_payer: owner }, summary: `Withdraw the payout parked for the maker on this swap (${view.owedMaker} base units) with the owner key.` };
+    }
+    const eth = this.o.ethereum();
+    const chainId = this.o.ethereumChainId();
+    if (!eth || chainId === null) throw new Error('Ethereum is not configured');
+    const owed = await eth.client.owedFor(view.asset as `0x${string}`, view.taker as `0x${string}`, view.maker as `0x${string}`, eth.tag);
+    const who = owed.accounts ? ([['payout', owed.payout], ['operator', owed.operator], ['owner', owed.owner]] as const).find(([, v]) => v > 0n) : undefined;
+    if (!who || !owed.accounts) throw new Error('nothing is parked for the maker on this token');
+    const account = owed.accounts[who[0]];
+    const call = eth.client.contract.withdrawOwed(view.asset as `0x${string}`, account);
+    this.pending.set(requestId, { chain: 'ethereum', call });
+    return { request_id: requestId, unsigned: { chain: 'ethereum', chain_id: chainId, to: call.to, data: call.data, value: '0' }, summary: `Withdraw ${who[1]} base units parked for the maker's ${who[0]} address ${account}. It must be signed by THAT address: parked payouts are keyed by the account they were owed to.` };
   }
 
   /** Relay a transaction the owner's wallet signed. Solana: it must be the message this daemon built, so the route is not an open relay. */

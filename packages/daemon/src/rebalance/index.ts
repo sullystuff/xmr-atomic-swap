@@ -365,5 +365,8 @@ export function refillView(r: RefillRecord): RefillView {
     state: r.state, started_at: r.startedAt, finished_at: r.finishedAt,
     // A handle can embed a venue's per-order access token: only the venue's own order id is shown.
     venue_order_id: r.handle ? (r.handle.split(':')[1] ?? null) : null, txids: r.txids, detail: r.detail,
+    // Additions to the frozen shape. `needs_acknowledgement`: held, or failed with funds possibly still at the venue (it
+    // keeps counting against the in-transit cap). `acknowledged`: a failed refill the maker has closed, or one that never needed it.
+    ...({ needs_acknowledgement: r.state === 'held' || (r.state === 'failed' && r.unresolved), acknowledged: r.state === 'failed' && !r.unresolved } as object),
   };
 }

@@ -19,6 +19,7 @@ import { Approvals } from './approvals/index.js';
 import { EthereumChain } from './chains/ethereum.js';
 import { SolanaChain } from './chains/solana.js';
 import { failover } from './chains/types.js';
+import { type UpgradeStatus, ethereumUpgradeStatus, solanaUpgradeStatus } from './chains/upgrade.js';
 import { type Config, type LoadResult, type ResolvedOffer, diffConfigs, loadConfig, poolSourceUsable } from './config/load.js';
 import type { SourceName } from './config/schema.js';
 import { Inventory } from './inventory/index.js';
@@ -126,6 +127,8 @@ export class Daemon {
   private moneroStatus: { nodes: StatusResponse['monero']['nodes']; agree: boolean } = { nodes: [], agree: false };
   private walletOk = false;
   private stopped = false;
+  /** Upgrade status per chain, read from chain state and refreshed periodically. */
+  readonly upgrade = new Map<ChainName, UpgradeStatus>();
 
   private constructor(private readonly o: DaemonOptions) {
     this.startedAt = (o.now ?? (() => Math.floor(Date.now() / 1000)))();
@@ -517,6 +520,7 @@ export class Daemon {
 
   async housekeeping(): Promise<void> {
     this.store.beat();
+    await this.refreshUpgrade().catch(() => undefined);
     this.moneroStatus = await this.monero.status().catch(() => ({ nodes: [], agree: false }));
     await this.rotation.tick().catch((e) => this.alerts.raise('warning', 'rotation_failed', errMsg(e)));
     await this.registration.syncPublished().catch((e) => this.alerts.raise('warning', 'registry_sync_failed', errMsg(e)));
@@ -543,7 +547,16 @@ export class Daemon {
 
   // ---------------------------------------------------------------- status
 
+  /** Read the upgrade status of both deployments from chain state. Called at start, every minute, and when a status is older than that. */
+  async refreshUpgrade(): Promise<void> {
+    const at = this.now();
+    if (this.sol) this.upgrade.set('solana', await solanaUpgradeStatus(this.sol.client.transport, this.sol.client.programId, at));
+    if (this.eth) this.upgrade.set('ethereum', await ethereumUpgradeStatus(this.eth.client.transport, this.eth.client.contract.address, this.eth.tag, at));
+  }
+
   async status(): Promise<StatusResponse> {
+    const stale = [...this.upgrade.values()].some((u) => this.now() - u.checked_at >= 60);
+    if (stale || (this.sol && !this.upgrade.has('solana')) || (this.eth && !this.upgrade.has('ethereum'))) await this.refreshUpgrade();
     const chains: ChainConnection[] = [];
     const local = Math.floor(Date.now() / 1000);
     let ownerPaused = false;
@@ -571,7 +584,7 @@ export class Daemon {
         chain: name, connected: c !== null && chainTime !== null, endpoint: name === 'solana' ? this.config.raw.solana.rpc_url_env : this.config.raw.ethereum.rpc_url_env, network,
         network_ok: name === 'solana' ? !this.config.raw.solana.expected_genesis || this.config.raw.solana.expected_genesis === network : String(this.config.raw.ethereum.chain_id ?? '') === network,
         chain_time: chainTime, clock_skew_secs: chainTime === null ? null : local - chainTime, ...(name === 'ethereum' ? { finality: this.config.raw.ethereum.finality } : {}),
-        contract: name === 'solana' ? (this.sol?.client.programId ?? this.config.raw.solana.program_id ?? DEV_PROGRAM_ID) : (this.config.raw.ethereum.contract ?? ''), upgradeable: null, upgrade_authority: null, ...(error ? { last_error: error } : {}),
+        contract: name === 'solana' ? (this.sol?.client.programId ?? this.config.raw.solana.program_id ?? DEV_PROGRAM_ID) : (this.config.raw.ethereum.contract ?? ''), ...this.upgradeFields(name, c !== null), ...(error ? { last_error: error } : {}),
       });
       if (chainTime !== null && name === 'solana' && Math.abs(local - chainTime) > CLOCK_SKEW_WARN_SECS) this.alerts.raise('warning', 'clock_skew', `the local clock is ${local - chainTime} s off Solana chain time; deadlines use chain time`, null, 3_600);
     }
@@ -579,14 +592,25 @@ export class Daemon {
     const guardrails = [...new Set(this.offers.latest().flatMap((c) => (c.offer.configured ? c.ref.pausedBy : [])))];
     const tor = this.config.raw.tor;
     const onion = this.desiredPublished().onion;
+    // Published = the registry's onion address is the one this daemon wants listed.
+    const listed = this.sol ? ((await this.sol.client.getMaker(this.sol.makerPda, 'finalized').catch(() => null))?.onion ?? '') : '';
     return {
       version: DAEMON_VERSION, core_version: coreVersion(), mode: this.config.raw.daemon.mode, started_at: this.startedAt, uptime_secs: this.now() - this.startedAt,
       maker: { solana: this.sol?.makerPda ?? null, ethereum: this.eth?.makerAddress ?? null }, chains,
       monero: { nodes: this.moneroStatus.nodes, agree: this.moneroStatus.agree, wallet_rpc_ok: this.walletOk, reorg_guard_active: this.risk.reorgGuardActive },
-      tor: { enabled: tor.enabled, onion, published: false, reachable: null },
+      tor: { enabled: tor.enabled, onion, published: onion !== null && listed === onion, reachable: null, ...({ registry_onion: listed || null } as object) },
       // `chains` is an addition to the frozen shape: the owner's pause is per chain.
       paused: { owner: ownerPaused, operator: this.risk.paused, guardrails, ...({ chains: perChain } as object) },
       needs_review: this.store.needsReviewCount(), alerts: this.alerts.list(20),
+    };
+  }
+
+  private upgradeFields(chain: ChainName, connected: boolean): Pick<ChainConnection, 'upgradeable' | 'upgrade_authority'> {
+    const u = this.upgrade.get(chain) ?? { status: 'unknown' as const, authority: null, pending_authority: null, implementation: null, reason: connected ? 'not read yet' : 'the chain is not connected', checked_at: this.now() };
+    return {
+      upgradeable: u.status === 'unknown' ? null : u.status === 'upgradable', upgrade_authority: u.authority,
+      // Additions to the frozen shape: the three-way status with its reason, and what else the chain says.
+      ...({ upgrade_status: u.status, upgrade_reason: u.reason, upgrade_pending_authority: u.pending_authority, upgrade_implementation: u.implementation, upgrade_checked_at: u.checked_at } as object),
     };
   }
 

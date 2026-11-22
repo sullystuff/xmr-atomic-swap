@@ -439,3 +439,42 @@ describe('Ethereum', () => {
     expect(d.alerts.list(100).filter((a) => a.level === 'critical')).toEqual([]);
   });
 });
+
+describe('upgrade status, read from chain state', () => {
+  const chain = async (name: string) => (await d.status()).chains.find((c) => c.chain === name) as unknown as Record<string, unknown>;
+  const rpc = async (method: string, params: unknown[]) => {
+    const r = (await (await fetch(eth.url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) })).json()) as { result?: unknown; error?: { message: string } };
+    if (r.error) throw new Error(`${method}: ${r.error.message}`);
+    return r.result;
+  };
+
+  it('Solana (svm-rpc): upgradable by the ProgramData authority; immutable once the authority is revoked', async () => {
+    await d.refreshUpgrade();
+    expect(await chain('solana')).toMatchObject({ upgradeable: true, upgrade_authority: sol.admin.publicKey, upgrade_status: 'upgradable', upgrade_reason: null, upgrade_implementation: expect.any(String) });
+    await sol.svm.setUpgradeAuthority(DEV_PROGRAM_ID, null as unknown as string);
+    await d.refreshUpgrade();
+    expect(await chain('solana')).toMatchObject({ upgradeable: false, upgrade_authority: null, upgrade_status: 'immutable' });
+  });
+
+  it('Ethereum (anvil): upgradable by the proxy owner with the implementation behind it; frozen after renounceOwnership', async () => {
+    await eth.finalize();
+    await d.refreshUpgrade();
+    const before = await chain('ethereum');
+    expect(before).toMatchObject({ upgradeable: true, upgrade_status: 'upgradable', upgrade_pending_authority: null, upgrade_reason: null });
+    const owner = before['upgrade_authority'] as string;
+    expect(owner).toMatch(/^0x[0-9a-f]{40}$/);
+    expect(before['upgrade_implementation']).toMatch(/^0x[0-9a-f]{40}$/);
+    expect(before['upgrade_implementation']).not.toBe(eth.contract);
+    // The owner renounces (anvil only: the test impersonates the deploy script's owner).
+    await rpc('anvil_impersonateAccount', [owner]);
+    await rpc('anvil_setBalance', [owner, '0xde0b6b3a7640000']);
+    await rpc('eth_sendTransaction', [{ from: owner, to: eth.contract, data: '0x715018a6' }]);
+    // Mined is not final: the status still says what is final.
+    await d.refreshUpgrade();
+    expect((await chain('ethereum'))['upgrade_status']).toBe('upgradable');
+    await eth.finalize();
+    await d.refreshUpgrade();
+    expect(await chain('ethereum')).toMatchObject({ upgradeable: false, upgrade_authority: null, upgrade_status: 'immutable', upgrade_implementation: before['upgrade_implementation'] });
+  });
+});
+
