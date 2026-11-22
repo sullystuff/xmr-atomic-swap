@@ -51,6 +51,8 @@ abstract contract Base is Test {
     bytes32 internal constant TXID = keccak256("monero lock txid");
     uint64 internal nextQuoteId = 1;
     uint128 internal nextNonce = 1;
+    uint32 internal nextLeaf;
+    uint256 internal fundCounter;
 
     /// Everything `lock` and `take` need.
     struct Open {
@@ -302,12 +304,14 @@ abstract contract Base is Test {
         swap.approve(id, h);
     }
 
-    /// The share the maker funds a direction-B swap with (never one of the pool).
-    function _fundSecret() internal pure returns (uint256) {
-        return _share("maker funding share");
+    /// The share the maker funds the current direction-B swap with (never one of the pool).
+    function _fundSecret() internal view returns (uint256) {
+        return _share(string.concat("maker funding share ", vm.toString(fundCounter)));
     }
 
+    /// Fund with a share of its own: every swap publishes one of its two shares.
     function _fund(bytes32 id) internal {
+        fundCounter++;
         _fundWith(id, _fundSecret(), _get(id).openHash, operator);
     }
 
@@ -378,12 +382,16 @@ abstract contract Base is Test {
         return s.direction == 0 ? _makerSecretOf(s) : takerSecret;
     }
 
+    /// The maker's share behind a swap's `makerKey`; 1 (which opens nothing here) if there is none.
     function _makerSecretOf(IXmrSwap.Swap memory s) internal view returns (uint256) {
-        if (s.makerKey == vm.addr(_fundSecret())) return _fundSecret();
+        for (uint256 i; i <= fundCounter; ++i) {
+            uint256 f = _share(string.concat("maker funding share ", vm.toString(i)));
+            if (vm.addr(f) == s.makerKey) return f;
+        }
         for (uint256 i; i < makerSecrets.length; ++i) {
             if (vm.addr(makerSecrets[i]) == s.makerKey) return makerSecrets[i];
         }
-        revert("unknown maker key");
+        return 1;
     }
 
     function _refund(bytes32 id) internal {
@@ -410,7 +418,10 @@ abstract contract Base is Test {
 
     /// Open a default swap of 2 XMR and drive it to `state` (PENDING .. READY, or the two aborts).
     function _swapIn(uint8 direction, address token, uint8 state) internal returns (bytes32 id) {
-        id = _send(_open(direction, token, uint64(2 * ONE_XMR), _defaultPrice(token)));
+        Open memory o = _open(direction, token, uint64(2 * ONE_XMR), _defaultPrice(token));
+        // Each direction-A swap names the next leaf of the pool: an approved share is consumed.
+        if (direction == 0) o.leafIndex = nextLeaf++ % uint32(POOL);
+        id = _send(o);
         if (state == PENDING) return id;
         skip(12);
         _activate(id);

@@ -16,9 +16,11 @@ import {SwapStore} from "./lib/SwapStore.sol";
 /// @notice One escrow machine for both directions; the state machine is SPEC section 3 with
 /// EXPLICIT_APPROVE = true. The owner's only power is upgrading; `renounceOwnership()` freezes the
 /// contract for good. Nothing here is audited.
-/// @dev Check order in every transition (frozen by `transitions.json`): direction, caller, state
-/// and open hash, time gate, then secret or evidence. A call refused only because of the time is
-/// `TooLate` if one of its windows in that state has already closed, else `TooEarly`.
+/// @dev This contract holds the set-up, the maker registry, the views and one thin entry point
+/// per swap call. The bodies of the swap calls live in two linked libraries, `SwapOpen` (lock,
+/// take, EIP-712) and `SwapSettle` (every other transition), which run by DELEGATECALL in this
+/// contract's context: together they exceed the 24,576-byte limit of EIP-170. All state is in one
+/// ERC-7201 namespaced struct (`SwapStore.Layout`, namespace `xmrswap.storage.v1`).
 contract XmrSwap is
     IXmrSwap,
     Initializable,
@@ -353,15 +355,16 @@ contract XmrSwap is
     }
 
     /// @inheritdoc IXmrSwap
-    function swapsOf(address taker, uint256 from, uint256 count) external view returns (bytes32[] memory ids) {
+    function swapsOf(address taker, uint256 from, uint256 count) external view returns (bytes32[] memory) {
         bytes32[] storage all = SwapStore.layout().swapsByTaker[taker];
         uint256 total = all.length;
         if (from > total) from = total;
         if (count > total - from) count = total - from;
-        ids = new bytes32[](count);
+        bytes32[] memory ids = new bytes32[](count);
         for (uint256 i; i < count; ++i) {
             ids[i] = all[from + i];
         }
+        return ids;
     }
 
     /// @inheritdoc IXmrSwap
@@ -370,7 +373,9 @@ contract XmrSwap is
     }
 
     /// @inheritdoc IXmrSwap
-    function version() external pure virtual returns (string memory) {
+    function version() external view virtual returns (string memory) {
+        // `view`, not `pure`: the frozen ABI says so. Reading the address keeps it a view.
+        address(this);
         return "1";
     }
 

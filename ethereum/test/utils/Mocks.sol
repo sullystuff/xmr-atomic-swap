@@ -132,7 +132,8 @@ contract Receiver {
 
 /// Upgrade target used by the upgrade tests.
 contract XmrSwapV2 is XmrSwap {
-    function version() external pure override returns (string memory) {
+    function version() external view override returns (string memory) {
+        address(this);
         return "2";
     }
 }

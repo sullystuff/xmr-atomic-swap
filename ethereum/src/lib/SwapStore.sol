@@ -125,8 +125,9 @@ library SwapStore {
         return s.direction == 0 ? msg.sender == $.makers[s.maker].operator : _isTaker(s);
     }
 
-    function _isParty(Layout storage $, IXmrSwap.Swap storage s) internal view returns (bool) {
-        return msg.sender == $.makers[s.maker].operator || _isTaker(s);
+    /// The locker escrows the asset and can refund it: the taker in A, the operator in B.
+    function _isLocker(Layout storage $, IXmrSwap.Swap storage s) internal view returns (bool) {
+        return s.direction == 0 ? _isTaker(s) : msg.sender == $.makers[s.maker].operator;
     }
 
     function _min(uint256 a, uint256 b) internal pure returns (uint256) {

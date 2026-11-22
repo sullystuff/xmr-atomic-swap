@@ -9,11 +9,14 @@ evm_version = "osaka"
 optimizer = true
 optimizer_runs = 200
 via_ir = true
-bytecode_hash = "none"
 # One test asks `cast wallet sign` to sign the typed-data JSON of eip712.json (SPEC 9.1).
 ffi = true
 # Tests read the frozen vectors of work package 1; the contract imports the frozen interface.
-fs_permissions = [{ access = "read", path = "../interfaces/vectors" }]
+fs_permissions = [
+  { access = "read", path = "../interfaces/vectors" },
+  # The anvil-only deploy script writes the addresses it deployed.
+  { access = "read-write", path = "./deployments" },
+]
 allow_paths = ["../interfaces"]
 remappings = [
   "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
@@ -28,8 +31,8 @@ memory_limit = 1073741824
 runs = 256
 
 [invariant]
-runs = 48
-depth = 96
+runs = 40
+depth = 160
 fail_on_revert = false
 
 [lint]

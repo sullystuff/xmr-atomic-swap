@@ -152,7 +152,7 @@ library SwapSettle {
     function setReady(bytes32 swapId) external {
         SwapStore.Layout storage $ = SwapStore.layout();
         IXmrSwap.Swap storage s = SwapStore._swap($, swapId);
-        if (SwapStore._isClaimer($, s) || !SwapStore._isParty($, s)) revert IXmrSwap.Unauthorized();
+        if (!SwapStore._isLocker($, s)) revert IXmrSwap.Unauthorized();
         if (s.state != SwapStore.NOTICED) revert IXmrSwap.BadState();
         if (block.timestamp < s.tNotice + s.depth * SwapMath.READY_MIN_SECS_PER_CONF) revert IXmrSwap.TooEarly();
         if (block.timestamp >= SwapStore._min(s.tClaimOpen, s.tFinal)) revert IXmrSwap.TooLate();
