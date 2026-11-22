@@ -116,10 +116,14 @@ fn terms_from_offer(offer: &Offer, maker_key: &Pubkey, a: &OpenArgs, now: i64) -
     require!(now <= offer.updated_at.saturating_add(offer.valid_secs as i64), SwapError::OfferStale);
     require!(offer.seq >= a.min_seq, SwapError::SeqTooOld);
     require!(offer.terms_hash == a.expected_terms_hash, SwapError::TermsChanged);
+    // SPEC 3.1: a swap of nothing is refused, whatever the offer's limits say.
+    require!(a.xmr > 0, SwapError::AmountOutOfRange);
     require!(offer.min_xmr <= a.xmr && a.xmr <= offer.max_xmr, SwapError::AmountOutOfRange);
     let tier = tier_index(a.xmr, &offer.price_above, offer.prices_used()).ok_or(SwapError::TiersInvalid)?;
     let price = offer.prices[tier];
     let amount = asset_amount(a.xmr, price, a.direction == DIR_A)?;
+    // A take of dust XMR whose floor is zero would lock the taker's XMR against nothing.
+    require!(amount > 0, SwapError::AmountOutOfRange);
     if a.direction == DIR_A {
         require!(amount <= a.limit, SwapError::PriceMoved);
     } else {
@@ -159,6 +163,8 @@ fn terms_from_quote(
     require!(now <= quote.expires_at, SwapError::QuoteExpired);
     require!(quote.epoch == maker.quote_epoch, SwapError::StaleEpoch);
     require!(quote.xmr == a.xmr, SwapError::QuoteMismatch);
+    // `post_quote` refuses these; checked again where the swap is opened.
+    require!(quote.xmr > 0 && quote.amount > 0, SwapError::AmountOutOfRange);
     if a.direction == DIR_A {
         require!(quote.amount <= a.limit, SwapError::PriceMoved);
     } else {

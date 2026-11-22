@@ -1326,6 +1326,50 @@ impl World {
         key
     }
 
+    /// Write a `Quote` account directly (a quote `post_quote` refuses), so that the check in
+    /// `lock` / `take` itself can be exercised.
+    #[allow(clippy::too_many_arguments)]
+    pub fn craft_quote(
+        &mut self,
+        m: &MakerFx,
+        quote_id: u64,
+        taker: &Pubkey,
+        asset: u8,
+        direction: u8,
+        xmr: u64,
+        amount: u64,
+        t: &Terms,
+        share: &[u8; 32],
+    ) -> Pubkey {
+        let seeds: [&[u8]; 3] = [b"quote", m.pda.as_ref(), &quote_id.to_le_bytes()];
+        let (key, bump) = Pubkey::find_program_address(&seeds, &PROGRAM_ID);
+        let mut data = Enc(account_disc("Quote").to_vec())
+            .key(&m.pda)
+            .key(taker)
+            .u8(asset)
+            .u8(direction)
+            .u8(t.depths[0])
+            .u8(bump)
+            .u64(xmr)
+            .u64(amount)
+            .u16(t.dep_bps)
+            .u32(t.w_n)
+            .u32(t.d_c)
+            .u32(t.w_c)
+            .u32(t.w_f)
+            .bytes(share)
+            .i64(self.now() + 60)
+            .u32(self.maker(&m.pda).quote_epoch)
+            .u64(quote_id)
+            .0;
+        data.resize(192, 0);
+        let lamports = self.rent(192);
+        self.svm
+            .set_account(key, solana_account::Account { lamports, data, owner: PROGRAM_ID, executable: false, rent_epoch: 0 })
+            .unwrap();
+        key
+    }
+
     /// Run a transaction without committing it: what would happen at this instant.
     pub fn simulate(&mut self, ixs: &[Instruction], signers: &[&Keypair]) -> TxResult {
         let msg = Message::new(ixs, Some(&signers[0].pubkey()));

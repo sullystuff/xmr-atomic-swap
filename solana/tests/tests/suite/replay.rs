@@ -9,7 +9,10 @@
 //! session-key sweep, rent returned on close. A step that must fail must change nothing.
 //!
 //! How the model's inputs map to the chain:
-//! * `amount` is reached with 1 XMR at a price of `amount` per XMR.
+//! * `amount` and `xmr` are the row's; the offer's price is `amount × 10^12 / xmr` per XMR.
+//! * A row with `amount` zero has no price that produces it from a nonzero `xmr`; like the
+//!   out-of-bounds rows below it is a quote that `post_quote` refuses with the row's error
+//!   (asserted), written directly so that `lock` / `take` itself is what refuses it.
 //! * `offer_mode` 0..2 is an offer set with those terms; 3 is a `post_quote`.
 //! * Rows whose terms violate a bound cannot be published (`set_offer` refuses them with the
 //!   same error, which is asserted); the offer account is then written directly so that the
@@ -178,6 +181,7 @@ fn send_open(w: &mut World, sim: &mut Sim, step: &Value) -> Result<Sent, String>
     let caller = step["caller"].as_str().unwrap().to_string();
     let direction = if args["direction"] == "A" { DIR_A } else { DIR_B };
     let amount = num(&args["amount"]);
+    let xmr = num(&args["xmr"]);
     let offer_mode = args["offer_mode"].as_u64().unwrap() as u8;
     let terms = terms_of(args);
     let asset = sim.asset;
@@ -196,7 +200,7 @@ fn send_open(w: &mut World, sim: &mut Sim, step: &Value) -> Result<Sent, String>
     if asset == ASSET_USDC {
         w.mint_to(&taker.pubkey(), 1_000_000_000_000);
     }
-    if offer_mode == 3 {
+    if offer_mode == 3 || (amount == 0 && xmr > 0) {
         let (share, pok) = if direction == DIR_A {
             let (_, s_pub, pok) = sim.m.new_share();
             (s_pub, pok)
@@ -204,17 +208,32 @@ fn send_open(w: &mut World, sim: &mut Sim, step: &Value) -> Result<Sent, String>
             ([0; 32], [0; 64])
         };
         let quote_id = u64::from_le_bytes(rand32()[..8].try_into().unwrap());
-        let (ix, quote) =
-            w.post_quote_ix(&sim.m, quote_id, &taker.pubkey(), asset, direction, XMR, amount, &terms, &share, &pok, w.now() + 60);
+        let (ix, mut quote) =
+            w.post_quote_ix(&sim.m, quote_id, &taker.pubkey(), asset, direction, xmr, amount, &terms, &share, &pok, w.now() + 60);
         let op = sim.m.operator.insecure_clone();
-        w.send(&[ix], &[&op]).map_err(|e| format!("post_quote failed: {:?}", e.err))?;
+        if let Err(e) = w.send(&[ix], &[&op]) {
+            // A quote that cannot be posted: post_quote must refuse it for the reason the row
+            // gives, and lock/take must refuse it too.
+            let name = expect_err.ok_or_else(|| format!("post_quote refused a row that must succeed: {:?}", e.err))?;
+            if !format!("{:?}", e.err).contains(&format!("Custom({})", error_code(name))) {
+                return Err(format!("post_quote: expected {name}, got {:?}", e.err));
+            }
+            quote = w.craft_quote(&sim.m, quote_id, &taker.pubkey(), asset, direction, xmr, amount, &terms, &share);
+        }
         quote_rent = w.lamports(&quote) as i128;
         source = Source::Quote(quote, sim.m.operator.pubkey());
     } else {
-        // 1 XMR at `amount` per XMR.
+        // `amount` for `xmr`: the price per XMR. (With `xmr` zero any price will do.)
+        let price = if xmr == 0 {
+            amount
+        } else {
+            let p = amount as u128 * 1_000_000_000_000 / xmr as u128;
+            assert_eq!(p * xmr as u128 % 1_000_000_000_000, 0, "the row's amount is an exact price");
+            u64::try_from(p).expect("price fits u64")
+        };
         match w.set_offer(&sim.m, asset, direction, &terms) {
             Ok(_) => {
-                ok(w.refresh(&sim.m, &[(asset, direction, true, [amount, 0, 0], 1_000_000 * XMR)]));
+                ok(w.refresh(&sim.m, &[(asset, direction, true, [price, 0, 0], 1_000_000 * XMR)]));
                 if direction == DIR_A {
                     ok(w.refill(&mut sim.m, asset, 0, 2));
                 }
@@ -226,15 +245,15 @@ fn send_open(w: &mut World, sim: &mut Sim, step: &Value) -> Result<Sent, String>
                 if !format!("{:?}", e.err).contains(&format!("Custom({})", error_code(name))) {
                     return Err(format!("set_offer: expected {name}, got {:?}", e.err));
                 }
-                w.craft_offer(&mut sim.m, asset, direction, &terms, amount);
+                w.craft_offer(&mut sim.m, asset, direction, &terms, price);
             }
         }
         source = Source::Offer(w.offer_pda(&sim.m.pda, asset, direction));
     }
 
-    let (fx, mut raw) = w.prepare_open_for(&sim.m, taker, asset, direction, XMR, source, rand16());
+    let (fx, mut raw) = w.prepare_open_for(&sim.m, taker, asset, direction, xmr, source, rand16());
     if args["approval"].as_bool().unwrap() {
-        pre_ixs.push(w.approval_ix(&sim.m, &fx.taker.pubkey(), asset, direction, XMR));
+        pre_ixs.push(w.approval_ix(&sim.m, &fx.taker.pubkey(), asset, direction, xmr));
         raw.approval_ix = Some(0);
         raw.sysvar = Some(IX_SYSVAR);
     }
@@ -782,6 +801,12 @@ fn transitions_file_shape() {
     let v = vectors("transitions");
     assert_eq!(v["format"], "xmrswap-vectors/1");
     assert_eq!(v["t0"].as_i64().unwrap(), T0);
-    assert_eq!(solana(&v, "rows").len(), 399);
-    assert_eq!(solana(&v, "sequences").len(), 182);
+    assert_eq!(solana(&v, "rows").len() as u64, v["summary"]["solana"]["rows"].as_u64().unwrap());
+    assert_eq!(solana(&v, "sequences").len() as u64, v["summary"]["solana"]["sequences"].as_u64().unwrap());
+    assert!(solana(&v, "rows").len() >= 405 && solana(&v, "sequences").len() >= 182);
+    // Every open carries the XMR size the replay uses.
+    for row in solana(&v, "rows") {
+        let open = row.get("open").unwrap_or(&row["step"]);
+        assert!(open["args"]["xmr"].is_string(), "{}", row["case"]);
+    }
 }

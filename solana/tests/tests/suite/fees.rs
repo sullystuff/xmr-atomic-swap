@@ -6,15 +6,30 @@
 //! * `split` is a real withheld deposit split after 60 days.
 //! * `tier` is the depth (and, with the same thresholds, the price) a lock picks.
 //!
-//! Vector cases whose inputs do not fit the program's `u64` fields (a price or an amount above
-//! 2^64, used for the Ethereum column and for intermediate-width checks) cannot be encoded in an
-//! instruction at all; they are counted, not skipped silently.
+//! * `swap` is the rule on top of both: an open whose XMR size or escrowed amount is zero is
+//!   refused with `AmountOutOfRange`.
+//!
+//! Each case names the chains that can replay it (`chains`); a case without `solana` has an
+//! input that does not fit the program's `u64` fields and is left to the Ethereum replay. A
+//! `pay` / `receive` / `tier` case whose result is a zero amount, or whose size is zero, states
+//! plain arithmetic: on-chain that open is refused, and the test asserts exactly that.
 use crate::common::*;
 use serde_json::Value;
 use solana_signer::Signer;
 
 fn wide() -> Terms {
     Terms { min_xmr: 0, max_xmr: u64::MAX, dep_bps: 0, ..Terms::default() }
+}
+
+/// The cases of `op` that the Solana program can replay, by the vectors' own `chains` field.
+fn solana_cases<'a>(v: &'a Value, ops: &[&str]) -> Vec<&'a Value> {
+    v["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| ops.contains(&c["input"]["op"].as_str().unwrap()))
+        .filter(|c| c["chains"].as_array().unwrap().iter().any(|x| x == "solana"))
+        .collect()
 }
 
 fn u128_of(v: &Value) -> u128 {
@@ -56,64 +71,198 @@ fn open_at(k: &mut Market, direction: u8, xmr: u64, prices: [u64; 3]) -> (SwapFx
 fn amounts_json_pay_and_receive() {
     let v = vectors("amounts");
     let mut k = market(&wide(), &wide());
-    let (mut replayed, mut overflow, mut unrepresentable) = (0, 0, 0);
-    for case in v["cases"].as_array().unwrap() {
+    let cases = solana_cases(&v, &["pay", "receive"]);
+    let (mut replayed, mut zero, mut overflow) = (0, 0, 0);
+    for case in &cases {
         let i = &case["input"];
-        let op = i["op"].as_str().unwrap();
-        if (op != "pay" && op != "receive") || i["chain"] != "solana" {
-            continue;
-        }
         let name = case["name"].as_str().unwrap();
-        let price = u128_of(&i["price"]);
-        if price > u64::MAX as u128 {
-            // Not encodable: the offer's price field is a u64. The vector agrees it overflows.
-            assert_eq!(case["error"], "MathOverflow", "{name}");
-            unrepresentable += 1;
-            continue;
-        }
-        let direction = if op == "pay" { DIR_A } else { DIR_B };
-        let (fx, res) = open_at(&mut k, direction, num(&i["xmr"]), [price as u64, 0, 0]);
-        if case["valid"].as_bool().unwrap() {
+        let price = u64::try_from(u128_of(&i["price"])).expect("a Solana case fits u64");
+        let xmr = num(&i["xmr"]);
+        let direction = if i["op"] == "pay" { DIR_A } else { DIR_B };
+        let (fx, res) = open_at(&mut k, direction, xmr, [price, 0, 0]);
+        if !case["valid"].as_bool().unwrap() {
+            assert!(is_err(&res, case["error"].as_str().unwrap()), "{name}: {}", err_string(&res));
+            assert!(k.w.swap(&fx.pda).is_none());
+            overflow += 1;
+        } else if xmr == 0 || num(&case["output"]["amount"]) == 0 {
+            // The arithmetic gives zero; SPEC 3.1 refuses to open that swap.
+            assert!(is_err(&res, "AmountOutOfRange"), "{name}: {}", err_string(&res));
+            assert!(k.w.swap(&fx.pda).is_none());
+            zero += 1;
+        } else {
             ok(res);
             let s = k.w.swap(&fx.pda).unwrap();
             assert_eq!(s.amount, num(&case["output"]["amount"]), "{name}");
-            assert_eq!(s.price, price as u64, "{name}");
+            assert_eq!(s.price, price, "{name}");
             if direction == DIR_A {
                 assert_eq!(k.w.tokens(&fx.vault), s.amount, "{name}: exactly the amount is escrowed");
             }
             replayed += 1;
-        } else {
-            assert!(is_err(&res, case["error"].as_str().unwrap()), "{name}: {}", err_string(&res));
-            assert!(k.w.swap(&fx.pda).is_none());
-            overflow += 1;
         }
     }
-    println!("amounts.json pay/receive (solana): {replayed} amounts, {overflow} overflows, {unrepresentable} not encodable in u64");
-    assert_eq!((replayed, overflow, unrepresentable), (18, 4, 4));
+    println!("amounts.json pay/receive (solana): {replayed} amounts, {zero} zero results refused, {overflow} overflows");
+    assert_eq!(replayed + zero + overflow, cases.len());
+    assert!(replayed >= 12 && zero >= 4 && overflow >= 4, "{replayed} {zero} {overflow}");
+}
+
+/// `swap`: the escrowed amount of a real open, and the refusal of a zero on either side.
+#[test]
+fn amounts_json_swap_refuses_zero_xmr_and_zero_amounts() {
+    let v = vectors("amounts");
+    let mut k = market(&wide(), &wide());
+    let cases = solana_cases(&v, &["swap"]);
+    let (mut opened, mut refused) = (0, 0);
+    for case in &cases {
+        let i = &case["input"];
+        let name = case["name"].as_str().unwrap();
+        let (price, xmr) = (num(&i["price"]), num(&i["xmr"]));
+        let direction = if i["direction"] == "A" { DIR_A } else { DIR_B };
+        if price == 0 {
+            // A price of zero marks a tier unused, so no live offer has one: the refresh says so.
+            // The amount such a price would give is zero, and that is what a quote would carry:
+            // post_quote refuses it, and so does the open of a quote account written directly.
+            assert_eq!(case["error"], "AmountOutOfRange", "{name}");
+            let res = k.w.refresh(&k.m, &[(ASSET_USDC, direction, true, [0, 0, 0], u64::MAX)]);
+            assert!(is_err(&res, "TiersInvalid"), "{name}: {}", err_string(&res));
+            let taker = k.w.fund(10 * SOL);
+            k.w.mint_to(&taker.pubkey(), 1_000_000);
+            let (_, share, pok) = k.m.new_share();
+            let (ix, _) = k.w.post_quote_ix(&k.m, 900 + refused, &taker.pubkey(), ASSET_USDC, direction, xmr, 0, &Terms::default(), &share, &pok, k.w.now() + 60);
+            let op = k.m.operator.insecure_clone();
+            let res = k.w.send(&[ix], &[&op]);
+            assert!(is_err(&res, "AmountOutOfRange"), "{name}: post_quote: {}", err_string(&res));
+            let quote = k.w.craft_quote(&k.m, 900 + refused, &taker.pubkey(), ASSET_USDC, direction, xmr, 0, &Terms::default(), &share);
+            let (fx, raw) = k.w.prepare_open_for(&k.m, taker, ASSET_USDC, direction, xmr, Source::Quote(quote, op.pubkey()), rand16());
+            let res = k.w.send_open(&fx, &raw);
+            assert!(is_err(&res, "AmountOutOfRange"), "{name}: open: {}", err_string(&res));
+            assert!(k.w.swap(&fx.pda).is_none());
+            refused += 1;
+            continue;
+        }
+        let (fx, res) = open_at(&mut k, direction, xmr, [price, 0, 0]);
+        if case["valid"].as_bool().unwrap() {
+            ok(res);
+            assert_eq!(k.w.swap(&fx.pda).unwrap().amount, num(&case["output"]["amount"]), "{name}");
+            opened += 1;
+        } else {
+            assert!(is_err(&res, case["error"].as_str().unwrap()), "{name}: {}", err_string(&res));
+            assert!(k.w.swap(&fx.pda).is_none(), "{name}");
+            refused += 1;
+        }
+    }
+    assert_eq!(opened + refused, cases.len() as u64);
+    assert!(opened >= 4 && refused >= 6, "{opened} {refused}");
+}
+
+/// The refusals of SPEC 3.1 one by one, with everything they must leave untouched.
+#[test]
+fn zero_amount_and_zero_xmr_are_refused_by_lock_take_and_post_quote() {
+    for asset in [ASSET_SOL, ASSET_USDC] {
+        let mut w = World::new();
+        let mut m = w.register_maker();
+        // An offer whose own limits would allow anything, so only the rule under test refuses.
+        let terms = Terms { min_xmr: 0, max_xmr: u64::MAX, ..Terms::default() };
+        let a = w.live_offer(&mut m, asset, DIR_A, &terms, 1_000_000);
+        let b = w.live_offer(&mut m, asset, DIR_B, &terms, 1_000_000);
+        let op = m.operator.insecure_clone();
+        let maker_before = w.maker(&m.pda);
+        let (offer_a, offer_b) = (w.offer(&a), w.offer(&b));
+        let attempt = |w: &mut World, direction: u8, xmr: u64, limit: u64| {
+            let offer = if direction == DIR_A { a } else { b };
+            let (fx, mut raw) = w.prepare_open(&m, asset, direction, xmr, Source::Offer(offer));
+            raw.limit = limit;
+            let taker_before = (w.lamports(&fx.taker.pubkey()), w.tokens(&w.ata(&fx.taker.pubkey())));
+            let res = w.send_open(&fx, &raw);
+            if res.is_err() {
+                // Nothing was created, escrowed or forwarded: the taker is out the fee only.
+                assert!(w.swap(&fx.pda).is_none() && !w.exists(&fx.vault));
+                assert_eq!(w.lamports(&fx.session.pubkey()), 0);
+                assert_eq!((w.lamports(&fx.taker.pubkey()) + FEE, w.tokens(&w.ata(&fx.taker.pubkey()))), taker_before);
+            }
+            (res, fx)
+        };
+
+        // xmr == 0, in both directions, whatever limit the taker names.
+        assert_err(attempt(&mut w, DIR_A, 0, u64::MAX).0, "AmountOutOfRange");
+        assert_err(attempt(&mut w, DIR_B, 0, 0).0, "AmountOutOfRange");
+
+        // The dust take: at 1,000,000 units per XMR, 999,999 piconero is worth floor(0.999999) = 0.
+        // The taker would lock XMR against an empty escrow; min_receive = 0 does not make it valid.
+        assert_err(attempt(&mut w, DIR_B, 999_999, 0).0, "AmountOutOfRange");
+        assert_err(attempt(&mut w, DIR_B, 1, 0).0, "AmountOutOfRange");
+        // One piconero more is worth one unit and is accepted.
+        let (res, fx) = attempt(&mut w, DIR_B, 1_000_000, 0);
+        ok(res);
+        let s = w.swap(&fx.pda).unwrap();
+        assert_eq!((s.state, s.amount, s.deposit, s.xmr), (PENDING, 1, 0, 1_000_000));
+        // Direction A rounds up, so any nonzero size pays at least one unit.
+        let (res, fx) = attempt(&mut w, DIR_A, 1, u64::MAX);
+        ok(res);
+        let s = w.swap(&fx.pda).unwrap();
+        assert_eq!((s.state, s.amount, s.xmr), (ACTIVE, 1, 1));
+
+        // The refusals moved nothing in the maker's record, capacity or key pool: only the two
+        // accepted opens did.
+        let mk = w.maker(&m.pda);
+        assert_eq!((mk.counters[0], mk.counters[1], mk.open_pending), (maker_before.counters[0] + 1, maker_before.counters[1] + 1, 1));
+        assert_eq!(w.offer(&a).capacity_xmr, offer_a.capacity_xmr - 1);
+        assert_eq!(w.offer(&a).pool_used.count_ones(), offer_a.pool_used.count_ones() + 1);
+        assert_eq!(w.offer(&b).capacity_xmr, offer_b.capacity_xmr - 1_000_000);
+
+        // post_quote: zero on either side, either direction. No account is created.
+        let taker = w.fund(10 * SOL);
+        if asset == ASSET_USDC {
+            w.mint_to(&taker.pubkey(), 1_000_000);
+        }
+        let mut id = 0u64;
+        for direction in [DIR_A, DIR_B] {
+            for (xmr, amount) in [(0, 1_000), (XMR, 0), (0, 0)] {
+                id += 1;
+                let (_, share, pok) = m.new_share();
+                let (ix, quote) = w.post_quote_ix(&m, id, &taker.pubkey(), asset, direction, xmr, amount, &Terms::default(), &share, &pok, w.now() + 60);
+                assert_err(w.send(&[ix], &[&op]), "AmountOutOfRange");
+                assert!(!w.exists(&quote));
+                // Defence in depth: such a quote account, if one ever existed, cannot be opened.
+                let quote = w.craft_quote(&m, id, &taker.pubkey(), asset, direction, xmr, amount, &Terms::default(), &share);
+                let (fx, raw) = w.prepare_open_for(&m, taker.insecure_clone(), asset, direction, xmr, Source::Quote(quote, op.pubkey()), rand16());
+                assert_err(w.send_open(&fx, &raw), "AmountOutOfRange");
+                assert!(w.swap(&fx.pda).is_none());
+                assert!(w.exists(&quote), "a refused open does not consume the quote");
+            }
+            // The smallest quote that is allowed.
+            id += 1;
+            let (_, share, pok) = m.new_share();
+            let (ix, quote) = w.post_quote_ix(&m, id, &taker.pubkey(), asset, direction, 1, 1, &Terms::default(), &share, &pok, w.now() + 60);
+            ok(w.send(&[ix], &[&op]));
+            let (fx, raw) = w.prepare_open_for(&m, taker.insecure_clone(), asset, direction, 1, Source::Quote(quote, op.pubkey()), rand16());
+            ok(w.send_open(&fx, &raw));
+            assert_eq!(w.swap(&fx.pda).unwrap().amount, 1);
+        }
+    }
 }
 
 #[test]
 fn pay_is_bounded_by_max_pay_and_receive_by_min_receive() {
     let mut k = market(&wide(), &wide());
-    // 1/3 XMR at 3 units per XMR: A pays ceil(0.99…) = 1, B receives floor = 0.
-    let third = 333_333_333_333;
     ok(k.w.refresh(&k.m, &[(ASSET_USDC, DIR_A, true, [3, 0, 0], u64::MAX), (ASSET_USDC, DIR_B, true, [3, 0, 0], u64::MAX)]));
     ok(k.w.refill(&mut k.m, ASSET_USDC, 0, 2));
     let offer_a = k.w.offer_pda(&k.m.pda, ASSET_USDC, DIR_A);
     let offer_b = k.w.offer_pda(&k.m.pda, ASSET_USDC, DIR_B);
-    let (fx, mut raw) = k.w.prepare_open(&k.m, ASSET_USDC, DIR_A, third, Source::Offer(offer_a));
+    // 1/3 XMR at 3 units per XMR: A pays ceil(0.99…) = 1.
+    let (fx, mut raw) = k.w.prepare_open(&k.m, ASSET_USDC, DIR_A, 333_333_333_333, Source::Offer(offer_a));
     raw.limit = 0;
     assert_err(k.w.send_open(&fx, &raw), "PriceMoved");
     raw.limit = 1;
     ok(k.w.send_open(&fx, &raw));
     assert_eq!(k.w.swap(&fx.pda).unwrap().amount, 1);
 
-    let (fx, mut raw) = k.w.prepare_open(&k.m, ASSET_USDC, DIR_B, third, Source::Offer(offer_b));
-    raw.limit = 1;
+    // A little over 2/3 XMR at 3 units per XMR: B receives floor(2.000000000001) = 2.
+    let (fx, mut raw) = k.w.prepare_open(&k.m, ASSET_USDC, DIR_B, 666_666_666_667, Source::Offer(offer_b));
+    raw.limit = 3;
     assert_err(k.w.send_open(&fx, &raw), "PriceMoved");
-    raw.limit = 0;
+    raw.limit = 2;
     ok(k.w.send_open(&fx, &raw));
-    assert_eq!(k.w.swap(&fx.pda).unwrap().amount, 0);
+    assert_eq!(k.w.swap(&fx.pda).unwrap().amount, 2);
 }
 
 /// A quote for exactly `amount` with `dep_bps`, taken (direction B) or locked (direction A).
@@ -146,22 +295,29 @@ fn amounts_json_bps_as_the_deposit() {
     let v = vectors("amounts");
     let mut w = World::new();
     let mut m = w.register_maker();
-    let (mut replayed, mut unrepresentable) = (0, 0);
-    for case in v["cases"].as_array().unwrap().iter().filter(|c| c["input"]["op"] == "bps") {
+    let (mut replayed, mut zero) = (0usize, 0usize);
+    let cases = solana_cases(&v, &["bps"]);
+    for case in &cases {
         let i = &case["input"];
-        let amount = u128_of(&i["amount"]);
-        if amount > u64::MAX as u128 {
-            unrepresentable += 1;
+        let amount = u64::try_from(u128_of(&i["amount"])).expect("a Solana case fits u64");
+        let bps = i["bps"].as_u64().unwrap() as u16;
+        if amount == 0 {
+            // floor(0 × bps) = 0 is arithmetic only: no swap has a zero amount (SPEC 3.1).
+            assert_eq!(num(&case["output"]["result"]), 0);
+            let (ix, _) = w.post_quote_ix(&m, 1, &m.owner.pubkey(), ASSET_USDC, DIR_B, XMR, 0, &Terms { dep_bps: bps, ..Terms::default() }, &[0; 32], &[0; 64], w.now() + 60);
+            let op = m.operator.insecure_clone();
+            assert_err(w.send(&[ix], &[&op]), "AmountOutOfRange");
+            zero += 1;
             continue;
         }
-        let bps = i["bps"].as_u64().unwrap() as u16;
-        let fx = open_quote(&mut w, &mut m, ASSET_USDC, DIR_B, amount as u64, bps);
+        let fx = open_quote(&mut w, &mut m, ASSET_USDC, DIR_B, amount, bps);
         let s = w.swap(&fx.pda).unwrap();
         assert_eq!(s.deposit, num(&case["output"]["result"]), "{}", case["name"]);
         assert_eq!(w.tokens(&fx.vault), s.deposit, "{}: the take deposit is what was escrowed", case["name"]);
         replayed += 1;
     }
-    assert_eq!((replayed, unrepresentable), (8, 2));
+    assert_eq!(replayed + zero, cases.len());
+    assert!(replayed >= 7 && zero == 1, "{replayed} {zero}");
 }
 
 /// Open for exactly `amount`, post the notice, wait out the claim delay, claim. Returns what the
@@ -264,23 +420,20 @@ fn no_fee_on_refunds_held_deposits_or_pending_exits() {
 #[test]
 fn amounts_json_split() {
     let v = vectors("amounts");
-    let (mut replayed, mut unrepresentable) = (0, 0);
-    for case in v["cases"].as_array().unwrap().iter().filter(|c| c["input"]["op"] == "split") {
+    let cases = solana_cases(&v, &["split"]);
+    let mut replayed = 0;
+    for case in &cases {
         let name = case["name"].as_str().unwrap();
-        let deposit = u128_of(&case["input"]["deposit"]);
-        if deposit > u64::MAX as u128 {
-            unrepresentable += 1;
-            continue;
-        }
-        let deposit = deposit as u64;
+        let deposit = u64::try_from(u128_of(&case["input"]["deposit"])).expect("a Solana case fits u64");
         let (to_taker, to_treasury) = (num(&case["output"]["to_taker"]), num(&case["output"]["to_treasury"]));
         let mut w = World::new();
         let mut m = w.register_maker();
         // A 1% take deposit of exactly `deposit` where that fits; the u64 maximum is written
         // into a real held swap (no amount has a 1% deposit that large).
         let patched = deposit > u64::MAX / 100;
-        let amount = if patched { 1_000 } else { deposit * 100 };
-        let fx = open_quote(&mut w, &mut m, ASSET_USDC, DIR_B, amount, 100);
+        // A zero deposit is a swap with no deposit rate (a zero amount is not a swap).
+        let (amount, bps) = if deposit == 0 { (1_000, 0) } else if patched { (1_000, 100) } else { (deposit * 100, 100) };
+        let fx = open_quote(&mut w, &mut m, ASSET_USDC, DIR_B, amount, bps);
         ok(w.fund_swap(&mut m, &fx));
         let s = w.swap(&fx.pda).unwrap();
         w.set_time(s.t_note_deadline);
@@ -317,14 +470,15 @@ fn amounts_json_split() {
         assert_eq!(u64::from_le_bytes(ev[81..89].try_into().unwrap()), to_treasury);
         replayed += 1;
     }
-    assert_eq!((replayed, unrepresentable), (7, 1));
+    assert_eq!(replayed, cases.len());
+    assert!(replayed >= 7);
 }
 
 #[test]
 fn amounts_json_tiers_pick_the_depth_and_the_price() {
     let v = vectors("amounts");
-    let cases: Vec<&Value> = v["cases"].as_array().unwrap().iter().filter(|c| c["input"]["op"] == "tier").collect();
-    assert_eq!(cases.len(), 14);
+    let cases = solana_cases(&v, &["tier"]);
+    assert!(cases.len() >= 14);
     let three = |v: &Value| -> [u64; 3] {
         let a = v.as_array().unwrap();
         [num(&a[0]), num(&a[1]), num(&a[2])]
@@ -343,13 +497,19 @@ fn amounts_json_tiers_pick_the_depth_and_the_price() {
         };
         let mut w = World::new();
         let m = w.register_maker();
-        let res = w.set_offer(&m, ASSET_USDC, DIR_B, &depth_terms);
+        // Direction A: it rounds up, so every nonzero size is a swap whatever the price.
+        let res = w.set_offer(&m, ASSET_USDC, DIR_A, &depth_terms);
         if case["valid"].as_bool().unwrap() {
             ok(res);
             let mut k = Market { w, m, next_slot: 0 };
-            let (fx, res) = open_at(&mut k, DIR_B, xmr, [1, 0, 0]);
-            ok(res);
-            assert_eq!(k.w.swap(&fx.pda).unwrap().depth as u64, num(&case["output"]["value"]), "{name}: depth");
+            let (fx, res) = open_at(&mut k, DIR_A, xmr, [1, 0, 0]);
+            if xmr == 0 {
+                // The tier of a size of zero is arithmetic only: that swap is refused.
+                assert!(is_err(&res, "AmountOutOfRange"), "{name}: {}", err_string(&res));
+            } else {
+                ok(res);
+                assert_eq!(k.w.swap(&fx.pda).unwrap().depth as u64, num(&case["output"]["value"]), "{name}: depth");
+            }
         } else {
             assert!(is_err(&res, "TiersInvalid"), "{name}: depth tiers: {}", err_string(&res));
         }
@@ -358,18 +518,22 @@ fn amounts_json_tiers_pick_the_depth_and_the_price() {
         let price_terms = Terms { price_above: above, ..wide() };
         let mut w = World::new();
         let m = w.register_maker();
-        let set = w.set_offer(&m, ASSET_USDC, DIR_B, &price_terms);
+        let set = w.set_offer(&m, ASSET_USDC, DIR_A, &price_terms);
         if case["valid"].as_bool().unwrap() {
             ok(set);
             let mut k = Market { w, m, next_slot: 0 };
-            let (fx, res) = open_at(&mut k, DIR_B, xmr, values);
-            ok(res);
-            let s = k.w.swap(&fx.pda).unwrap();
-            let value = num(&case["output"]["value"]);
-            assert_eq!(s.price, value, "{name}: price");
-            assert_eq!(s.amount as u128, xmr as u128 * value as u128 / 1_000_000_000_000, "{name}");
+            let (fx, res) = open_at(&mut k, DIR_A, xmr, values);
+            if xmr == 0 {
+                assert!(is_err(&res, "AmountOutOfRange"), "{name}: {}", err_string(&res));
+            } else {
+                ok(res);
+                let s = k.w.swap(&fx.pda).unwrap();
+                let value = num(&case["output"]["value"]);
+                assert_eq!(s.price, value, "{name}: price");
+                assert_eq!(s.amount as u128, (xmr as u128 * value as u128).div_ceil(1_000_000_000_000), "{name}");
+            }
         } else if set.is_ok() {
-            let res = w.refresh(&m, &[(ASSET_USDC, DIR_B, true, values, u64::MAX)]);
+            let res = w.refresh(&m, &[(ASSET_USDC, DIR_A, true, values, u64::MAX)]);
             assert!(is_err(&res, "TiersInvalid"), "{name}: price tiers: {}", err_string(&res));
         } else {
             assert!(is_err(&set, "TiersInvalid"), "{name}: price thresholds: {}", err_string(&set));
