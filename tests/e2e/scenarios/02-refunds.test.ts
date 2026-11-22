@@ -87,7 +87,8 @@ describe('row 2: approved, no lock notice by the deadline', () => {
     expect(await poolTxids()).toEqual([]);
     // The daemon comes back, finds the swap gone and has nothing to do; nothing is parked for review.
     await restartDaemon();
-    await untilPhase(w, o.ref, ['closed', 'refunded', 'missed_notice', 'settled']).catch(() => undefined);
+    // It was down for the whole life of the swap: it has no record of it, and nothing to do.
+    await expect(w.maker.swapDetail(o.ref)).rejects.toMatchObject({ status: 404 });
     expect((await w.maker.status()).needs_review).toBe(0);
     expect(await holdings(w.maker.wallet)).toBe(inv0);
   }));
@@ -288,6 +289,65 @@ describe('early maker abort (A7b, then A10d)', () => {
     expect(b1.treasury).toBe(b0.treasury);
     expect(counterDelta(c0, await counters(w.maker, 'solana'))).toEqual({ locks: 1, notices: 1, aborts_early: 1, refunds_after_abort: 1 });
     await makerRecoversXmr(o, inv0);
+  }));
+});
+
+describe('direction B unwinds (the taker sells XMR)', () => {
+  const QUARTER = XMR / 4n;
+  it('B4, Solana auto mode: the daemon is down and never funds; after the funding window anyone returns the take deposit; missed_funds is recorded', scenario(() => w, async () => {
+    await taker.offer(w.maker, 'usdc_sol', 1);
+    await w.maker.kill();
+    const b0 = await balances(w, 'usdc_sol');
+    const c0 = await counters(w.maker, 'solana');
+    const o = await taker.open('usdc_sol', 1, QUARTER);
+    expect(await state(o)).toBe('PENDING');
+    expect((await balances(w, 'usdc_sol')).taker).toBe(b0.taker - o.deposit);
+    const d = await dl(o);
+    await to(o, d.tPend! - 1n);
+    await expect(taker.call(o, { name: 'expire_pending' }, {}, 'stranger')).rejects.toMatchObject({ code: 'TooEarly' });
+    await to(o, d.tPend!);
+    await taker.call(o, { name: 'expire_pending' }, {}, 'stranger');
+    expect(await state(o)).toBe('closed');
+    const b1 = await balances(w, 'usdc_sol');
+    expect(b1.taker).toBe(b0.taker);
+    expect(b1.makerOperator).toBe(b0.makerOperator);
+    expect(counterDelta(c0, await counters(w.maker, 'solana'))).toEqual({ takes: 1, missed_funds: 1 });
+    await restartDaemon();
+  }));
+
+  it('B9b: the daemon funds, the taker never pays or announces; at T_note the daemon takes its escrow back; the take deposit is held, then returned', scenario(() => w, async () => {
+    const b0 = await balances(w, 'usdc_sol');
+    const c0 = await counters(w.maker, 'solana');
+    const o = await taker.open('usdc_sol', 1, QUARTER);
+    await untilState(w, o.ref, 'ACTIVE');
+    expect((await balances(w, 'usdc_sol')).makerOperator).toBe(b0.makerOperator - o.amount);
+    const d = await dl(o);
+    await to(o, d.tNote! - 5n);
+    await new Promise((r) => setTimeout(r, 4000));
+    expect(await state(o)).toBe('ACTIVE');
+    await to(o, d.tNote!);
+    await untilState(w, o.ref, 'HOLD');
+    expect((await balances(w, 'usdc_sol')).makerOperator).toBe(b0.makerOperator);
+    await to(o, (await dl(o)).tHold!);
+    await taker.call(o, { name: 'release_deposit' }, {}, 'stranger');
+    const b1 = await balances(w, 'usdc_sol');
+    expect(b1.taker).toBe(b0.taker);
+    expect(b1.treasury).toBe(b0.treasury);
+    expect(counterDelta(c0, await counters(w.maker, 'solana'))).toEqual({ takes: 1, approvals: 1, taker_no_notice: 1, deposits_returned: 1 });
+  }));
+
+  it('B9a: the maker backs out from the console API before any notice; its escrow and the taker\'s deposit both go home at once', scenario(() => w, async () => {
+    const b0 = await balances(w, 'usdc_sol');
+    const c0 = await counters(w.maker, 'solana');
+    const o = await taker.open('usdc_sol', 1, QUARTER);
+    await untilState(w, o.ref, 'ACTIVE');
+    await untilPhase(w, o.ref, 'funded');
+    await w.maker.api('POST', `/api/swaps/${o.ref}/abort`, {});
+    await waitFor('the backout', async () => counterDelta(c0, await counters(w.maker, 'solana'))['backouts_pre_notice'] === 1, { context: () => w.maker.swapDetail(o.ref) });
+    const b1 = await balances(w, 'usdc_sol');
+    expect(b1.taker).toBe(b0.taker);
+    expect(b1.makerOperator).toBe(b0.makerOperator);
+    expect(counterDelta(c0, await counters(w.maker, 'solana'))).toEqual({ takes: 1, approvals: 1, backouts_pre_notice: 1 });
   }));
 });
 

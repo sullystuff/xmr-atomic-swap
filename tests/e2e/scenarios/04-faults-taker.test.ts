@@ -206,9 +206,59 @@ describe('U-1, V-1: the tab is reloaded, then lost', () => {
   }));
 });
 
+describe('R-7 in the browser: ready is set and the maker never claims', () => {
+  it('"Safe to close" only while ready; at the end of the maker\'s claim window the open tab refunds everything by itself; missed_claims', scenario(() => w, async () => {
+    const { page } = tab;
+    const c0 = await counters(w.maker, 'solana');
+    const before = (await balances(w, 'sol')).taker;
+    const inv0 = await holdings(w.maker.wallet);
+    const prompts = tab.sol.signed;
+    const { ref } = await uiLockBuy(tab, w, { market: 'sol', xmr: '0.4', makerPda: w.maker.makerPda });
+    await untilPhase(w, ref, 'xmr_relayed');
+    await w.mine(2);
+    // Not safe yet: the lock is confirmed but ready is not set.
+    expect(await page.getByTestId('safe-banner').count()).toBe(0);
+    await page.getByTestId('risk-banner').waitFor();
+    await w.maker.kill();
+    await w.sol.warpTo(deadlines((await readSwap(w, ref))!).tReadyMin!);
+    await untilState(w, ref, 'READY');
+    const safe = page.getByTestId('safe-banner');
+    await safe.waitFor({ timeout: 60_000 });
+    expect(await safe.innerText()).toContain('Safe to close');
+    expect(await safe.innerText()).toMatch(/If the maker does not complete, come back before .+ to refund\./);
+    expect(await page.getByTestId('risk-banner').count()).toBe(0);
+    await expect.poll(() => page.title()).toBe('Safe to close · XMR atomic swaps');
+    const d = deadlines((await readSwap(w, ref))!);
+    await w.sol.warpTo(d.tCd! - 1n);
+    await page.waitForTimeout(2500);
+    expect(await swapState(w, ref)).toBe('READY');
+    await w.sol.warpTo(d.tCd!);
+    await waitFor('the tab\'s fault refund', async () => counterDelta(c0, await counters(w.maker, 'solana'))['missed_claims'] === 1, { timeoutMs: 90_000 });
+    expect(counterDelta(c0, await counters(w.maker, 'solana'))).toEqual({ locks: 1, notices: 1, readies: 1, missed_claims: 1 });
+    // Everything is back at once, deposit included, and the wallet was never asked.
+    await waitFor('the refund in the taker\'s wallet', async () => before - (await balances(w, 'sol')).taker < 10_000_000n, { timeoutMs: 60_000 });
+    expect(tab.sol.signed).toBe(prompts + 1);
+    await w.maker.start();
+    await w.mine(10);
+    await waitFor('the daemon to sweep its XMR back', async () => (await w.maker.swapDetail(ref)).sweep_txid, { timeoutMs: 180_000, context: () => w.maker.swapDetail(ref) });
+    await w.mine(1);
+    expect(inv0 - (await holdings(w.maker.wallet)) < 200_000_000_000n).toBe(true);
+    await page.goto(w.ui.url);
+    expectClean(w, [tab]);
+  }));
+});
+
 describe('T-1: the relay is down', () => {
   it('offers still list and a swap still completes (the registry and the swap are on-chain); a message to the maker falls back to an on-chain post, and the maker\'s answer comes back on-chain', scenario(() => w, async () => {
     const { page } = tab;
+    // While it is up: it forwards to a maker listed in the registry and to nobody else.
+    const forward = (onion: string) => fetch(`${w.relay.url}/relay/v1/forward`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ onion, method: 'GET', path: '/xs/v1/info' }) });
+    const listed = await forward(w.maker.o.onion);
+    expect(listed.status).toBe(200);
+    expect(((await listed.json()) as { status: number }).status).toBe(200);
+    const unlisted = await forward(`${'b'.repeat(56)}.onion`);
+    expect(unlisted.status).toBe(403);
+    expect(((await unlisted.json()) as { error: string }).error).toBe('onion_not_listed');
     await w.relay.stop();
     const { ref } = await uiLockBuy(tab, w, { market: 'sol', xmr: '0.4', makerPda: w.maker.makerPda });
     await untilPhase(w, ref, 'xmr_relayed');

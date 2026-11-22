@@ -33,6 +33,23 @@ describe('L-1: a large swap across three real makers', () => {
     const treasury0 = (await w.sol.treasury()).sol;
     const payout0 = await Promise.all(w.makers.map((m) => w.sol.balance(m.solPayout.publicKey)));
 
+    /**
+     * The page opens the next wave by itself when a leg settles. If the offers it planned on lapsed in that instant
+     * (this test jumps the chain clock by minutes; a live offer is valid for 60 s) it leaves an "Open next wave"
+     * button instead, as it does when the wallet refuses. Either way the wallet signs exactly once per wave.
+     */
+    const live = async (m: World['maker']): Promise<boolean> => {
+      const o = await w.sol.client.getOffer(m.makerPda, 0, 0);
+      return !!o && o.enabled === 1 && (await w.sol.now()) < o.updatedAt + BigInt(o.validSecs) - 20n;
+    };
+    const openNextWave = (signatures: number): Promise<unknown> =>
+      waitFor(`wave ${signatures} to be opened`, async () => {
+        if (tab.sol.signed >= signatures) return true;
+        const button = page.getByRole('button', { name: /^Open next wave/ });
+        if ((await button.count()) && (await live(m1)) && (await live(m3))) await button.click().catch(() => undefined);
+        return false;
+      }, { timeoutMs: 120_000, intervalMs: 2000, context: () => page.locator('main').innerText() });
+
     await page.goto(`${w.ui.url}/#/large`);
     await connect(page, 'solana');
     await page.getByLabel('Total to spend (SOL)').fill('1.2');
@@ -49,7 +66,7 @@ describe('L-1: a large swap across three real makers', () => {
     registerRecoverySecrets(w, recoveryFile, 'large');
     const lock = page.getByTestId('lock-button');
     await expect.poll(() => lock.isDisabled()).toBe(false);
-    expect(await lock.innerText()).toMatch(/^Lock wave 1: 0\.92 SOL in 2 legs$/);
+    expect(await lock.innerText()).toMatch(/^Lock wave 1: 0\.9225 SOL in 2 legs$/);
 
     // ---- the second maker goes away before it can act: its offer is still live on-chain, its daemon is dead
     await m2.kill();
@@ -73,7 +90,7 @@ describe('L-1: a large swap across three real makers', () => {
     await w.mine(2);
     await w.sol.warpTo(deadlines((await ofMaker(m1))[0]!).tReadyMin!);
     await waitFor('maker 1 to claim', async () => (await m1.counters('solana'))[COUNTER.completed] === 1, { timeoutMs: 120_000, context: () => m1.swaps() });
-    await expect.poll(() => tab.sol.signed, { timeout: 90_000 }).toBe(2);
+    await openNextWave(2);
     await waitFor('the second wave on-chain', async () => (await ofMaker(m3)).length === 1, { timeoutMs: 60_000 });
 
     // ---- maker 2 never announces a lock: at its deadline the tab refunds that leg in full, and the fault is on its record
@@ -89,6 +106,8 @@ describe('L-1: a large swap across three real makers', () => {
     // ---- everything else runs to the end: maker 3 completes, the remainder is re-planned to a maker that delivered
     await waitFor('the final report', async () => {
       if (await page.getByTestId('report').count()) return true;
+      const button = page.getByRole('button', { name: /^Open next wave/ });
+      if ((await button.count()) && (await live(m1)) && (await live(m3))) await button.click().catch(() => undefined);
       for (const s of await swaps()) {
         const d = deadlines(s);
         if (s.state === SWAP_STATE.NOTICED && (await w.sol.now()) < d.tReadyMin!) {

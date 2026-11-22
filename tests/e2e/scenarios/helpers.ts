@@ -122,8 +122,12 @@ export async function uiLockBuy(tab: TakerTab, w: World, o: { market: Market; xm
   const confirm = page.getByTestId('confirm-lock');
   await confirm.waitFor();
   if (o.beforeConfirm) await o.beforeConfirm(page);
+  // The second gate: the full-screen confirmation cannot be passed before its box is ticked.
+  const go = confirm.getByRole('button', { name: /^Lock / });
+  expect(await go.isDisabled()).toBe(true);
+  expect(await confirm.innerText()).toContain('Keep this tab open until it says Safe to close.');
   await confirm.getByRole('checkbox').check();
-  await confirm.getByRole('button', { name: /^Lock / }).click();
+  await go.click();
   await page.getByTestId('swap-page').waitFor({ timeout: 60_000 });
   return { ref: refInUrl(page), recoveryFile };
 }

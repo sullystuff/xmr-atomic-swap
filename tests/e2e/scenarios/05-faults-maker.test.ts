@@ -4,13 +4,13 @@
 // middle of a swap in each direction, and a USDC payout destination that is frozen or blacklisted.
 // The taker is driven through the SDK so that it can misbehave.
 import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { ata, ethereumCall, hex, moneroTx, solanaInstruction, swapJointAddress, verifyLock } from '@xmrswap/sdk';
 import { NODE_A, NODE_B, REGTEST_MAX_FEE, isMined, nodeOther, poolTxids, reorg, txInfo } from '../src/monero.js';
 import { type Opened, SdkTaker } from '../src/taker.js';
-import { XMR, e2eRoot, waitFor } from '../src/util.js';
+import { XMR, e2eRoot, stateRoot, waitFor } from '../src/util.js';
 import { type World, startWorld, stopShared } from '../src/world.js';
 import { balances, counterDelta, counters, deadlines, expectClean, holdings, scenario, stateName, untilPhase, untilState } from './helpers.js';
 
@@ -90,7 +90,8 @@ describe('N-1: Monero trouble on the maker\'s side', () => {
     await reorg(1, w.takerXmr);
     expect(await txInfo(lockTxid, NODE_A)).toBeNull();
     expect(await txInfo(lockTxid, NODE_B)).toBeNull();
-    await waitFor('the daemon to rebroadcast its lock', async () => (await poolTxids()).includes(lockTxid) || (await isMined(lockTxid)), { timeoutMs: 120_000, context: () => w.maker.swapDetail(o.ref) });
+    // The daemon sees its lock gone from every node and relays the stored bytes again (a second relay in its journal).
+    await waitFor('the daemon to rebroadcast its lock', async () => (await intentsOf(o)).filter((i) => i.startsWith('xmr_relay')).length >= 2 && ((await poolTxids()).includes(lockTxid) || (await isMined(lockTxid))), { timeoutMs: 120_000, context: () => w.maker.swapDetail(o.ref) });
     await w.mine(2);
     expect((await taker.notice(o)).txid).toBe(lockTxid);
     expect((await w.maker.swapDetail(o.ref)).lock_txid).toBe(lockTxid);
@@ -153,13 +154,14 @@ describe('N-2: outputs to the joint address that are not the lock', () => {
     expect((await w.maker.swapDetail(o.ref)).lock_state).toBe('invalid');
     // At the cutoff it takes its escrow back (B9d) and the take deposit is held.
     await to(o, (await dl(o)).tCut!);
-    await untilState(w, o.ref, ['HOLD', 'WITHHELD']);
+    await untilState(w, o.ref, 'HOLD');
     const b1 = await balances(w, 'usdc_sol');
     expect(b1.makerOperator).toBe(b0.makerOperator);
     expect(b1.taker).toBe(b0.taker - o.deposit);
-    expect(counterDelta(c0, await counters(w.maker, 'solana'))).toMatchObject({ takes: 1, approvals: 1, notices: 1, refunds_unconfirmed: 1 });
+    expect(counterDelta(c0, await counters(w.maker, 'solana'))).toEqual({ takes: 1, approvals: 1, notices: 1, refunds_unconfirmed: 1 });
     await to(o, (await dl(o)).tHold!);
-    await taker.call(o, { name: 'release_deposit' }, {}, 'stranger').catch(() => undefined);
+    await taker.call(o, { name: 'release_deposit' }, {}, 'stranger');
+    expect((await balances(w, 'usdc_sol')).taker).toBe(b0.taker);
   }));
 
   it('dust outputs to the joint address in the lock\'s block: the lock still verifies, and the daemon\'s sweep spends exactly the verified output', scenario(() => w, async () => {
@@ -203,7 +205,7 @@ describe('F-2: a false notice in direction B', () => {
     await new Promise((r) => setTimeout(r, 5000));
     expect(await state(o)).toBe('NOTICED');
     await to(o, d.tCut!);
-    await untilState(w, o.ref, ['HOLD', 'WITHHELD']);
+    await untilState(w, o.ref, 'HOLD');
     expect((await w.sol.now()) <= d.tCo! - d.margin).toBe(true);
     const b1 = await balances(w, 'usdc_sol');
     expect(b1.makerOperator).toBe(b0.makerOperator);
@@ -357,8 +359,76 @@ describe('P-1: the payout destination cannot receive USDC', () => {
   }));
 });
 
+describe('K-1: the maker rotates its encryption key while a swap is in flight', () => {
+  it('the in-flight swap is unaffected (its messages use the key version it was opened with), and the next swap is opened under the new version', scenario(() => w, async () => {
+    const v0 = (await w.sol.client.getMaker(w.maker.makerPda))!.encKeyVersion;
+    const o = await taker.open('sol', 0, HALF);
+    await untilState(w, o.ref, 'NOTICED');
+    const r = await w.maker.api<{ version: number }>('POST', '/api/keys/rotate', {});
+    expect(r.version).toBe(v0 + 1);
+    await waitFor('the new key in the registry', async () => (await w.sol.client.getMaker(w.maker.makerPda))!.encKeyVersion === v0 + 1);
+    await untilPhase(w, o.ref, 'xmr_relayed');
+    await w.mine(2);
+    // The notice still opens with the key the swap recorded.
+    expect((await taker.must(o)).makerEncVersion).toBe(v0);
+    expect((await taker.verify(o)).ok).toBe(true);
+    await finishA(o);
+    // A direction-B swap opened now is bound to the new version; the daemon decrypts its notice with the new key.
+    const b = await taker.open('usdc_sol', 1, QUARTER);
+    expect((await taker.must(b)).makerEncVersion).toBe(v0 + 1);
+    await untilState(w, b.ref, 'ACTIVE');
+    const paid = await w.takerWallet.pay(await taker.payAddress(b), QUARTER);
+    await taker.postNotice(b, paid);
+    await w.mine(2);
+    await to(b, (await dl(b)).tReadyMin!);
+    await untilState(w, b.ref, 'READY');
+    await taker.claim(b);
+    expect((await w.maker.status()).needs_review).toBe(0);
+  }));
+});
+
+describe('E-1: Ethereum specifics the daemon enforces', () => {
+  it('a lock whose taker never uploaded a valid DLEQ proof is rejected with reason 1; it does not count against the approval rate', scenario(() => w, async () => {
+    const c0 = await counters(w.maker, 'ethereum');
+    const b0 = await balances(w, 'usdc_eth');
+    const o = await taker.open('usdc_eth', 0, HALF, { withoutProof: true });
+    await waitFor('the rejection', async () => counterDelta(c0, await counters(w.maker, 'ethereum'))['rejections_no_fault'] === 1, { timeoutMs: 90_000, context: () => w.maker.swapDetail(o.ref).catch((e: Error) => e.message) });
+    expect(counterDelta(c0, await counters(w.maker, 'ethereum'))).toEqual({ locks: 1, rejections_no_fault: 1 });
+    expect((await balances(w, 'usdc_eth')).taker).toBe(b0.taker);
+  }));
+
+  it('two takers name the same pool leaf: the first lock is approved, the second is rejected with reason 2 and fully refunded', scenario(() => w, async () => {
+    const eth = w.eth!;
+    const c0 = await counters(w.maker, 'ethereum');
+    const other = new SdkTaker(w, new Uint8Array(32).fill(46), w.sol.taker2, eth.taker2);
+    const u0 = await eth.usdcBalance(eth.taker2.address);
+    const first = await taker.open('usdc_eth', 0, HALF, { leafRandom: () => 0 });
+    const second = await other.open('usdc_eth', 0, HALF, { leafRandom: () => 0 });
+    expect((await taker.must(first)).makerSpendPub).toEqual((await other.must(second)).makerSpendPub);
+    await untilState(w, first.ref, ['ACTIVE', 'NOTICED']);
+    await waitFor('the second lock rejected', async () => counterDelta(c0, await counters(w.maker, 'ethereum'))['rejections_no_fault'] === 1, { timeoutMs: 90_000, context: () => w.maker.swapDetail(second.ref).catch((e: Error) => e.message) });
+    expect(await eth.usdcBalance(eth.taker2.address)).toBe(u0);
+    expect(counterDelta(c0, await counters(w.maker, 'ethereum'))).toMatchObject({ locks: 2, approvals: 1, rejections_no_fault: 1 });
+    // The first swap is a normal swap.
+    await untilPhase(w, first.ref, 'xmr_relayed');
+    await w.mine(2);
+    await finishA(first);
+  }));
+});
+
 describe('after every fault', () => {
-  it('no process logged a secret', () => {
+  it('no process logged a secret (and the check itself finds a secret that is in a log)', () => {
     expectClean(w);
+    // The control: a secret written to a log file is found.
+    const canary = path.join(stateRoot, 'logs', 'canary.log');
+    w.addSecret('canary', 'c0ffee00'.repeat(8));
+    writeFileSync(canary, `started\nkey=${'C0FFEE00'.repeat(8)}\n`);
+    try {
+      expect(w.leakedSecrets()).toEqual(['canary in logs/canary.log']);
+    } finally {
+      rmSync(canary, { force: true });
+      w.secrets.delete('canary');
+    }
+    expect(w.secrets.size).toBeGreaterThan(20);
   });
 });

@@ -70,7 +70,7 @@ export class SdkTaker {
     }, { timeoutMs: 60_000 });
   }
 
-  async open(market: Market, direction: 0 | 1, xmr: bigint, o: { maker?: Maker; approval?: SignedSolApproval; slippageBps?: number } = {}): Promise<Opened> {
+  async open(market: Market, direction: 0 | 1, xmr: bigint, o: { maker?: Maker; approval?: SignedSolApproval; slippageBps?: number; /** Ethereum: do not upload the taker's DLEQ proof (unusable input). */ withoutProof?: boolean; /** Ethereum direction A: which free pool leaf to name (0 = the first). */ leafRandom?: () => number } = {}): Promise<Opened> {
     const w = this.w;
     const m = o.maker ?? w.maker;
     if (market === 'sol' || market === 'usdc_sol') {
@@ -93,11 +93,11 @@ export class SdkTaker {
     if (direction === 0) {
       // The pool hashes to the signed root; the picked leaf's proof verifies and is not one of ours.
       const pool = await fetchPool(http, quote.keyRoot);
-      const picked = await pickLeaf(pool, { isKeyUsed: (k) => eth.client.isKeyUsed(m.ethMaker, k, 'latest') });
+      const picked = await pickLeaf(pool, { isKeyUsed: (k) => eth.client.isKeyUsed(m.ethMaker, k, 'latest'), ...(o.leafRandom ? { random: o.leafRandom } : {}) });
       await fetchProof(http, { spendPub: picked.spendPub, keyAddr: picked.key, keyAddr2: picked.key2 }, [keys.spendPub]);
       leaf = leafArgument(pool, picked);
     }
-    await uploadOwnProof(http, keys.spend);
+    if (!o.withoutProof) await uploadOwnProof(http, keys.spend);
     const plan = planEthereumOpen({ contract: eth.client.contract, taker: key.address.toLowerCase() as Address, quote, sig, maker: { encKeyVersion: solMaker.encKeyVersion, encKey: solMaker.encKey }, seed: this.seed, swapNonce, xmr, sessionBudget: ethSessionBudget(5_000_000_000n), slippageBps: o.slippageBps ?? 10, ...(leaf ? { leaf } : {}) });
     if (market === 'usdc_eth') await eth.usdcApprove(key, direction === 0 ? plan.amount : plan.deposit);
     await eth.send(plan.call, key);

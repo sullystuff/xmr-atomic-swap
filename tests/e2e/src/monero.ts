@@ -72,9 +72,13 @@ export const poolTxids = async (node = NODE_A): Promise<string[]> => (await node
  * (and the pool) carried, then a longer chain without them is mined. Returns the new height.
  */
 export async function reorg(depth: number, mineTo: string): Promise<number> {
-  for (const n of [NODE_A, NODE_B]) {
-    await nodeOther(n, 'pop_blocks', { nblocks: depth });
-    await nodeRpc(n, 'flush_txpool', {});
+  // Pop on both nodes first (a node that is ahead would hand the block straight back to the other), then empty both
+  // pools until they stay empty: a popped transaction returns to its node's pool and is relayed to the peer.
+  for (const n of [NODE_A, NODE_B]) await nodeOther(n, 'pop_blocks', { nblocks: depth });
+  for (let quiet = 0, i = 0; quiet < 3 && i < 40; i++) {
+    for (const n of [NODE_A, NODE_B]) await nodeRpc(n, 'flush_txpool', {});
+    await sleep(150);
+    quiet = (await poolTxids(NODE_A)).length + (await poolTxids(NODE_B)).length === 0 ? quiet + 1 : 0;
   }
   return mine(depth + 1, mineTo);
 }

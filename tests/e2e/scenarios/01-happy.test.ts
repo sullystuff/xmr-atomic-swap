@@ -165,7 +165,90 @@ describe('H-B: sell XMR in the browser to the real daemon', () => {
   }
 });
 
-describe('the system as a whole after eight swaps', () => {
+describe('R-4 through the UI on Ethereum: the page\'s own refund with the session key', () => {
+  it('eth: the taker clicks Refund after the maker\'s notice; the session key refunds on Ethereum; the daemon takes its XMR back; the wallet collects the deposit after the hold', scenario(() => w, async () => {
+    const { page } = tab;
+    const before = await balances(w, 'eth');
+    const c0 = await counters(w.maker, 'ethereum');
+    const inv0 = await holdings(w.maker.wallet);
+    const { ref } = await uiLockBuy(tab, w, { market: 'eth', xmr: '0.5' });
+    const prompts = tab.eth!.signed;
+    await untilState(w, ref, 'NOTICED');
+    await untilPhase(w, ref, 'xmr_relayed');
+    const s0 = (await readSwap(w, ref))!;
+    // (Asked while the lock is still unconfirmed: once it is confirmed the page ignores the request, see BUGS.md BUG-1.)
+    await page.getByRole('button', { name: 'Refund this swap' }).click();
+    await page.getByRole('button', { name: 'Yes, refund' }).click();
+    await untilState(w, ref, 'HOLD');
+    await w.mine(2);
+    // The session key paid for it from its budget: no wallet prompt.
+    expect(tab.eth!.signed).toBe(prompts);
+    const mid = await balances(w, 'eth');
+    expect(before.taker - mid.taker >= s0.deposit && before.taker - mid.taker < s0.deposit + NATIVE_SLACK['eth']!).toBe(true);
+    // The daemon recovers its XMR with the share the refund revealed.
+    await w.mine(10);
+    await waitFor('the daemon to sweep its XMR back', async () => (await w.maker.swapDetail(ref)).sweep_txid, { timeoutMs: 180_000, context: () => w.maker.swapDetail(ref) });
+    await w.mine(1);
+    const lost = inv0 - (await holdings(w.maker.wallet));
+    expect(lost > 0n && lost < 2n * REGTEST_MAX_FEE).toBe(true);
+    // After the hold the page offers the deposit; the user's wallet sends the release.
+    await advanceTo(w, s0, deadlines((await readSwap(w, ref))!).tHold!);
+    await text(page, 'Your deposit can be collected now').waitFor({ timeout: 90_000 });
+    await page.getByRole('button', { name: 'Sign with my wallet' }).click();
+    await waitFor('deposits_returned', async () => counterDelta(c0, await counters(w.maker, 'ethereum'))['deposits_returned'] === 1, { timeoutMs: 60_000 });
+    expect(tab.eth!.signed).toBe(prompts + 1);
+    const after = await balances(w, 'eth');
+    expect(before.taker - after.taker >= 0n && before.taker - after.taker < NATIVE_SLACK['eth']!).toBe(true);
+    expect(after.makerPayout).toBe(before.makerPayout);
+    expect(after.treasury).toBe(before.treasury);
+    expect(counterDelta(c0, await counters(w.maker, 'ethereum'))).toEqual({ locks: 1, approvals: 1, notices: 1, taker_refunds_noticed: 1, deposits_returned: 1 });
+    await page.goto(w.ui.url);
+    expectClean(w, [tab]);
+  }));
+});
+
+describe('V-1 on Ethereum: a lost tab, restored from the recovery file in a new browser profile', () => {
+  it('eth: the first profile locks and is thrown away; a new one loads the file, re-derives the keys from the seed and the on-chain nonce, sets ready, and sweeps after the daemon\'s claim', scenario(() => w, async () => {
+    const eth = w.eth!;
+    const first = track(await openTab({ solKey: w.sol.taker2, ethKey: eth.taker2, eth }));
+    const { ref, recoveryFile } = await uiLockBuy(first, w, { market: 'eth', xmr: '0.5' });
+    registerRecoverySecrets(w, recoveryFile, 'V-1.eth');
+    await untilState(w, ref, 'NOTICED');
+    await untilPhase(w, ref, 'xmr_relayed');
+    await first.close();
+    await w.mine(2);
+    const noticed = (await readSwap(w, ref))!;
+    await advanceTo(w, noticed, deadlines(noticed).tReadyMin! + 30n);
+    expect(await untilState(w, ref, 'NOTICED')).toBe('NOTICED');
+
+    const second = track(await openTab({ solKey: w.sol.taker2, ethKey: eth.taker2, eth }));
+    const p2 = second.page;
+    await p2.goto(`${w.ui.url}/#/activity`);
+    await p2.getByRole('heading', { name: 'Load your recovery file to resume' }).waitFor();
+    await p2.getByRole('button', { name: 'I already have one' }).click();
+    await p2.locator('input[type=file]').setInputFiles({ name: 'xmrswap-recovery.json', mimeType: 'application/json', buffer: Buffer.from(recoveryFile) });
+    const item = p2.getByTestId('activity-swap');
+    await item.waitFor({ timeout: 90_000 });
+    await untilState(w, ref, ['READY', 'DONE']);
+    await untilState(w, ref, 'DONE');
+    // Ready was set by the re-derived session key: the wallet was never asked.
+    expect(second.eth!.signed).toBe(0);
+    await item.getByRole('link', { name: 'Open' }).click();
+    await w.mine(10);
+    await p2.getByLabel('Your XMR address').fill(w.takerXmr);
+    await p2.getByRole('button', { name: 'Sweep to this address' }).click();
+    await text(p2, /Sweep sent, waiting for a block/).waitFor({ timeout: 180_000 });
+    const sweepTxid = (await pageNote(p2, ref)).sweepTxid!;
+    await w.mine(1);
+    await text(p2, 'The XMR is in your wallet').waitFor({ timeout: 90_000 });
+    expect(await isMined(sweepTxid)).toBe(true);
+    const got = (await w.takerWallet.received(sweepTxid))!;
+    expect(got > noticed.xmr - REGTEST_MAX_FEE && got < noticed.xmr).toBe(true);
+    expectClean(w, [second]);
+  }));
+});
+
+describe('the system as a whole after every swap of this file', () => {
   it('the daemon raised no critical alert, nothing needs review, and the relay carried the Ethereum messages', async () => {
     const status = await w.maker.status();
     expect(status.needs_review).toBe(0);

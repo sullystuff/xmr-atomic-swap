@@ -191,11 +191,13 @@ describe('advance approval (offer mode 2)', () => {
     await expect.poll(() => page.getByTestId('lock-button').isDisabled()).toBe(true);
     // Ask on the maker's page: the request travels browser -> relay -> (fake Tor) -> daemon endpoint.
     const tor0 = w.tor.connects.length;
+    const prompts = tab.sol.signed;
     await page.goto(`${w.ui.url}/#/maker/${w.maker.makerPda}`);
     await page.getByRole('button', { name: 'Request approval for my wallet' }).click();
     await text(page, /Approved\. The approval is stored in this browser/).waitFor({ timeout: 60_000 });
     expect(w.tor.connects.length).toBeGreaterThan(tor0);
-    expect(tab.sol.signed).toBeGreaterThanOrEqual(0);
+    // Asked and answered off-chain: the wallet was not involved.
+    expect(tab.sol.signed).toBe(prompts);
 
     const { ref } = await uiLockBuy(tab, w, { market: 'usdc_sol', xmr: '0.5' });
     // Treated as AUTO for this swap: ACTIVE at the lock, no window, no console.
