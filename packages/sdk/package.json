@@ -3,9 +3,28 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "description": "Chain clients, Monero verify/watch, taker and maker flows, message transports, signing, registry and router (SPEC 10.2, WP5)",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "default": "./dist/testing/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "build": "echo '@xmrswap/sdk: not implemented yet (owned by WP5)' && exit 1",
-    "test": "echo '@xmrswap/sdk: not implemented yet (owned by WP5)' && exit 1"
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node scripts/ensure-core.mjs && tsc -p tsconfig.json --noEmit && vitest run",
+    "test:integration": "node scripts/ensure-core.mjs && vitest run --config vitest.integration.config.ts"
   },
   "dependencies": {
     "@xmrswap/core-wasm": "workspace:*",
