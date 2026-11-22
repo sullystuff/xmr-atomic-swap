@@ -7,7 +7,7 @@ import { REGTEST_MAX_FEE, isMined } from '../src/monero.js';
 import { type TakerTab, openTab, text } from '../src/ui.js';
 import { waitFor } from '../src/util.js';
 import { type World, startWorld, stopShared } from '../src/world.js';
-import { advanceTo, balances, chainOf, counterDelta, counters, deadlines, expectClean, holdings, pageNote, readSwap, registerRecoverySecrets, scenario, track, uiLockBuy, uiTakeSell, untilPhase, untilState } from './helpers.js';
+import { advanceTo, balances, chainOf, counterDelta, counters, deadlines, expectClean, holdings, pageNote, payAddressOnPage, readSwap, registerRecoverySecrets, scenario, track, uiLockBuy, uiTakeSell, untilPhase, untilState } from './helpers.js';
 
 let w: World;
 // One browser profile for the whole file: one user, one recovery file, eight swaps.
@@ -110,11 +110,7 @@ describe('H-B: sell XMR in the browser to the real daemon', () => {
 
       // The daemon funds the escrow from its operator balance; only then is the address shown, computed in the page.
       await untilState(w, ref, 'ACTIVE');
-      const fundedAt = Date.now();
-      const pay = page.getByTestId('pay-xmr');
-      await pay.waitFor({ timeout: 240_000 });
-      console.log(`[timing] ${market}: the address appeared ${Math.round((Date.now() - fundedAt) / 1000)} s after the maker's funding was mined`);
-      const address = (await pay.locator('code').first().getAttribute('title'))!;
+      const address = await payAddressOnPage(page, `H-B ${market}`);
       expect(address).toMatch(/^4[1-9A-HJ-NP-Za-km-z]{94}$/);
       const funded = (await readSwap(w, ref))!;
       expect(funded.xmr).toBe(250_000_000_000n);
@@ -300,9 +296,7 @@ describe('V-1 on Ethereum, direction B: a lost tab while selling XMR', () => {
     const { ref, recoveryFile } = await uiTakeSell(first, w, { market: 'eth', xmr: '0.25' });
     registerRecoverySecrets(w, recoveryFile, 'V-1.eth.B');
     await untilState(w, ref, 'ACTIVE');
-    const pay = first.page.getByTestId('pay-xmr');
-    await pay.waitFor({ timeout: 240_000 });
-    const address = (await pay.locator('code').first().getAttribute('title'))!;
+    const address = await payAddressOnPage(first.page, 'V-1 direction B eth');
     const funded = (await readSwap(w, ref))!;
     await w.takerWallet.pay(address, funded.xmr);
     await untilState(w, ref, 'NOTICED');

@@ -1,5 +1,6 @@
 // What the scenario files share: one world per file, the taker's steps in the browser, and the
 // taker's steps through the SDK for scenarios that need second-exact control.
+import { appendFileSync } from 'node:fs';
 import { expect } from 'vitest';
 import { COUNTER, type Market, SWAP_STATE } from '@xmrswap/protocol';
 import { type SwapView, deadlinesOf } from '@xmrswap/sdk';
@@ -218,4 +219,19 @@ export async function holdings(wallet: { refresh(): Promise<unknown>; call<T>(m:
 export function expectClean(w: World, tabs: TakerTab[] = []): void {
   expect(w.leakedSecrets()).toEqual([]);
   for (const t of tabs) expect(t.errors).toEqual([]);
+}
+
+/**
+ * The address the sell-XMR page tells the user to pay, read from the page as soon as the panel is in the document.
+ * (Three times in about thirty runs Playwright's own "wait until visible" on this panel ran into its limit although the
+ * panel's text was on the page the moment the wait gave up: BUGS.md O3. The panel is therefore looked up by plain polling,
+ * and a late appearance is written to the run's observations instead of being lost.)
+ */
+export async function payAddressOnPage(page: Page, label: string, timeoutMs = 240_000): Promise<string> {
+  const panel = page.getByTestId('pay-xmr');
+  const t0 = Date.now();
+  const address = await waitFor('the pay address on the page', async () => ((await panel.count()) > 0 ? panel.locator('code').first().getAttribute('title') : null), { timeoutMs, intervalMs: 500, context: () => page.locator('main').innerText() });
+  const secs = Math.round((Date.now() - t0) / 1000);
+  if (secs > 60 && process.env['E2E_KNOWN_FAILURES_REPORT']) appendFileSync(`${process.env['E2E_KNOWN_FAILURES_REPORT']}.observations`, `O3 ${label}: the pay address appeared ${secs} s after the maker's funding was mined\n`);
+  return address;
 }

@@ -15,6 +15,7 @@ let code = sh('node_modules/.bin/tsc', ['-p', 'tsconfig.json', '--noEmit']);
 if (code !== 0) process.exit(code);
 const report = path.join(root, '.known-failures.json');
 rmSync(report, { force: true });
+rmSync(`${report}.observations`, { force: true });
 const started = Date.now();
 code = sh('node_modules/.bin/vitest', ['run', ...process.argv.slice(2)], { ...process.env, E2E_KNOWN_FAILURES_REPORT: report });
 const mins = ((Date.now() - started) / 60000).toFixed(1);
@@ -27,5 +28,10 @@ if (existsSync(report)) {
   if (rows.some((r) => !r.stillFails)) code = code || 1;
   rmSync(report, { force: true });
 } else console.log('  none recorded in this run');
+if (existsSync(`${report}.observations`)) {
+  console.log('---------------- intermittent observations in this run (BUGS.md, not failures) ----------------');
+  console.log(readFileSync(`${report}.observations`, 'utf8').trimEnd());
+  rmSync(`${report}.observations`, { force: true });
+}
 console.log(`================ e2e ${code === 0 ? 'PASSED' : 'FAILED'} in ${mins} min ================`);
 process.exit(code);
