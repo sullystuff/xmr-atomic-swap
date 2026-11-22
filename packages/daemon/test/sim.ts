@@ -410,7 +410,11 @@ export class FakeMonero implements InventoryWallet, MoneroBroadcaster, MoneroVie
     if (!t) throw new Error('unknown tx');
     t.relayed = 0;
     t.minedAt = null;
-    for (const k of t.inputs) this.spentInputs.delete(k);
+    for (const k of t.inputs) {
+      this.spentInputs.delete(k);
+      const o = this.outs.find((x) => x.keyImage === k);
+      if (o) o.spent = false;
+    }
   }
   relaysOf(kind: FakeTxRecord['kind'], address?: string): string[] {
     return [...new Set(this.relays)].filter((id) => this.txs.get(id)?.kind === kind && (!address || this.txs.get(id)!.destinations.some((d) => d.address === address)));

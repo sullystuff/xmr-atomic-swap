@@ -13,7 +13,6 @@ import { timingSafeEqual } from 'node:crypto';
 import type { Server } from 'node:http';
 import { COUNTER_NAMES, type ChainName, type Contact, MAX_CONTACTS, MAX_CONTACT_LEN, MAX_ONION_LEN, type Market, SWAP_STATE, SWAP_STATE_NAMES } from '@xmrswap/protocol';
 import { type AdvanceApprovalRequest, type ApiError, type ApprovalRevokeRequest, type ApprovalsResponse, type AssetId, type ConfigResponse, type FeesResponse, type InventoryResponse, type OffersResponse, type PauseResponse, type RebalanceManualRequest, type RebalanceRunRequest, type RegistrationAction, type SwapAction, type SwapActionResponse, type TxResult, WS_CHANNELS, WS_PING_SECS, type WsChannel, type WsClientMessage, type WsServerMessage } from '@xmrswap/protocol/daemon-api';
-import { parseEventLogs } from '@xmrswap/protocol';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { WebSocketServer } from 'ws';
 import { REFRESH_CU, loadConfig, updateCost } from '../config/load.js';
@@ -176,18 +175,11 @@ export async function startApi(d: Daemon, opts: { bind?: string } = {}): Promise
   });
   /** The identity link's trace: every recorded `LinkChanged`, newest first (not in the frozen API). */
   route('get', '/api/registration/links', async () => {
-    const entries: { chain: ChainName; old: string; new: string; effective_at: number; tx: string; at: number | null }[] = [];
-    if (d.sol) {
-      for (const s of await d.sol.client.transport.getSignaturesForAddress(d.sol.makerPda, { limit: 200 })) {
-        if (s.err) continue;
-        const tx = await d.sol.client.transport.getTransaction(s.signature);
-        for (const ev of tx ? parseEventLogs(tx.logs) : []) if (ev.name === 'LinkChanged') entries.push({ chain: 'solana', old: `0x${Buffer.from(ev.data.old).toString('hex')}`, new: `0x${Buffer.from(ev.data.new).toString('hex')}`, effective_at: Number(ev.data.effectiveAt), tx: s.signature, at: s.blockTime });
-      }
-    }
-    if (d.eth) {
-      const events = await d.eth.client.getEvents({ fromBlock: BigInt(d.config.raw.ethereum.from_block), toBlock: d.eth.tag }).catch(() => []);
-      for (const e of events) if (e.name === 'LinkChanged' && String(e.args['maker']).toLowerCase() === d.eth.makerAddress) entries.push({ chain: 'ethereum', old: String(e.args['oldLink'] ?? e.args['old'] ?? ''), new: String(e.args['newLink'] ?? e.args['new'] ?? ''), effective_at: Number(e.args['effectiveAt'] ?? 0), tx: e.transactionHash, at: null });
-    }
+    const entries: { chain: ChainName; old: string; new: string; effective_at: number }[] = [];
+    const hexOf = (b: Uint8Array) => `0x${Buffer.from(b).toString('hex')}`;
+    if (d.sol) for (const c of await d.sol.client.linkChanges(d.sol.makerPda).catch(() => [])) entries.push({ chain: 'solana', old: hexOf(c.old), new: hexOf(c.next), effective_at: Number(c.effectiveAt) });
+    if (d.eth) for (const c of await d.eth.client.linkChanges(d.eth.makerAddress, { fromBlock: BigInt(d.config.raw.ethereum.from_block), toBlock: d.eth.tag }).catch(() => [])) entries.push({ chain: 'ethereum', old: hexOf(c.old), new: hexOf(c.next), effective_at: Number(c.effectiveAt) });
+    entries.sort((x, y) => y.effective_at - x.effective_at);
     return { entries };
   });
 

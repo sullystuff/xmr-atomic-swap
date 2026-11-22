@@ -89,8 +89,8 @@ describe('DESIGN.md example files', () => {
 
 describe('validation', () => {
   it('evaluates every bound of SPEC 3.1 and agrees with the core', () => {
-    const base = { chain: 'solana' as const, direction: 0 as const, mode: 0, wA: 60, wN: 600, dC: 6060, wC: 1800, wF: 604_800, depth: 25, depBps: 100 };
-    const cases: [Partial<typeof base> & { chain?: 'solana' | 'ethereum' }, RegExp | null][] = [
+    const base = { chain: 'solana' as 'solana' | 'ethereum', direction: 0 as const, mode: 0, wA: 60, wN: 600, dC: 6060, wC: 1800, wF: 604_800, depth: 25, depBps: 100 };
+    const cases: [Partial<typeof base>, RegExp | null][] = [
       [{}, null],
       [{ dC: 6014 }, /claim delay/],
       [{ dC: 6015 }, null],
