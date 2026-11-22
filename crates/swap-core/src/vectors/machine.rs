@@ -92,9 +92,19 @@ pub fn terms() -> VectorFile {
 // ------------------------------------------------------------------ amounts
 
 pub fn amounts() -> VectorFile {
-  let mut cases = Vec::new();
+  let mut cases: Vec<Value> = Vec::new();
+  // Every case says which chains' contracts can replay it: a value above u64 cannot be encoded
+  // in a Solana instruction, so such a case is Ethereum-only.
+  let with_chains = |mut case: Value, chains: &[Chain]| {
+    case.as_object_mut().unwrap().insert("chains".into(), json!(chains.iter().map(|c| c.name()).collect::<Vec<_>>()));
+    case
+  };
+  let both = [Chain::Solana, Chain::Ethereum];
+  let fits_u64 = |v: u128| v <= u64::MAX as u128;
+  let chains_for = |values: &[u128]| if values.iter().all(|v| fits_u64(*v)) { both.to_vec() } else { vec![Chain::Ethereum] };
   let xmr1 = 1_000_000_000_000u64;
-  // (name, xmr, price): every case is evaluated as pay (ceil) and receive (floor) on both chains.
+  // (name, xmr, price): evaluated as pay (ceil) and receive (floor) under each chain's amount
+  // type. A price above u64 exists only as an Ethereum case.
   let prices: Vec<(&str, u64, u128)> = vec![
     ("one-xmr", xmr1, 150_000_000),
     ("one-piconero-at-price-one", 1, 1),
@@ -111,42 +121,78 @@ pub fn amounts() -> VectorFile {
     ("above-u128", u64::MAX, u128::MAX / 1_000_000),
   ];
   for (name, xmr, price) in &prices {
-    for chain in [Chain::Solana, Chain::Ethereum] {
+    for chain in both {
+      if chain == Chain::Solana && !fits_u64(*price) {
+        continue;
+      }
       for (op, f) in [
         ("pay", amounts::pay_amount as fn(u64, u128, &ChainConsts) -> crate::error::Result<u128>),
         ("receive", amounts::receive_amount),
       ] {
         let input = json!({ "op": op, "chain": chain.name(), "xmr": d(xmr), "price": d(price) });
         let case_name = format!("{op}-{name}-{}", chain.name());
-        match f(*xmr, *price, chain.consts()) {
-          Ok(amount) => cases.push(ok_case(&case_name, input, json!({ "amount": d(amount) }))),
-          Err(e) => cases.push(err_case(&case_name, input, &e.to_string())),
-        }
+        let case = match f(*xmr, *price, chain.consts()) {
+          Ok(amount) => ok_case(&case_name, input, json!({ "amount": d(amount) })),
+          Err(e) => err_case(&case_name, input, &e.to_string()),
+        };
+        cases.push(with_chains(case, &[chain]));
       }
     }
   }
+  // The amount of a swap (SPEC 3.1): pay in direction A, receive in direction B, and a swap
+  // whose xmr or amount is zero is refused. `lock`/`take` must agree.
+  let swaps: Vec<(&str, &str, u64, u128)> = vec![
+    ("a-one-xmr", "A", xmr1, 150_000_000),
+    ("b-one-xmr", "B", xmr1, 150_000_000),
+    ("a-zero-xmr", "A", 0, 150_000_000),
+    ("b-zero-xmr", "B", 0, 150_000_000),
+    ("a-one-piconero-pays-one", "A", 1, 1),
+    ("b-dust-take-rounds-to-zero", "B", 1, 1),
+    ("b-largest-take-that-rounds-to-zero", "B", 999_999, 1_000_000),
+    ("b-smallest-take-that-does-not", "B", 1_000_000, 1_000_000),
+    ("a-zero-price", "A", xmr1, 0),
+    ("b-zero-price", "B", xmr1, 0),
+  ];
+  for (name, direction, xmr, price) in &swaps {
+    for chain in both {
+      let input = json!({ "op": "swap", "chain": chain.name(), "direction": direction, "xmr": d(xmr), "price": d(price) });
+      let case_name = format!("swap-{name}-{}", chain.name());
+      let case = match amounts::swap_amount(*direction == "A", *xmr, *price, chain.consts()) {
+        Ok(amount) => ok_case(&case_name, input, json!({ "amount": d(amount) })),
+        Err(e) => err_case(&case_name, input, &e.to_string()),
+      };
+      cases.push(with_chains(case, &[chain]));
+    }
+  }
   for (amount, bps) in [(1_000_000u128, 500u16), (19_999, 500), (1_999, 5), (2_000, 5), (0, 500), (1, 1), (u64::MAX as u128, 500), (u128::MAX, 500), (u128::MAX, 5), (123_456_789_012_345_678, 137)] {
-    cases.push(ok_case(
-      &format!("bps-{amount}-{bps}"),
-      json!({ "op": "bps", "amount": d(amount), "bps": bps }),
-      json!({ "result": d(amounts::bps_of(amount, bps)) }),
+    cases.push(with_chains(
+      ok_case(
+        &format!("bps-{amount}-{bps}"),
+        json!({ "op": "bps", "amount": d(amount), "bps": bps }),
+        json!({ "result": d(amounts::bps_of(amount, bps)) }),
+      ),
+      &chains_for(&[amount]),
     ));
   }
   for deposit in [0u128, 1, 2, 7, 8, 15_000_001, u64::MAX as u128, u128::MAX] {
     let (taker, treasury) = amounts::split_of(deposit);
-    cases.push(ok_case(
-      &format!("split-{deposit}"),
-      json!({ "op": "split", "deposit": d(deposit) }),
-      json!({ "to_taker": d(taker), "to_treasury": d(treasury) }),
+    cases.push(with_chains(
+      ok_case(
+        &format!("split-{deposit}"),
+        json!({ "op": "split", "deposit": d(deposit) }),
+        json!({ "to_taker": d(taker), "to_treasury": d(treasury) }),
+      ),
+      &chains_for(&[deposit]),
     ));
   }
   // Tiers: "the highest used tier with xmr >= tier threshold"; value 0 = unused; unused trail.
   let tier_case = |cases: &mut Vec<Value>, name: &str, xmr: u64, above: [u64; 3], values: [u64; 3]| {
     let input = json!({ "op": "tier", "xmr": d(xmr), "above": above.map(d), "values": values.map(d) });
-    match tier_value(xmr, &above, &values) {
-      Some(v) => cases.push(ok_case(name, input, json!({ "value": d(v) }))),
-      None => cases.push(err_case(name, input, "TiersInvalid")),
-    }
+    let case = match tier_value(xmr, &above, &values) {
+      Some(v) => ok_case(name, input, json!({ "value": d(v) })),
+      None => err_case(name, input, "TiersInvalid"),
+    };
+    cases.push(with_chains(case, &both));
   };
   let above = [0, xmr1, 50 * xmr1];
   for (name, xmr) in [("zero", 0), ("below-tier-1", xmr1 - 1), ("at-tier-1", xmr1), ("below-tier-2", 50 * xmr1 - 1), ("at-tier-2", 50 * xmr1), ("max", u64::MAX)] {
@@ -160,6 +206,13 @@ pub fn amounts() -> VectorFile {
   tier_case(&mut cases, "tier-gap", 9, [0, 0, 9], [1, 0, 3]);
   tier_case(&mut cases, "tier-equal-thresholds", 9, [0, 5, 5], [1, 2, 3]);
   tier_case(&mut cases, "tier-decreasing-thresholds", 9, [0, 5, 4], [1, 2, 3]);
+  // Exactly seven cases are Ethereum-only because a value exceeds u64: four pay/receive, two
+  // bps, one split.
+  let over_u64 = cases
+    .iter()
+    .filter(|c| c["chains"] == json!(["ethereum"]) && c["input"].as_object().unwrap().values().any(|v| v.as_str().and_then(|s| s.parse::<u128>().ok()).is_some_and(|n| n > u64::MAX as u128)))
+    .count();
+  assert_eq!(over_u64, 7);
   suite(
     "amounts",
     cases,
@@ -168,8 +221,10 @@ pub fn amounts() -> VectorFile {
       json!({
         "pay": "direction A: ceil(xmr * price / 10^12)",
         "receive": "direction B: floor(xmr * price / 10^12)",
+        "swap": "the escrowed amount of a swap: pay (A) or receive (B); refused with AmountOutOfRange when xmr or the amount is zero",
         "bps": "floor(amount * bps / 10^4): the deposit and the fee",
         "split": "ceil(D / 2) to the taker, floor(D / 2) to the treasury",
+        "chains": "which chains' contracts can replay the case; a value above u64 cannot be encoded on Solana",
         "max_amount": { "solana": d(SOLANA.max_amount), "ethereum": d(ETHEREUM.max_amount) },
       }),
     )],
@@ -215,6 +270,8 @@ pub(crate) fn canonical_amount(chain: Chain) -> u128 {
   }
 }
 pub(crate) const T0: i64 = 1_800_000_000;
+/// The size of the canonical swap: 1 XMR.
+pub(crate) const CANONICAL_XMR: u64 = 1_000_000_000_000;
 
 pub fn deadlines() -> VectorFile {
   let mut cases = Vec::new();
@@ -449,77 +506,7 @@ fn reject(reason: RejectReason) -> Call {
   Call::Reject { open_ok: true, reason }
 }
 
-fn dir_name(d: Direction) -> &'static str {
-  match d {
-    Direction::A => "A",
-    Direction::B => "B",
-  }
-}
-fn call_args(call: &Call) -> Value {
-  match call {
-    Call::Open(a) => json!({
-      "direction": dir_name(a.direction), "offer_mode": a.offer_mode, "approval": a.approval, "amount": d(a.amount),
-      "w_a": a.params.w_a, "w_n": a.params.w_n, "d_c": a.params.d_c, "w_c": a.params.w_c, "w_f": a.params.w_f,
-      "depth": a.params.depth, "dep_bps": a.params.dep_bps,
-    }),
-    Call::Approve { open_ok } | Call::Fund { open_ok } => json!({ "open_ok": open_ok }),
-    Call::Reject { open_ok, reason } => json!({ "open_ok": open_ok, "reason": *reason as u8 }),
-    Call::Refund { secret_ok } | Call::Claim { secret_ok } => json!({ "secret_ok": secret_ok }),
-    Call::Withhold(e) => json!({ "evidence": match e { Evidence::Absent => "absent", Evidence::Opens => "opens", Evidence::Mismatch => "mismatch" } }),
-    Call::PublishEvidence { opens } => json!({ "opens": opens }),
-    Call::WithdrawOwed(who) => json!({ "who": who.name() }),
-    _ => json!({}),
-  }
-}
-fn env_json(e: &Env) -> Value {
-  json!({
-    "taker_can_receive": e.taker_can_receive, "maker_can_receive": e.maker_can_receive,
-    "treasury_can_receive": e.treasury_can_receive, "open_pending": e.open_pending,
-  })
-}
-fn swap_json(s: &SwapState) -> Value {
-  json!({
-    "state": s.state.name(), "state_code": s.state as u8, "direction": dir_name(s.direction), "mode": s.mode,
-    "outcome": s.outcome, "deposit_state": s.deposit_state, "depth": s.depth, "flags": s.flags,
-    "amount": d(s.amount), "deposit": d(s.deposit), "fee_bps": s.fee_bps, "w_n": s.w_n, "d_c": s.d_c, "w_c": s.w_c,
-    "t_lock": s.t_lock, "t_pending_deadline": s.t_pending_deadline, "t_active": s.t_active,
-    "t_note_deadline": s.t_note_deadline, "t_notice": s.t_notice, "t_cut": s.t_cut, "t_claim_open": s.t_claim_open,
-    "t_ready": s.t_ready, "t_claim_deadline": s.t_claim_deadline, "t_final": s.t_final, "t_refund": s.t_refund,
-    "t_settled": s.t_settled,
-    "owed_taker": d(s.owed_taker), "owed_maker": d(s.owed_maker), "owed_treasury": d(s.owed_treasury),
-  })
-}
-fn maker_json(m: &MakerRecord) -> Value {
-  json!({
-    "counters": m.counters.to_vec(), "response_secs_sum": d(m.response_secs_sum), "volume": d(m.volume),
-    "withheld_volume": d(m.withheld_volume), "open_pending": m.open_pending,
-  })
-}
-fn expect_json(result: &Result<Effects, ModelError>, chain: Chain, maker: Option<&MakerRecord>) -> Value {
-  match result {
-    Err(e) => json!({ "ok": false, "error": e.chain_name(chain) }),
-    Ok(fx) => {
-      let mut v = json!({
-        "ok": true,
-        "state": fx.state.state.name(),
-        "counter": fx.counter,
-        "counter_name": fx.counter.map(|c| counter::NAMES[c as usize]),
-        "payouts": fx.payouts.iter().map(|p| json!({ "to": p.to.name(), "amount": d(p.amount), "parked": p.parked })).collect::<Vec<_>>(),
-        "escrow_in": d(fx.escrow_in),
-        "response_secs": fx.response_secs,
-        "volume": d(fx.volume),
-        "withheld_volume": d(fx.withheld_volume),
-        "open_pending": fx.open_pending,
-        "closed": fx.closed,
-        "swap": swap_json(&fx.state),
-      });
-      if let Some(m) = maker {
-        v.as_object_mut().unwrap().insert("maker".into(), maker_json(m));
-      }
-      v
-    }
-  }
-}
+use crate::model_json::{call_args, dir_name, env_json, expect_json, maker_json, swap_json};
 
 /// A scripted swap on one chain.
 struct Run {
@@ -599,7 +586,7 @@ fn open_args(chain: Chain, direction: Direction, offer_mode: u8, approval: bool,
   if let Some(b) = dep_bps {
     params.dep_bps = b;
   }
-  OpenArgs { direction, offer_mode, approval, amount: canonical_amount(chain), params }
+  OpenArgs { direction, offer_mode, approval, xmr: CANONICAL_XMR, amount: canonical_amount(chain), params }
 }
 
 /// The open call and the steps that bring a fresh swap to `target`.
@@ -847,9 +834,22 @@ fn open_rows(chain: Chain) -> Vec<Value> {
     ] {
       push(id, case, open_args(chain, dir, m, approval, Option::None), Role::TakerWallet, Env::OK);
     }
-    for caller in [Role::Session, Role::Operator, Role::Anyone] {
-      push(id, &format!("wrong caller: {}", caller.name()), open_args(chain, dir, mode::AUTO, false, Option::None), caller, Env::OK);
+    // SPEC 3.13: where the taker is whoever sends the call (Ethereum), "opened by someone else"
+    // cannot be expressed, so no such row exists there.
+    if !c.taker_is_sender {
+      for caller in [Role::Session, Role::Operator, Role::Anyone] {
+        push(id, &format!("wrong caller: {}", caller.name()), open_args(chain, dir, mode::AUTO, false, Option::None), caller, Env::OK);
+      }
     }
+    // SPEC 3.1: a swap whose amount or xmr is zero is refused.
+    let zero = |f: &dyn Fn(&mut OpenArgs)| {
+      let mut a = open_args(chain, dir, mode::AUTO, false, Option::None);
+      f(&mut a);
+      a
+    };
+    push(id, "amount zero", zero(&|a| a.amount = 0), Role::TakerWallet, Env::OK);
+    push(id, "xmr zero", zero(&|a| a.xmr = 0), Role::TakerWallet, Env::OK);
+    push(id, "amount one, xmr one piconero", zero(&|a| { a.amount = 1; a.xmr = 1; }), Role::TakerWallet, Env::OK);
     push(id, "no deposit", open_args(chain, dir, mode::AUTO, false, Some(0)), Role::TakerWallet, Env::OK);
     // MAX_OPEN_PENDING: the 65th pending swap is refused.
     push(id, "63 pending swaps open", open_args(chain, dir, mode::WINDOW, false, Option::None), Role::TakerWallet, Env { open_pending: c.max_open_pending - 1, ..Env::OK });

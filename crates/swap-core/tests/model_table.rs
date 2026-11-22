@@ -19,6 +19,7 @@ use swap_core::model::{
 
 const T0: i64 = 1_800_000_000;
 const AMOUNT: u128 = 1_000_000;
+const XMR: u64 = 1_000_000_000_000;
 const D: u128 = 10_000;
 const FEE: u128 = 500;
 
@@ -514,7 +515,7 @@ fn params() -> SwapParams {
   SwapParams { w_a: 60, w_n: 600, d_c: 3_600, w_c: 1_800, w_f: 604_800, depth: 2, dep_bps: 100 }
 }
 fn open(direction: Direction, offer_mode: u8, approval: bool) -> Call {
-  Call::Open(OpenArgs { direction, offer_mode, approval, amount: AMOUNT, params: params() })
+  Call::Open(OpenArgs { direction, offer_mode, approval, xmr: XMR, amount: AMOUNT, params: params() })
 }
 
 /// A1, B1 and the approval-mode table of section 3.8, Solana.
@@ -586,7 +587,7 @@ fn opening_a_swap_ethereum() {
   use State::*;
   let p = SwapParams { w_a: 120, w_n: 1_800, d_c: 10_800, w_c: 5_400, w_f: 604_800, depth: 10, dep_bps: 100 };
   let go = |direction, offer_mode, approval| {
-    apply(SwapState::NONE, Call::Open(OpenArgs { direction, offer_mode, approval, amount: AMOUNT, params: p }), TakerWallet, T0, &Env::OK, &ETHEREUM)
+    apply(SwapState::NONE, Call::Open(OpenArgs { direction, offer_mode, approval, xmr: XMR, amount: AMOUNT, params: p }), TakerWallet, T0, &Env::OK, &ETHEREUM)
   };
   for dir in [A, B] {
     for (m, approval) in [(mode::AUTO, false), (mode::WINDOW, false), (mode::WINDOW, true), (mode::ADVANCE, true), (mode::QUOTE, false)] {
@@ -811,4 +812,54 @@ fn fee_only_on_claims() {
       }
     }
   }
+}
+
+/// SPEC 3.1: a swap whose `amount` or `xmr` is zero is refused on both chains.
+#[test]
+fn zero_swaps_are_refused() {
+  for consts in [&SOLANA, &ETHEREUM] {
+    let mut p = params();
+    if consts.explicit_approve {
+      p = SwapParams { w_a: 120, w_n: 1_800, d_c: 10_800, w_c: 5_400, w_f: 604_800, depth: 10, dep_bps: 100 };
+    }
+    for dir in [A, B] {
+      let go = |xmr: u64, amount: u128| {
+        apply(SwapState::NONE, Call::Open(OpenArgs { direction: dir, offer_mode: mode::AUTO, approval: false, xmr, amount, params: p }), TakerWallet, T0, &Env::OK, consts)
+      };
+      assert_eq!(go(XMR, 0).unwrap_err(), ModelError::AmountOutOfRange);
+      assert_eq!(go(0, AMOUNT).unwrap_err(), ModelError::AmountOutOfRange);
+      assert_eq!(go(0, 0).unwrap_err(), ModelError::AmountOutOfRange);
+      // The smallest swap there is: one piconero for one base unit.
+      let fx = go(1, 1).unwrap();
+      assert_eq!((fx.state.amount, fx.state.deposit), (1, 0));
+      assert!(go(XMR, AMOUNT).is_ok());
+    }
+  }
+  assert_eq!(ModelError::AmountOutOfRange.name(), "AmountOutOfRange");
+}
+
+/// SPEC 3.13, caller rules that differ by chain: `withdraw_owed` by an account that is owed
+/// nothing is `Unauthorized` on Solana (the wrong signer) and `NothingOwed` on Ethereum (the
+/// call pays the caller's own parked balance).
+#[test]
+fn withdraw_by_an_account_owed_nothing() {
+  let mut s = from(A, State::Done).build();
+  s.owed_taker = 990_000;
+  s.owed_maker = 5;
+  for (who, wrong) in [(Taker, vec![Session, Operator, Owner, Anyone]), (Maker, vec![TakerWallet, Session, Operator, Anyone])] {
+    for caller in wrong {
+      assert_eq!(apply(s, Call::WithdrawOwed(who), caller, T_EXP, &Env::OK, &SOLANA).unwrap_err(), ModelError::Unauthorized, "{who:?} by {caller:?}");
+      assert_eq!(apply(s, Call::WithdrawOwed(who), caller, T_EXP, &Env::OK, &ETHEREUM).unwrap_err(), ModelError::NothingOwed, "{who:?} by {caller:?}");
+    }
+  }
+  // The owed account still pulls on both chains, and nobody is paid somebody else's balance.
+  for consts in [&SOLANA, &ETHEREUM] {
+    let fx = apply(s, Call::WithdrawOwed(Taker), TakerWallet, T_EXP, &Env::OK, consts).unwrap();
+    assert_eq!(fx.payouts.iter().map(|p| (p.to, p.amount)).collect::<Vec<_>>(), vec![(Taker, 990_000)]);
+    assert_eq!((fx.state.owed_taker, fx.state.owed_maker), (0, 5));
+    let fx = apply(s, Call::WithdrawOwed(Maker), Owner, T_EXP, &Env::OK, consts).unwrap();
+    assert_eq!(fx.payouts.iter().map(|p| (p.to, p.amount)).collect::<Vec<_>>(), vec![(Maker, 5)]);
+  }
+  assert!(!SOLANA.taker_is_sender && !SOLANA.pull_own_owed);
+  assert!(ETHEREUM.taker_is_sender && ETHEREUM.pull_own_owed);
 }

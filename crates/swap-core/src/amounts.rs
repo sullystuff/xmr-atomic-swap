@@ -68,6 +68,14 @@ pub struct ChainConsts {
   pub open_secret_calls: bool,
   /// A lapsed take outside window mode is the fault `missed_funds` (else `approval_timeouts`).
   pub lapse_is_fault: bool,
+  /// Caller rule of SPEC 3.13: the taker of a swap is whoever sends `lock`/`take` (Ethereum:
+  /// `msg.sender`, and `swapId = keccak256(taker, nonce)`), so "opened by someone else" cannot
+  /// be expressed and no such vector row exists. False: the transaction must carry the taker's
+  /// signature (`Unauthorized` otherwise).
+  pub taker_is_sender: bool,
+  /// Caller rule of SPEC 3.13: `withdraw_owed` pays the caller's own parked balance, so an
+  /// account that is owed nothing gets `NothingOwed` (Ethereum). False: `Unauthorized`.
+  pub pull_own_owed: bool,
 }
 
 pub const SOLANA: ChainConsts = ChainConsts {
@@ -93,6 +101,8 @@ pub const SOLANA: ChainConsts = ChainConsts {
   explicit_approve: false,
   open_secret_calls: false,
   lapse_is_fault: true,
+  taker_is_sender: false,
+  pull_own_owed: false,
 };
 
 pub const ETHEREUM: ChainConsts = ChainConsts {
@@ -118,6 +128,8 @@ pub const ETHEREUM: ChainConsts = ChainConsts {
   explicit_approve: true,
   open_secret_calls: true,
   lapse_is_fault: false,
+  taker_is_sender: true,
+  pull_own_owed: true,
 };
 
 /// `floor(a × b / d)` and whether the division was exact, with a 256-bit intermediate.
@@ -167,6 +179,21 @@ pub fn pay_amount(xmr: u64, price: u128, c: &ChainConsts) -> Result<u128> {
 pub fn receive_amount(xmr: u64, price: u128, c: &ChainConsts) -> Result<u128> {
   let (q, _) = mul_div(xmr as u128, price, PICONERO_PER_XMR).ok_or(Error::MathOverflow)?;
   fit(q, c)
+}
+
+/// The escrowed amount of a swap of `xmr` at `price`: [`pay_amount`] in direction A,
+/// [`receive_amount`] in direction B. **A swap whose `xmr` or `amount` is zero is refused**
+/// (`AmountOutOfRange`, SPEC 3.1): direction B rounds down, so a dust take can compute to zero,
+/// and such a swap would lock the taker's XMR against nothing.
+pub fn swap_amount(direction_a: bool, xmr: u64, price: u128, c: &ChainConsts) -> Result<u128> {
+  if xmr == 0 {
+    return Err(Error::AmountOutOfRange);
+  }
+  let amount = if direction_a { pay_amount(xmr, price, c)? } else { receive_amount(xmr, price, c)? };
+  if amount == 0 {
+    return Err(Error::AmountOutOfRange);
+  }
+  Ok(amount)
 }
 
 /// `floor(amount × bps / 10^4)`: the deposit `D` and the protocol fee.
@@ -399,6 +426,28 @@ mod tests {
     assert_eq!(pay_amount(333_333_333_333, 3, &SOLANA).unwrap(), 1);
     assert_eq!(receive_amount(333_333_333_333, 3, &SOLANA).unwrap(), 0);
     assert_eq!(pay_amount(0, 5, &SOLANA).unwrap(), 0);
+  }
+
+  #[test]
+  fn zero_swaps_are_refused() {
+    let xmr1 = PICONERO_PER_XMR as u64;
+    for c in [&SOLANA, &ETHEREUM] {
+      assert_eq!(swap_amount(true, xmr1, 150_000_000, c).unwrap(), 150_000_000);
+      assert_eq!(swap_amount(false, xmr1, 150_000_000, c).unwrap(), 150_000_000);
+      // Zero XMR, in either direction.
+      assert_eq!(swap_amount(true, 0, 150_000_000, c), Err(Error::AmountOutOfRange));
+      assert_eq!(swap_amount(false, 0, 150_000_000, c), Err(Error::AmountOutOfRange));
+      // A dust take: floor(1 × 1 / 10^12) = 0. The same size in direction A pays 1 (ceil).
+      assert_eq!(swap_amount(false, 1, 1, c), Err(Error::AmountOutOfRange));
+      assert_eq!(swap_amount(true, 1, 1, c).unwrap(), 1);
+      // The largest take that still rounds to zero, and the smallest that does not.
+      assert_eq!(swap_amount(false, 999_999, 1_000_000, c), Err(Error::AmountOutOfRange));
+      assert_eq!(swap_amount(false, 1_000_000, 1_000_000, c).unwrap(), 1);
+      // A zero price.
+      assert_eq!(swap_amount(true, xmr1, 0, c), Err(Error::AmountOutOfRange));
+      // Overflow is still overflow.
+      assert_eq!(swap_amount(true, u64::MAX, u128::MAX, c), Err(Error::MathOverflow));
+    }
   }
 
   #[test]

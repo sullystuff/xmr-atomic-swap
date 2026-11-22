@@ -49,6 +49,8 @@ pub enum Error {
   SignatureInvalid,
   /// A field does not fit its wire type (for example a price above `u128` in the compact quote).
   FieldOutOfRange,
+  /// A swap whose `amount` or `xmr` is zero (SPEC 3.1).
+  AmountOutOfRange,
   /// Amount arithmetic overflowed its on-chain type.
   MathOverflow,
   PassphraseDecrypt,

@@ -1,6 +1,9 @@
 {
   "cases": [
     {
+      "chains": [
+        "solana"
+      ],
       "input": {
         "chain": "solana",
         "op": "pay",
@@ -14,6 +17,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana"
+      ],
       "input": {
         "chain": "solana",
         "op": "receive",
@@ -27,6 +33,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "ethereum"
+      ],
       "input": {
         "chain": "ethereum",
         "op": "pay",
@@ -40,6 +49,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "ethereum"
+      ],
       "input": {
         "chain": "ethereum",
         "op": "receive",
@@ -53,6 +65,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana"
+      ],
       "input": {
         "chain": "solana",
         "op": "pay",
@@ -66,6 +81,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana"
+      ],
       "input": {
         "chain": "solana",
         "op": "receive",
@@ -79,6 +97,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "ethereum"
+      ],
       "input": {
         "chain": "ethereum",
         "op": "pay",
@@ -92,6 +113,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "ethereum"
+      ],
       "input": {
         "chain": "ethereum",
         "op": "receive",
@@ -105,6 +129,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana"
+      ],
       "input": {
         "chain": "solana",
         "op": "pay",
@@ -118,6 +145,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana"
+      ],
       "input": {
         "chain": "solana",
         "op": "receive",
@@ -131,6 +161,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "ethereum"
+      ],
       "input": {
         "chain": "ethereum",
         "op": "pay",
@@ -144,6 +177,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "ethereum"
+      ],
       "input": {
         "chain": "ethereum",
         "op": "receive",
@@ -157,6 +193,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana"
+      ],
       "input": {
         "chain": "solana",
         "op": "pay",
@@ -170,6 +209,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana"
+      ],
       "input": {
         "chain": "solana",
         "op": "receive",
@@ -183,6 +225,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "ethereum"
+      ],
       "input": {
         "chain": "ethereum",
         "op": "pay",
@@ -196,6 +241,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "ethereum"
+      ],
       "input": {
         "chain": "ethereum",
         "op": "receive",
@@ -209,6 +257,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana"
+      ],
       "input": {
         "chain": "solana",
         "op": "pay",
@@ -222,6 +273,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana"
+      ],
       "input": {
         "chain": "solana",
         "op": "receive",
@@ -235,6 +289,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "ethereum"
+      ],
       "input": {
         "chain": "ethereum",
         "op": "pay",
@@ -248,6 +305,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "ethereum"
+      ],
       "input": {
         "chain": "ethereum",
         "op": "receive",
@@ -261,6 +321,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana"
+      ],
       "input": {
         "chain": "solana",
         "op": "pay",
@@ -274,6 +337,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana"
+      ],
       "input": {
         "chain": "solana",
         "op": "receive",
@@ -287,6 +353,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "ethereum"
+      ],
       "input": {
         "chain": "ethereum",
         "op": "pay",
@@ -300,6 +369,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "ethereum"
+      ],
       "input": {
         "chain": "ethereum",
         "op": "receive",
@@ -313,6 +385,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana"
+      ],
       "input": {
         "chain": "solana",
         "op": "pay",
@@ -326,6 +401,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana"
+      ],
       "input": {
         "chain": "solana",
         "op": "receive",
@@ -339,6 +417,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "ethereum"
+      ],
       "input": {
         "chain": "ethereum",
         "op": "pay",
@@ -352,6 +433,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "ethereum"
+      ],
       "input": {
         "chain": "ethereum",
         "op": "receive",
@@ -365,6 +449,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana"
+      ],
       "input": {
         "chain": "solana",
         "op": "pay",
@@ -378,6 +465,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana"
+      ],
       "input": {
         "chain": "solana",
         "op": "receive",
@@ -391,6 +481,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "ethereum"
+      ],
       "input": {
         "chain": "ethereum",
         "op": "pay",
@@ -404,6 +497,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "ethereum"
+      ],
       "input": {
         "chain": "ethereum",
         "op": "receive",
@@ -417,6 +513,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana"
+      ],
       "input": {
         "chain": "solana",
         "op": "pay",
@@ -430,6 +529,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana"
+      ],
       "input": {
         "chain": "solana",
         "op": "receive",
@@ -443,6 +545,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "ethereum"
+      ],
       "input": {
         "chain": "ethereum",
         "op": "pay",
@@ -456,6 +561,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "ethereum"
+      ],
       "input": {
         "chain": "ethereum",
         "op": "receive",
@@ -469,6 +577,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana"
+      ],
       "error": "MathOverflow",
       "input": {
         "chain": "solana",
@@ -480,6 +591,9 @@
       "valid": false
     },
     {
+      "chains": [
+        "solana"
+      ],
       "error": "MathOverflow",
       "input": {
         "chain": "solana",
@@ -491,6 +605,9 @@
       "valid": false
     },
     {
+      "chains": [
+        "ethereum"
+      ],
       "input": {
         "chain": "ethereum",
         "op": "pay",
@@ -504,6 +621,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "ethereum"
+      ],
       "input": {
         "chain": "ethereum",
         "op": "receive",
@@ -517,6 +637,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana"
+      ],
       "error": "MathOverflow",
       "input": {
         "chain": "solana",
@@ -528,6 +651,9 @@
       "valid": false
     },
     {
+      "chains": [
+        "solana"
+      ],
       "error": "MathOverflow",
       "input": {
         "chain": "solana",
@@ -539,6 +665,9 @@
       "valid": false
     },
     {
+      "chains": [
+        "ethereum"
+      ],
       "input": {
         "chain": "ethereum",
         "op": "pay",
@@ -552,6 +681,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "ethereum"
+      ],
       "input": {
         "chain": "ethereum",
         "op": "receive",
@@ -565,28 +697,9 @@
       "valid": true
     },
     {
-      "error": "MathOverflow",
-      "input": {
-        "chain": "solana",
-        "op": "pay",
-        "price": "1267650600228229401496703205376",
-        "xmr": "18446744073709551615"
-      },
-      "name": "pay-wide-intermediate-solana",
-      "valid": false
-    },
-    {
-      "error": "MathOverflow",
-      "input": {
-        "chain": "solana",
-        "op": "receive",
-        "price": "1267650600228229401496703205376",
-        "xmr": "18446744073709551615"
-      },
-      "name": "receive-wide-intermediate-solana",
-      "valid": false
-    },
-    {
+      "chains": [
+        "ethereum"
+      ],
       "input": {
         "chain": "ethereum",
         "op": "pay",
@@ -600,6 +713,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "ethereum"
+      ],
       "input": {
         "chain": "ethereum",
         "op": "receive",
@@ -613,28 +729,9 @@
       "valid": true
     },
     {
-      "error": "MathOverflow",
-      "input": {
-        "chain": "solana",
-        "op": "pay",
-        "price": "340282366920938463463374607431768",
-        "xmr": "18446744073709551615"
-      },
-      "name": "pay-above-u128-solana",
-      "valid": false
-    },
-    {
-      "error": "MathOverflow",
-      "input": {
-        "chain": "solana",
-        "op": "receive",
-        "price": "340282366920938463463374607431768",
-        "xmr": "18446744073709551615"
-      },
-      "name": "receive-above-u128-solana",
-      "valid": false
-    },
-    {
+      "chains": [
+        "ethereum"
+      ],
       "error": "MathOverflow",
       "input": {
         "chain": "ethereum",
@@ -646,6 +743,9 @@
       "valid": false
     },
     {
+      "chains": [
+        "ethereum"
+      ],
       "error": "MathOverflow",
       "input": {
         "chain": "ethereum",
@@ -657,6 +757,326 @@
       "valid": false
     },
     {
+      "chains": [
+        "solana"
+      ],
+      "input": {
+        "chain": "solana",
+        "direction": "A",
+        "op": "swap",
+        "price": "150000000",
+        "xmr": "1000000000000"
+      },
+      "name": "swap-a-one-xmr-solana",
+      "output": {
+        "amount": "150000000"
+      },
+      "valid": true
+    },
+    {
+      "chains": [
+        "ethereum"
+      ],
+      "input": {
+        "chain": "ethereum",
+        "direction": "A",
+        "op": "swap",
+        "price": "150000000",
+        "xmr": "1000000000000"
+      },
+      "name": "swap-a-one-xmr-ethereum",
+      "output": {
+        "amount": "150000000"
+      },
+      "valid": true
+    },
+    {
+      "chains": [
+        "solana"
+      ],
+      "input": {
+        "chain": "solana",
+        "direction": "B",
+        "op": "swap",
+        "price": "150000000",
+        "xmr": "1000000000000"
+      },
+      "name": "swap-b-one-xmr-solana",
+      "output": {
+        "amount": "150000000"
+      },
+      "valid": true
+    },
+    {
+      "chains": [
+        "ethereum"
+      ],
+      "input": {
+        "chain": "ethereum",
+        "direction": "B",
+        "op": "swap",
+        "price": "150000000",
+        "xmr": "1000000000000"
+      },
+      "name": "swap-b-one-xmr-ethereum",
+      "output": {
+        "amount": "150000000"
+      },
+      "valid": true
+    },
+    {
+      "chains": [
+        "solana"
+      ],
+      "error": "AmountOutOfRange",
+      "input": {
+        "chain": "solana",
+        "direction": "A",
+        "op": "swap",
+        "price": "150000000",
+        "xmr": "0"
+      },
+      "name": "swap-a-zero-xmr-solana",
+      "valid": false
+    },
+    {
+      "chains": [
+        "ethereum"
+      ],
+      "error": "AmountOutOfRange",
+      "input": {
+        "chain": "ethereum",
+        "direction": "A",
+        "op": "swap",
+        "price": "150000000",
+        "xmr": "0"
+      },
+      "name": "swap-a-zero-xmr-ethereum",
+      "valid": false
+    },
+    {
+      "chains": [
+        "solana"
+      ],
+      "error": "AmountOutOfRange",
+      "input": {
+        "chain": "solana",
+        "direction": "B",
+        "op": "swap",
+        "price": "150000000",
+        "xmr": "0"
+      },
+      "name": "swap-b-zero-xmr-solana",
+      "valid": false
+    },
+    {
+      "chains": [
+        "ethereum"
+      ],
+      "error": "AmountOutOfRange",
+      "input": {
+        "chain": "ethereum",
+        "direction": "B",
+        "op": "swap",
+        "price": "150000000",
+        "xmr": "0"
+      },
+      "name": "swap-b-zero-xmr-ethereum",
+      "valid": false
+    },
+    {
+      "chains": [
+        "solana"
+      ],
+      "input": {
+        "chain": "solana",
+        "direction": "A",
+        "op": "swap",
+        "price": "1",
+        "xmr": "1"
+      },
+      "name": "swap-a-one-piconero-pays-one-solana",
+      "output": {
+        "amount": "1"
+      },
+      "valid": true
+    },
+    {
+      "chains": [
+        "ethereum"
+      ],
+      "input": {
+        "chain": "ethereum",
+        "direction": "A",
+        "op": "swap",
+        "price": "1",
+        "xmr": "1"
+      },
+      "name": "swap-a-one-piconero-pays-one-ethereum",
+      "output": {
+        "amount": "1"
+      },
+      "valid": true
+    },
+    {
+      "chains": [
+        "solana"
+      ],
+      "error": "AmountOutOfRange",
+      "input": {
+        "chain": "solana",
+        "direction": "B",
+        "op": "swap",
+        "price": "1",
+        "xmr": "1"
+      },
+      "name": "swap-b-dust-take-rounds-to-zero-solana",
+      "valid": false
+    },
+    {
+      "chains": [
+        "ethereum"
+      ],
+      "error": "AmountOutOfRange",
+      "input": {
+        "chain": "ethereum",
+        "direction": "B",
+        "op": "swap",
+        "price": "1",
+        "xmr": "1"
+      },
+      "name": "swap-b-dust-take-rounds-to-zero-ethereum",
+      "valid": false
+    },
+    {
+      "chains": [
+        "solana"
+      ],
+      "error": "AmountOutOfRange",
+      "input": {
+        "chain": "solana",
+        "direction": "B",
+        "op": "swap",
+        "price": "1000000",
+        "xmr": "999999"
+      },
+      "name": "swap-b-largest-take-that-rounds-to-zero-solana",
+      "valid": false
+    },
+    {
+      "chains": [
+        "ethereum"
+      ],
+      "error": "AmountOutOfRange",
+      "input": {
+        "chain": "ethereum",
+        "direction": "B",
+        "op": "swap",
+        "price": "1000000",
+        "xmr": "999999"
+      },
+      "name": "swap-b-largest-take-that-rounds-to-zero-ethereum",
+      "valid": false
+    },
+    {
+      "chains": [
+        "solana"
+      ],
+      "input": {
+        "chain": "solana",
+        "direction": "B",
+        "op": "swap",
+        "price": "1000000",
+        "xmr": "1000000"
+      },
+      "name": "swap-b-smallest-take-that-does-not-solana",
+      "output": {
+        "amount": "1"
+      },
+      "valid": true
+    },
+    {
+      "chains": [
+        "ethereum"
+      ],
+      "input": {
+        "chain": "ethereum",
+        "direction": "B",
+        "op": "swap",
+        "price": "1000000",
+        "xmr": "1000000"
+      },
+      "name": "swap-b-smallest-take-that-does-not-ethereum",
+      "output": {
+        "amount": "1"
+      },
+      "valid": true
+    },
+    {
+      "chains": [
+        "solana"
+      ],
+      "error": "AmountOutOfRange",
+      "input": {
+        "chain": "solana",
+        "direction": "A",
+        "op": "swap",
+        "price": "0",
+        "xmr": "1000000000000"
+      },
+      "name": "swap-a-zero-price-solana",
+      "valid": false
+    },
+    {
+      "chains": [
+        "ethereum"
+      ],
+      "error": "AmountOutOfRange",
+      "input": {
+        "chain": "ethereum",
+        "direction": "A",
+        "op": "swap",
+        "price": "0",
+        "xmr": "1000000000000"
+      },
+      "name": "swap-a-zero-price-ethereum",
+      "valid": false
+    },
+    {
+      "chains": [
+        "solana"
+      ],
+      "error": "AmountOutOfRange",
+      "input": {
+        "chain": "solana",
+        "direction": "B",
+        "op": "swap",
+        "price": "0",
+        "xmr": "1000000000000"
+      },
+      "name": "swap-b-zero-price-solana",
+      "valid": false
+    },
+    {
+      "chains": [
+        "ethereum"
+      ],
+      "error": "AmountOutOfRange",
+      "input": {
+        "chain": "ethereum",
+        "direction": "B",
+        "op": "swap",
+        "price": "0",
+        "xmr": "1000000000000"
+      },
+      "name": "swap-b-zero-price-ethereum",
+      "valid": false
+    },
+    {
+      "chains": [
+        "solana",
+        "ethereum"
+      ],
       "input": {
         "amount": "1000000",
         "bps": 500,
@@ -669,6 +1089,10 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana",
+        "ethereum"
+      ],
       "input": {
         "amount": "19999",
         "bps": 500,
@@ -681,6 +1105,10 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana",
+        "ethereum"
+      ],
       "input": {
         "amount": "1999",
         "bps": 5,
@@ -693,6 +1121,10 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana",
+        "ethereum"
+      ],
       "input": {
         "amount": "2000",
         "bps": 5,
@@ -705,6 +1137,10 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana",
+        "ethereum"
+      ],
       "input": {
         "amount": "0",
         "bps": 500,
@@ -717,6 +1153,10 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana",
+        "ethereum"
+      ],
       "input": {
         "amount": "1",
         "bps": 1,
@@ -729,6 +1169,10 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana",
+        "ethereum"
+      ],
       "input": {
         "amount": "18446744073709551615",
         "bps": 500,
@@ -741,6 +1185,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "ethereum"
+      ],
       "input": {
         "amount": "340282366920938463463374607431768211455",
         "bps": 500,
@@ -753,6 +1200,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "ethereum"
+      ],
       "input": {
         "amount": "340282366920938463463374607431768211455",
         "bps": 5,
@@ -765,6 +1215,10 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana",
+        "ethereum"
+      ],
       "input": {
         "amount": "123456789012345678",
         "bps": 137,
@@ -777,6 +1231,10 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana",
+        "ethereum"
+      ],
       "input": {
         "deposit": "0",
         "op": "split"
@@ -789,6 +1247,10 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana",
+        "ethereum"
+      ],
       "input": {
         "deposit": "1",
         "op": "split"
@@ -801,6 +1263,10 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana",
+        "ethereum"
+      ],
       "input": {
         "deposit": "2",
         "op": "split"
@@ -813,6 +1279,10 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana",
+        "ethereum"
+      ],
       "input": {
         "deposit": "7",
         "op": "split"
@@ -825,6 +1295,10 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana",
+        "ethereum"
+      ],
       "input": {
         "deposit": "8",
         "op": "split"
@@ -837,6 +1311,10 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana",
+        "ethereum"
+      ],
       "input": {
         "deposit": "15000001",
         "op": "split"
@@ -849,6 +1327,10 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana",
+        "ethereum"
+      ],
       "input": {
         "deposit": "18446744073709551615",
         "op": "split"
@@ -861,6 +1343,9 @@
       "valid": true
     },
     {
+      "chains": [
+        "ethereum"
+      ],
       "input": {
         "deposit": "340282366920938463463374607431768211455",
         "op": "split"
@@ -873,6 +1358,10 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana",
+        "ethereum"
+      ],
       "input": {
         "above": [
           "0",
@@ -894,6 +1383,10 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana",
+        "ethereum"
+      ],
       "input": {
         "above": [
           "0",
@@ -915,6 +1408,10 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana",
+        "ethereum"
+      ],
       "input": {
         "above": [
           "0",
@@ -936,6 +1433,10 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana",
+        "ethereum"
+      ],
       "input": {
         "above": [
           "0",
@@ -957,6 +1458,10 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana",
+        "ethereum"
+      ],
       "input": {
         "above": [
           "0",
@@ -978,6 +1483,10 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana",
+        "ethereum"
+      ],
       "input": {
         "above": [
           "0",
@@ -999,6 +1508,10 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana",
+        "ethereum"
+      ],
       "input": {
         "above": [
           "0",
@@ -1020,6 +1533,10 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana",
+        "ethereum"
+      ],
       "input": {
         "above": [
           "0",
@@ -1041,6 +1558,10 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana",
+        "ethereum"
+      ],
       "input": {
         "above": [
           "0",
@@ -1062,6 +1583,10 @@
       "valid": true
     },
     {
+      "chains": [
+        "solana",
+        "ethereum"
+      ],
       "error": "TiersInvalid",
       "input": {
         "above": [
@@ -1081,6 +1606,10 @@
       "valid": false
     },
     {
+      "chains": [
+        "solana",
+        "ethereum"
+      ],
       "error": "TiersInvalid",
       "input": {
         "above": [
@@ -1100,6 +1629,10 @@
       "valid": false
     },
     {
+      "chains": [
+        "solana",
+        "ethereum"
+      ],
       "error": "TiersInvalid",
       "input": {
         "above": [
@@ -1119,6 +1652,10 @@
       "valid": false
     },
     {
+      "chains": [
+        "solana",
+        "ethereum"
+      ],
       "error": "TiersInvalid",
       "input": {
         "above": [
@@ -1138,6 +1675,10 @@
       "valid": false
     },
     {
+      "chains": [
+        "solana",
+        "ethereum"
+      ],
       "error": "TiersInvalid",
       "input": {
         "above": [
@@ -1160,13 +1701,15 @@
   "format": "xmrswap-vectors/1",
   "rules": {
     "bps": "floor(amount * bps / 10^4): the deposit and the fee",
+    "chains": "which chains' contracts can replay the case; a value above u64 cannot be encoded on Solana",
     "max_amount": {
       "ethereum": "340282366920938463463374607431768211455",
       "solana": "18446744073709551615"
     },
     "pay": "direction A: ceil(xmr * price / 10^12)",
     "receive": "direction B: floor(xmr * price / 10^12)",
-    "split": "ceil(D / 2) to the taker, floor(D / 2) to the treasury"
+    "split": "ceil(D / 2) to the taker, floor(D / 2) to the treasury",
+    "swap": "the escrowed amount of a swap: pay (A) or receive (B); refused with AmountOutOfRange when xmr or the amount is zero"
   },
   "suite": "amounts"
 }

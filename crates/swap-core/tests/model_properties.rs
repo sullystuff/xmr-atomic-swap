@@ -86,7 +86,7 @@ fn random_open(rng: &mut ChaCha20Rng, c: &ChainConsts) -> (OpenArgs, Pending) {
     1 => c.max_amount.min(u64::MAX as u128),
     _ => 1 + below(rng, 1_000_000_000_000) as u128,
   };
-  (OpenArgs { direction, offer_mode, approval, amount, params: p }, pending)
+  (OpenArgs { direction, offer_mode, approval, xmr: 1 + below(rng, 1_000_000_000_000_000), amount, params: p }, pending)
 }
 
 /// Every instant at which something can change, and its neighbours.

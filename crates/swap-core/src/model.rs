@@ -318,7 +318,10 @@ pub struct OpenArgs {
   pub offer_mode: u8,
   /// A valid advance approval is presented.
   pub approval: bool,
-  /// The escrowed amount (A: paid by the taker now; B: funded by the maker later).
+  /// The size of the swap in piconero. Zero is refused (`AmountOutOfRange`).
+  pub xmr: u64,
+  /// The escrowed amount (A: paid by the taker now; B: funded by the maker later). Zero is
+  /// refused (`AmountOutOfRange`): a direction-B take of dust can round down to zero.
   pub amount: u128,
   pub params: SwapParams,
 }
@@ -486,6 +489,8 @@ pub enum ModelError {
   ApprovalRequired,
   TooManyPending,
   MathOverflow,
+  /// A swap whose `amount` or `xmr` is zero (SPEC 3.1).
+  AmountOutOfRange,
   Bound(BoundError),
 }
 impl ModelError {
@@ -503,6 +508,7 @@ impl ModelError {
       ModelError::ApprovalRequired => "ApprovalRequired",
       ModelError::TooManyPending => "TooManyPending",
       ModelError::MathOverflow => "MathOverflow",
+      ModelError::AmountOutOfRange => "AmountOutOfRange",
       ModelError::Bound(b) => match b {
         BoundError::DepositTooHigh => "DepositTooHigh",
         BoundError::ApprovalWindowOutOfRange => "ApprovalWindowOutOfRange",
@@ -677,6 +683,10 @@ pub fn apply(
     check_bounds(&a.params, pending, c).map_err(Bound)?;
     if a.amount > c.max_amount {
       return Err(MathOverflow);
+    }
+    // SPEC 3.1: a swap of nothing, or for nothing, is refused on both chains.
+    if a.amount == 0 || a.xmr == 0 {
+      return Err(AmountOutOfRange);
     }
     if pending != Pending::None && env.open_pending >= c.max_open_pending {
       return Err(TooManyPending);
@@ -1038,7 +1048,11 @@ pub fn apply(
         Party::Maker => (caller == Role::Owner, s.owed_maker),
         Party::Treasury => (true, s.owed_treasury),
       };
-      auth(ok)?;
+      if !ok {
+        // SPEC 3.13: where the call pays the caller's own parked balance (Ethereum), an account
+        // that is owed nothing has nothing to pull; elsewhere it is the wrong signer.
+        return Err(if c.pull_own_owed { NothingOwed } else { Unauthorized });
+      }
       if owed == 0 {
         return Err(NothingOwed);
       }

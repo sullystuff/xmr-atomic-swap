@@ -35,6 +35,7 @@ pub mod ethereum;
 pub mod keys;
 pub mod merkle;
 pub mod model;
+pub mod model_json;
 pub mod passphrase;
 pub mod point;
 pub mod pok;

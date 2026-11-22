@@ -63,6 +63,7 @@ fn call_of(step: &Value) -> Call {
       direction: if a["direction"] == "A" { Direction::A } else { Direction::B },
       offer_mode: num(&a["offer_mode"]),
       approval: b("approval"),
+      xmr: num(&a["xmr"]),
       amount: num(&a["amount"]),
       params: SwapParams {
         w_a: num(&a["w_a"]),
@@ -423,5 +424,62 @@ fn constants_in_deadlines_json() {
     assert_eq!(c["output"]["min_claim_delay"], min_dc);
     assert_eq!(c["input"]["params"]["d_c"], min_dc);
     assert_eq!(case(&format!("{chain}-claim-delay-below-floor-depth-{depth}"))["error"], "ClaimDelayTooShort");
+  }
+}
+
+/// SPEC 3.1 and 3.13 in the vectors: zero-amount swaps are refused on both chains, and the
+/// Ethereum rows carry Ethereum's caller rules, so no replay needs a special case.
+#[test]
+fn zero_amount_and_chain_caller_rules() {
+  let t = load("transitions.json");
+  let rows = t["rows"].as_array().unwrap();
+  for chain in ["solana", "ethereum"] {
+    for id in ["A1", "B1"] {
+      let find = |case: &str| rows.iter().find(|r| r["chain"] == chain && r["id"] == id && r["case"] == case).unwrap_or_else(|| panic!("{chain} {id} {case}"));
+      assert_eq!(find("amount zero")["step"]["expect"]["error"], "AmountOutOfRange");
+      assert_eq!(find("xmr zero")["step"]["expect"]["error"], "AmountOutOfRange");
+      assert_eq!(find("amount one, xmr one piconero")["step"]["expect"]["ok"], true);
+    }
+    let foreign_opens = rows.iter().filter(|r| r["chain"] == chain && r["case"].as_str().unwrap().starts_with("wrong caller")).count();
+    assert_eq!(foreign_opens, if chain == "solana" { 6 } else { 0 }, "{chain}: lock/take by someone else");
+    // Every open call names its size.
+    for r in rows.iter().filter(|r| r["chain"] == chain) {
+      let open = r.get("open").unwrap_or(&r["step"]);
+      assert!(open["args"]["xmr"].is_string(), "{chain} {}: open without xmr", r["id"]);
+    }
+  }
+  // The two sequences in which a foreign account tries to pull a parked payout.
+  let step = |name: &str, chain: &str, caller: &str| {
+    let s = t["sequences"].as_array().unwrap().iter().find(|s| s["name"] == name && s["chain"] == chain).unwrap();
+    s["steps"].as_array().unwrap().iter().find(|st| st["call"] == "withdraw_owed" && st["caller"] == caller).unwrap()["expect"].clone()
+  };
+  assert_eq!(step("parked/A/refund", "solana", "session")["error"], "Unauthorized");
+  assert_eq!(step("parked/A/refund", "ethereum", "session")["error"], "NothingOwed");
+  assert_eq!(step("B/expire_unnoticed", "solana", "operator")["error"], "Unauthorized");
+  assert_eq!(step("B/expire_unnoticed", "ethereum", "operator")["error"], "NothingOwed");
+
+  // amounts.json: every case says which chains replay it; seven are Ethereum-only for size.
+  let a = load("amounts.json");
+  let cases = a["cases"].as_array().unwrap();
+  let mut eth_only_for_size = 0;
+  for c in cases {
+    let chains: Vec<&str> = c["chains"].as_array().unwrap_or_else(|| panic!("{}: no chains", c["name"])).iter().map(|x| x.as_str().unwrap()).collect();
+    assert!(!chains.is_empty() && chains.iter().all(|x| *x == "solana" || *x == "ethereum"), "{}", c["name"]);
+    let over = c["input"].as_object().unwrap().values().any(|v| v.as_str().and_then(|s| s.parse::<u128>().ok()).is_some_and(|n| n > u64::MAX as u128));
+    if over {
+      assert_eq!(chains, vec!["ethereum"], "{}", c["name"]);
+      eth_only_for_size += 1;
+    }
+    if let Some(chain) = c["input"]["chain"].as_str() {
+      assert_eq!(chains, vec![chain], "{}", c["name"]);
+    }
+  }
+  assert_eq!(eth_only_for_size, 7);
+  let case = |name: &str| cases.iter().find(|c| c["name"] == name).unwrap_or_else(|| panic!("{name}"));
+  for chain in ["solana", "ethereum"] {
+    assert_eq!(case(&format!("swap-b-dust-take-rounds-to-zero-{chain}"))["error"], "AmountOutOfRange");
+    assert_eq!(case(&format!("swap-a-zero-xmr-{chain}"))["error"], "AmountOutOfRange");
+    assert_eq!(case(&format!("swap-b-zero-xmr-{chain}"))["error"], "AmountOutOfRange");
+    assert_eq!(case(&format!("swap-b-smallest-take-that-does-not-{chain}"))["output"]["amount"], "1");
   }
 }
