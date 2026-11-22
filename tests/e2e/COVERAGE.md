@@ -56,7 +56,7 @@ Files: `01-happy` (eight happy-path swaps in the browser; on Ethereum also the U
 | Reject a pending lock (answered "carried out") | covered | `03-modes-console` |
 | Abort after the taker set ready: refused, reason shown in place, swap completes | covered | `03-modes-console` |
 | Pause stops an automatic approval (the lock is rejected and refunded); Resume | covered | `03-modes-console` |
-| An instruction given just before the daemon is killed is honoured after the restart | covered | `03-modes-console` (the kill follows the click by about a tenth of a second; whether the instruction's transaction had left by then is not controlled) |
+| An instruction that is on record when the daemon is killed is honoured after the restart | covered | `03-modes-console` (the daemon is killed as soon as the instruction shows on the swap's record; whether its transaction had already left is not controlled, the outcome must be "carried out" either way) |
 | Release a held deposit before the hold ends | covered | `03-modes-console` |
 | Withhold, then release a withheld deposit | covered | `03-modes-console` |
 | Reply to an inbox message (taker reads the reply) | covered | `03-modes-console` |

@@ -395,14 +395,15 @@ describe('operator instructions from the console are always answered', () => {
     void eth;
   }));
 
-  it('an instruction given a moment before the daemon is killed is on record and honoured after the restart', scenario(() => w, async () => {
+  it('an instruction that is on record when the daemon is killed is honoured after the restart', scenario(() => w, async () => {
     const c0 = await counters(w.maker, 'ethereum');
     const o = await taker.open('eth', 0, XMR / 2n);
     const cp = await consolePage('approvals');
     const row = cp.getByRole('table', { name: 'Pending approvals' }).getByRole('row').filter({ hasText: o.ref.slice(0, 6) });
     await row.waitFor({ timeout: 60_000 });
     await row.getByRole('button', { name: 'Approve' }).click();
-    await new Promise((r) => setTimeout(r, 120));
+    // Killed the moment the instruction is on the swap's record (it is written before anything acts on it).
+    await waitFor('the instruction on record', async () => (await w.maker.swapDetail(o.ref)).instruction?.action === 'approve', { intervalMs: 15, timeoutMs: 30_000 });
     await w.maker.kill();
     await w.maker.start();
     await untilState(w, o.ref, ['ACTIVE', 'NOTICED']);
