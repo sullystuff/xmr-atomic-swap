@@ -174,9 +174,8 @@ contract ReplayTest is Base {
         XmrSwapSeeder seeder = new XmrSwapSeeder();
         vm.startPrank(owner);
         swap.upgradeToAndCall(address(seeder), "");
-        XmrSwapSeeder(address(swap)).seedMaker(
-            makerOwner, token, counters, uint64(sum), uint128(volume), uint128(withheld)
-        );
+        XmrSwapSeeder(address(swap))
+            .seedMaker(makerOwner, token, counters, uint64(sum), uint128(volume), uint128(withheld));
         swap.upgradeToAndCall(address(impl), "");
         vm.stopPrank();
     }
@@ -323,8 +322,7 @@ contract ReplayTest is Base {
             (address k, address k2) = _twin(_fundSecret());
             c.value = token == ETH ? s.amount : 0;
             c.data = abi.encodeCall(
-                IXmrSwap.fund,
-                (id, _expectedOpen(l, a), k, k2, _spendPub(_fundSecret()), _view("maker view share"))
+                IXmrSwap.fund, (id, _expectedOpen(l, a), k, k2, _spendPub(_fundSecret()), _view("maker view share"))
             );
         } else if (h == keccak256("reject")) {
             uint8 reason = uint8(vm.parseJsonUint(l, string.concat(a, ".reason")));
@@ -456,7 +454,9 @@ contract ReplayTest is Base {
         Snap memory post = _snap();
         _checkSwap(l, string.concat(e, ".swap"), what);
         assertEq(
-            _stateName(_get(id).state), vm.parseJsonString(l, string.concat(e, ".state")), string.concat(what, ": state")
+            _stateName(_get(id).state),
+            vm.parseJsonString(l, string.concat(e, ".state")),
+            string.concat(what, ": state")
         );
 
         // Payouts: expected change of every balance and of every parked amount.
@@ -496,9 +496,7 @@ contract ReplayTest is Base {
         }
         string[4] memory names = ["taker", "payout", "operator", "makerOwner"];
         for (uint256 i; i < 4; ++i) {
-            assertEq(
-                int256(post.bal[i]) - int256(pre.bal[i]), dBal[i], string.concat(what, ": balance of ", names[i])
-            );
+            assertEq(int256(post.bal[i]) - int256(pre.bal[i]), dBal[i], string.concat(what, ": balance of ", names[i]));
             assertEq(
                 int256(post.owed[i]) - int256(pre.owed[i]), dOwed[i], string.concat(what, ": parked for ", names[i])
             );
@@ -633,16 +631,7 @@ contract ReplayTest is Base {
 
     function _stateName(uint8 state) internal pure returns (string memory) {
         string[10] memory n = [
-            "NONE",
-            "PENDING",
-            "ACTIVE",
-            "NOTICED",
-            "READY",
-            "ABORTED_FREE",
-            "ABORTED_HOLD",
-            "HOLD",
-            "WITHHELD",
-            "DONE"
+            "NONE", "PENDING", "ACTIVE", "NOTICED", "READY", "ABORTED_FREE", "ABORTED_HOLD", "HOLD", "WITHHELD", "DONE"
         ];
         return n[state];
     }

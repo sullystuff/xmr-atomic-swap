@@ -10,6 +10,8 @@ optimizer = true
 optimizer_runs = 200
 via_ir = true
 bytecode_hash = "none"
+# One test asks `cast wallet sign` to sign the typed-data JSON of eip712.json (SPEC 9.1).
+ffi = true
 # Tests read the frozen vectors of work package 1; the contract imports the frozen interface.
 fs_permissions = [{ access = "read", path = "../interfaces/vectors" }]
 allow_paths = ["../interfaces"]

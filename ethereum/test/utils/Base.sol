@@ -209,11 +209,14 @@ abstract contract Base is Test {
         q.claimDelay = 10800;
         q.claimWindow = 5400;
         q.finalWindow = 604800;
-        q.validUntil = uint64(block.timestamp + 150);
+        q.validUntil = uint64(vm.getBlockTimestamp() + 150);
         q.epoch = swap.getMaker(makerOwner).quoteEpoch;
         q.keyRoot = direction == 0 ? poolRoot : bytes32(0);
         q.quoteId = nextQuoteId++;
     }
+
+    // Tests read the clock with vm.getBlockTimestamp(): with via-IR the optimizer may reuse an
+    // earlier `block.timestamp` after a warp.
 
     function _sign(uint256 key, bytes32 digest) internal pure returns (bytes memory) {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(key, digest);
@@ -230,8 +233,8 @@ abstract contract Base is Test {
         a.token = 0xFFfFfFffFFfffFFfFFfFFFFFffFFFffffFfFFFfF;
         a.direction = 255;
         a.maxXmr = type(uint64).max;
-        a.notBefore = uint64(block.timestamp);
-        a.validUntil = uint64(block.timestamp + 1 days);
+        a.notBefore = uint64(vm.getBlockTimestamp());
+        a.validUntil = uint64(vm.getBlockTimestamp() + 1 days);
         a.epoch = swap.getMaker(makerOwner).approvalEpoch;
         a.approvalId = keccak256("approval id");
     }
@@ -348,8 +351,10 @@ abstract contract Base is Test {
     }
 
     function _notice(bytes32 id) internal {
-        vm.prank(_claimer(id));
-        swap.postNotice(id, _commitment(id), _ciphertext());
+        address from = _claimer(id);
+        bytes32 commitment = _commitment(id); // sha256 is a call: compute it before the prank
+        vm.prank(from);
+        swap.postNotice(id, commitment, _ciphertext());
     }
 
     function _ready(bytes32 id) internal {
