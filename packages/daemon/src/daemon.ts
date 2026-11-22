@@ -71,6 +71,8 @@ export interface DaemonOptions {
   offerPollMs?: number;
   /** Local clock, Unix seconds (scheduling only; every deadline uses chain time). */
   now?: () => number;
+  /** The private key of encryption-key version 1, when the maker was registered with a key generated elsewhere (tests, migration). */
+  initialEncSecret?: Uint8Array;
   /** Sweep fee cap override (piconero). */
   sweepMaxFee?: bigint;
 }
@@ -173,7 +175,7 @@ export class Daemon {
     this.alerts = new Alerts(this.store, { url: () => (this.config.raw.alerts.webhook_url_env ? this.env(this.config.raw.alerts.webhook_url_env) : undefined) });
     this.shares = new Shares(this.store, this.keystore);
     this.encKeys = new EncKeys(this.store, this.keystore);
-    this.encKeys.ensure(1);
+    this.encKeys.ensure(1, ...(this.o.initialEncSecret ? [this.o.initialEncSecret] : []));
     this.risk = new Risk(this.store, () => this.config);
 
     // 2. Chains, Monero, wallet.
@@ -233,7 +235,7 @@ export class Daemon {
     });
     this.rotation = new Rotation({ store: this.store, keys: this.encKeys, journal: this.journal, solana: () => this.sol, intervalHours: () => this.config.raw.rotation.interval_hours, graceHours: () => this.config.raw.rotation.grace_hours, dryRun: () => !this.live });
     this.inbox = new Inbox({
-      store: this.store, keystore: this.keystore, encKeys: this.encKeys, journal: this.journal, approvals: this.approvals, offers: this.offers, policy: () => this.config.raw.inbox.policy, solana: () => this.sol, live: () => this.live,
+      store: this.store, keystore: this.keystore, encKeys: this.encKeys, journal: this.journal, approvals: this.approvals, offers: this.offers, policy: () => this.config.raw.inbox.policy, solana: () => this.sol, ethereum: () => this.eth, live: () => this.live,
       makerState: async () => {
         if (this.sol) {
           const m = await this.sol.client.getMaker(this.sol.makerPda, 'finalized');
@@ -490,7 +492,10 @@ export class Daemon {
     every('swaps', this.o.swapPollMs ?? 3_000, () => this.executor.tick());
     every('offers', this.o.offerPollMs ?? 1_000, () => this.offers.tick());
     every('inventory', 30_000, () => this.maintainInventory());
-    every('inbox', 5_000, () => this.inbox.pollSolana());
+    every('inbox', 5_000, async () => {
+      await this.inbox.pollSolana();
+      await this.inbox.pollEthereum();
+    });
     every('housekeeping', 60_000, () => this.housekeeping());
   }
 

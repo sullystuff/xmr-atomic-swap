@@ -12,7 +12,7 @@ import { init } from '@xmrswap/core-wasm';
 import { startApi } from './api/server.js';
 import { type LoadResult, loadConfig } from './config/load.js';
 import { Daemon } from './daemon.js';
-import { makerEndpoint, serveEndpoint, torrcLines } from './tor/index.js';
+import { daemonEndpoint, serveEndpoint, torrcLines } from './tor/index.js';
 
 /** The report of `config check`: errors, warnings and the effective terms of every enabled offer. */
 export function checkReport(r: LoadResult): string {
@@ -49,10 +49,7 @@ async function main(argv: string[]): Promise<number> {
     console.log(`xmrswap-daemon ${d.config.raw.daemon.mode}: API on ${api.url} (token in ${d.dataDir}/api-token)`);
     let endpoint: Awaited<ReturnType<typeof serveEndpoint>> | null = null;
     if (d.config.raw.tor.enabled || d.config.blobEndpoint) {
-      const handler = makerEndpoint({
-        store: d.store, inbox: d.inbox, poolLeaves: (root) => d.offers.poolLeaves(root), isOwnShare: (s) => d.store.shareByPub(s) !== undefined,
-        info: async () => ({ maker: d.sol?.makerPda ?? '', operator: d.keystore.solana.publicKey, enc_key_version: d.encKeys.current()?.version ?? 0, chain_time: d.sol ? Number(await d.sol.now()) : 0 }),
-      });
+      const handler = daemonEndpoint(d);
       endpoint = await serveEndpoint(handler, d.config.raw.tor.listen);
       console.log(`maker endpoint on ${d.config.raw.tor.listen} (map an onion service's port 80 to it: xmrswap-daemon tor print-torrc)`);
     }

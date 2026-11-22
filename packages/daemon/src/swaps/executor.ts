@@ -573,7 +573,7 @@ export class Executor {
     if (name === 'fund') {
       // The operator's balance is what direction B commits; USDC on Ethereum needs the contract's allowance first.
       const eth = chain.chain === 'ethereum' ? (chain as unknown as EthereumChain) : null;
-      if (eth) {
+      if (eth && !/^0x0{40}$/.test(view.asset)) {
         const approveTx = await this.o.journal.broadcast('eth_tx', row.ref, { call: 'erc20_approve', token: view.asset }, (onSigned) => eth.ensureAllowance(view.asset as `0x${string}`, view.amount, onSigned));
         if (approveTx.tx) return { kind: 'acted', what: 'approved token allowance' };
       }

@@ -10,6 +10,7 @@ import { INBOX_TEXT_MAX_CHARS, type ErrorCode, type Message, REPLY_RETENTION_DAY
 import type { InboxItem } from '@xmrswap/protocol/daemon-api';
 import { type MakerEncState, SdkError, type SwapView, envelopeHash, hex0x, openFromTaker, sealToTaker } from '@xmrswap/sdk';
 import type { Approvals } from '../approvals/index.js';
+import type { EthereumChain } from '../chains/ethereum.js';
 import type { SolanaChain } from '../chains/solana.js';
 import type { Keystore } from '../keystore/index.js';
 import type { OfferEngine } from '../offers/engine.js';
@@ -42,6 +43,8 @@ export interface InboxOptions {
   /** The registry's view of the maker's keys and the chain time the versions are judged at. */
   makerState: () => Promise<{ maker: Pick<MakerEncState, 'encKey' | 'encKeyVersion' | 'prevEncKey' | 'prevEncKeyExpiresAt'>; now: bigint }>;
   solana: () => SolanaChain | null;
+  /** The Ethereum fallback transport: messages posted through the contract's `Message` event. */
+  ethereum?: () => EthereumChain | null;
   /** Whether on-chain replies may be sent (live mode). */
   live: () => boolean;
   /** Messages a taker key may send per minute. */
@@ -224,6 +227,19 @@ export class Inbox {
       await this.deliver(m.payload, 'solana', m.sender);
       this.o.store.setMeta('sol_msg_cursor', m.signature);
     }
+    return got.length;
+  }
+
+  /** One catch-up pass over messages posted to the maker through the Ethereum contract (the fallback transport), up to the finality tag. */
+  async pollEthereum(): Promise<number> {
+    const eth = this.o.ethereum?.();
+    if (!eth) return 0;
+    const head = await eth.client.blockNumber(eth.tag);
+    const from = BigInt(this.o.store.meta('eth_msg_cursor') ?? '0');
+    if (from > head) return 0;
+    const got = await eth.client.listMessages(eth.makerAddress, { fromBlock: from, toBlock: head });
+    for (const m of got) await this.deliver(m.payload, 'ethereum', m.from);
+    this.o.store.setMeta('eth_msg_cursor', (head + 1n).toString());
     return got.length;
   }
 }

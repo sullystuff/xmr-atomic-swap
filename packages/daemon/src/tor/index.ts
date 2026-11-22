@@ -141,3 +141,18 @@ export function torrcLines(listen: string, hostnameFile?: string): string {
   const dir = hostnameFile ? path.dirname(hostnameFile) : '/var/lib/tor/xmrswap-maker';
   return `HiddenServiceDir ${dir}\nHiddenServicePort 80 ${host}:${port}\n`;
 }
+
+/** The endpoint of a running daemon (what `start` serves and the integration test drives). */
+export function daemonEndpoint(d: {
+  store: Store;
+  inbox: Pick<Inbox, 'handle' | 'replies'>;
+  offers: { poolLeaves(rootHex: string): PoolResponse['leaves'] | null };
+  sol: { makerPda: string; now(): Promise<bigint> } | null;
+  keystore: { solana: { publicKey: string } };
+  encKeys: { current(): { version: number } | null };
+}): ReturnType<typeof makerEndpoint> {
+  return makerEndpoint({
+    store: d.store, inbox: d.inbox, poolLeaves: (root) => d.offers.poolLeaves(root), isOwnShare: (s) => d.store.shareByPub(s) !== undefined,
+    info: async () => ({ maker: d.sol?.makerPda ?? '', operator: d.keystore.solana.publicKey, enc_key_version: d.encKeys.current()?.version ?? 0, chain_time: d.sol ? Number(await d.sol.now()) : 0 }),
+  });
+}
