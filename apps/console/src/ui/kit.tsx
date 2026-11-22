@@ -7,7 +7,7 @@ import { fmtDuration, fmtTime, shortId } from '../lib/format.js';
 
 export type Tone = 'ok' | 'warn' | 'bad' | 'info' | 'accent' | 'plain';
 
-export function Badge({ tone = 'plain', children, title }: { tone?: Tone; children: ReactNode; title?: string }) {
+export function Badge({ tone = 'plain', children, title }: { tone?: Tone; children: ReactNode; title?: string | undefined }) {
   return (
     <span className={`badge${tone === 'plain' ? '' : ` ${tone}`}`} title={title}>
       {children}

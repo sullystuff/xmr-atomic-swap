@@ -4,11 +4,11 @@
  * here, so the console also works against a daemon that predates it.
  */
 import type { ChainName } from '@xmrswap/protocol';
-import type { Alert, ConfigIssue, FeesResponse, OffersResponse, RefillView, RegistrationResponse, StatusResponse, SwapAction, SwapActionResponse, SwapDetail, TxResult } from '@xmrswap/protocol/daemon-api';
+import type { Alert, ChainConnection, ConfigIssue, ConfigValidation, FeesResponse, OffersResponse, RebalanceResponse, RefillView, RegistrationResponse, StatusResponse, SwapAction, SwapActionResponse, SwapDetail, SwapSummary, SwapsResponse, TxResult } from '@xmrswap/protocol/daemon-api';
 
 /** A10: what became of an operator instruction. */
 export type ActionOutcome = 'carried_out' | 'refused' | 'pending';
-/** The SDK's refusal reasons plus the daemon's own two. */
+/** The daemon's one documented list (its A16): the SDK's eight reasons plus its own two. */
 export const REFUSAL_REASONS = [
   'ready-already-set',
   'refund-window-closed',
@@ -35,9 +35,39 @@ export interface SwapInstruction {
   reason: string | null;
   tx: string | null;
 }
-export interface SwapDetailX extends SwapDetail {
+/** A13: every summary carries the approval mode and the operator's latest instruction. */
+export interface SummaryExtras {
+  mode?: number;
   /** The operator's latest instruction and what became of it. */
   instruction?: SwapInstruction | null;
+}
+export type SwapSummaryX = SwapSummary & SummaryExtras;
+export type SwapDetailX = SwapDetail & SummaryExtras;
+export interface SwapsX extends SwapsResponse {
+  swaps: SwapSummaryX[];
+}
+
+/** A11: whether the program or contract can still be changed, read from chain state. */
+export type UpgradeStatus = 'upgradable' | 'immutable' | 'unknown';
+export interface ChainConnectionX extends ChainConnection {
+  upgrade_status?: UpgradeStatus;
+  /** Why the status is unknown. */
+  upgrade_reason?: string | null;
+  /** Ethereum: a two-step ownership transfer that is waiting. */
+  upgrade_pending_authority?: string | null;
+  /** Ethereum: the implementation behind the proxy. Solana: the ProgramData account. */
+  upgrade_implementation?: string | null;
+  upgrade_checked_at?: number | null;
+}
+/** A13: which refills still need the maker. */
+export interface RefillViewX extends RefillView {
+  /** Held, or failed with funds possibly still at the venue. */
+  needs_acknowledgement?: boolean;
+  /** Failed and closed by the maker. */
+  acknowledged?: boolean;
+}
+export interface RebalanceX extends RebalanceResponse {
+  refills: RefillViewX[];
 }
 
 /** A6: the owner's pause is per chain. */
@@ -47,7 +77,10 @@ export interface ChainPause {
   operator: boolean;
 }
 export interface StatusX extends StatusResponse {
+  chains: ChainConnectionX[];
   paused: StatusResponse['paused'] & { chains?: ChainPause[] };
+  /** A12: `registry_onion` is what the registry shows; `reachable` stays `null` (the daemon runs no Tor client). */
+  tor: StatusResponse['tor'] & { registry_onion?: string | null };
 }
 /** A6: the daemon's own SOL price and the compute units it charges an offer update at. */
 export interface CostExtras {
@@ -67,12 +100,20 @@ export interface PublishedResponse {
   tx: TxResult | null;
   registration: RegistrationResponse;
 }
-/** A5: `GET /api/registration/links`, one entry per recorded `LinkChanged`, newest first. Values are 0x-hex bytes. */
+/**
+ * A5 and A13: `GET /api/registration/links`, one entry per recorded `LinkChanged`, newest first.
+ * `old` / `new` are display addresses (an Ethereum address for the Solana record, a base58 Solana
+ * key for the Ethereum record, empty = no link); the raw bytes are beside them.
+ */
 export interface LinkEntry {
   chain: ChainName;
   old: string;
   new: string;
+  old_hex?: string;
+  new_hex?: string;
   effective_at: number;
+  /** Replaced by a later change before it took effect. */
+  superseded?: boolean;
 }
 export type RefillChoice = 'continue' | 'refund';
 
@@ -89,6 +130,13 @@ export interface ExtendedResponses {
   offers: OffersX;
   offersPreview: OffersX;
   swap: SwapDetailX;
+  swaps: SwapsX;
+  rebalance: RebalanceX;
+  rebalanceRun: RefillViewX;
+  rebalanceApprove: RefillViewX;
+  rebalanceCancel: RefillViewX;
+  rebalanceManual: RefillViewX;
+  configValidate: ConfigValidation & CostExtras;
   swapApprove: SwapActionResult;
   swapReject: SwapActionResult;
   swapAbort: SwapActionResult;

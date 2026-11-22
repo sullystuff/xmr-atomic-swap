@@ -3,8 +3,8 @@
  * (SPEC 7.8). Typed by the frozen `ApiRoutes`. It never talks to a chain, a price feed or any
  * other host, and it holds no key: the bearer token only authorises this loopback API.
  */
-import { ROUTES, WS_CHANNELS, routePath, type Alert, type ApiError, type ApiRoutes, type ConfigIssue, type RefillView, type RouteName, type WsChannel, type WsClientMessage, type WsPayloads, type WsServerMessage } from '@xmrswap/protocol/daemon-api';
-import type { ErrorExtras, ExtendedResponses, LinkEntry, PublishedRequest, PublishedResponse, RefillChoice } from './extensions.js';
+import { ROUTES, WS_CHANNELS, routePath, type Alert, type ApiError, type ApiRoutes, type ConfigIssue, type RegistrationTxResponse, type RouteName, type WsChannel, type WsClientMessage, type WsPayloads, type WsServerMessage } from '@xmrswap/protocol/daemon-api';
+import type { ErrorExtras, ExtendedResponses, LinkEntry, PublishedRequest, PublishedResponse, RefillChoice, RefillViewX } from './extensions.js';
 
 export interface ResponseLike {
   ok: boolean;
@@ -112,8 +112,16 @@ export class DaemonClient {
     return this.request('POST', `/api/alerts/${encodeURIComponent(id)}/ack`, {});
   }
   /** Acknowledge a failed or held refill; `choice` resolves an order the venue holds. */
-  acknowledgeRefill(id: string, choice?: RefillChoice): Promise<RefillView> {
+  acknowledgeRefill(id: string, choice?: RefillChoice): Promise<RefillViewX> {
     return this.request('POST', `/api/rebalance/ack/${encodeURIComponent(id)}`, choice ? { choice } : {});
+  }
+
+  /**
+   * The unsigned transaction that withdraws a payout parked for this swap (the daemon's A14).
+   * Signed like a registration action and relayed through `registrationSubmit`; `409 nothing_owed` when nothing is parked.
+   */
+  withdrawOwedTx(ref: string): Promise<RegistrationTxResponse> {
+    return this.request('POST', `/api/swaps/${encodeURIComponent(ref)}/withdraw-owed-tx`, {});
   }
 
   private async request<T>(method: string, path: string, body: unknown): Promise<T> {

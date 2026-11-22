@@ -2,6 +2,7 @@
 import { useId, useState } from 'react';
 import { MARKET_CHAIN } from '@xmrswap/protocol';
 import type { AssetId, OfferView, RebalanceResponse, RefillView, VenueId } from '@xmrswap/protocol/daemon-api';
+import type { RefillViewX } from '../api/extensions.js';
 import { useAction, useClient, useQuery } from '../api/hooks.js';
 import { ASSETS, DIRECTION_LABEL, MODE_OPTIONS, VENUE_LABEL, chainLabel } from '../lib/config/schema.js';
 import { getPath, isTable } from '../lib/config/toml.js';
@@ -336,7 +337,9 @@ const REFILL_STATE: Record<RefillView['state'], { label: string; tone: 'ok' | 'w
   refunded: { label: 'Refunded', tone: 'warn' },
   cancelled: { label: 'Cancelled', tone: 'plain' },
 };
-const IN_TRANSIT: readonly RefillView['state'][] = ['pending', 'depositing', 'processing', 'paying_out', 'held', 'failed'];
+const MOVING: readonly RefillView['state'][] = ['pending', 'depositing', 'processing', 'paying_out', 'held'];
+/** With a venue, or failed and not yet acknowledged (an acknowledged failure is history). */
+const inTransit = (x: RefillViewX): boolean => MOVING.includes(x.state) || (x.state === 'failed' && !x.acknowledged);
 const modeLabel = (m: string): string => MODE_OPTIONS.find((o) => o.value === m)?.label ?? m;
 const venueLabel = (v: RefillView['venue']): string => VENUE_LABEL[v];
 
@@ -348,7 +351,7 @@ function levelStatus(l: RebalanceResponse['levels'][number]): { label: string; t
   return { label: 'Within levels', tone: 'ok' };
 }
 
-function RefillTable({ refills, label, actions }: { refills: RefillView[]; label: string; actions?: (r: RefillView) => React.ReactNode }) {
+function RefillTable({ refills, label, actions }: { refills: RefillViewX[]; label: string; actions?: (r: RefillViewX) => React.ReactNode }) {
   return (
     <div className="table-wrap">
       <table className="tbl" aria-label={label}>
@@ -396,6 +399,13 @@ function RefillTable({ refills, label, actions }: { refills: RefillView[]; label
               <td className="num">{r.fees_usd === null ? <span className="muted">n/a</span> : fmtUsd(r.fees_usd)}</td>
               <td>
                 <Badge tone={REFILL_STATE[r.state].tone}>{REFILL_STATE[r.state].label}</Badge>
+                {r.needs_acknowledgement ? <Badge tone="warn">Needs you</Badge> : null}
+                {r.acknowledged ? <Badge>Acknowledged</Badge> : null}
+                {r.venue === 'wxmr_bridge' && (r.state === 'held' || r.state === 'failed' || r.state === 'refunded' || r.state === 'cancelled') ? (
+                  <div className="msg warning" data-testid="wxmr-manual">
+                    <b>Manual action:</b> a stopped redemption returns wXMR, not USDC. Any wXMR left in the operator wallet has to be redeemed or sold by hand; the daemon offers no action for it.
+                  </div>
+                ) : null}
                 {r.finished_at ? <div className="muted">took {fmtDuration(r.finished_at - r.started_at)}</div> : null}
                 {r.detail ? <div className="muted">{r.detail}</div> : null}
               </td>
@@ -421,8 +431,8 @@ export function RebalancingPage() {
       <Async query={reb} what="the rebalancer">
         {(r) => {
           const awaiting = r.refills.filter((x) => x.state === 'awaiting_approval');
-          const moving = r.refills.filter((x) => IN_TRANSIT.includes(x.state));
-          const history = r.refills.filter((x) => !IN_TRANSIT.includes(x.state) && x.state !== 'awaiting_approval');
+          const moving = r.refills.filter(inTransit);
+          const history = r.refills.filter((x) => !inTransit(x) && x.state !== 'awaiting_approval');
           const cap = r.max_in_transit_usd;
           const parsed = config.data?.parsed;
           const allow = parsed ? getPath(parsed, 'rebalance.allowlist') : undefined;
@@ -574,7 +584,7 @@ export function RebalancingPage() {
                         <Button small busy={busy === `cancel:${x.id}`} onClick={() => void cancel(x.id)}>
                           Cancel
                         </Button>
-                      ) : x.state === 'held' ? (
+                      ) : x.state === 'held' && x.needs_acknowledgement !== false ? (
                         <span className="row" style={{ justifyContent: 'flex-end' }}>
                           <ConfirmButton label="Continue" small busy={busy === `ack:${x.id}:continue`} onConfirm={() => void ack(x.id, 'continue')}>
                             Tell {venueLabel(x.venue)} to continue this order at its new rate. The funds stay with the venue until it pays out.
@@ -586,7 +596,7 @@ export function RebalancingPage() {
                             Mark this order as settled outside the console. It is closed as failed and stops counting against the in-transit cap. Do this only once you have the funds back or have written them off.
                           </ConfirmButton>
                         </span>
-                      ) : x.state === 'failed' ? (
+                      ) : x.state === 'failed' && (x.needs_acknowledgement ?? !x.acknowledged) ? (
                         <ConfirmButton label="Acknowledge" small busy={busy === `ack:${x.id}:`} onConfirm={() => void ack(x.id)}>
                           Confirm you have checked this failed refill. It stops counting against the in-transit cap.
                         </ConfirmButton>

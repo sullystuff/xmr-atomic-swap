@@ -6,7 +6,7 @@ import { ConfigPage } from './pages/config/ConfigPage.js';
 import { InventoryPage, OffersPage, RebalancingPage } from './pages/market.js';
 import { ApprovalsPage, DashboardPage, DepositsPage, InboxPage, SwapDetailPage, SwapsPage } from './pages/monitor.js';
 import { KeysPage, RegistrationPage, StatusPage } from './pages/setup.js';
-import { upgradeSummary } from './ui/domain.js';
+import { UpgradeBadge, upgradeLine, upgradeStateOf, upgradeSummary } from './ui/domain.js';
 import { Badge, Button, ConfirmButton, Notice } from './ui/kit.js';
 
 // ------------------------------------------------------------------ routing
@@ -142,6 +142,13 @@ function TopBar({ theme, setTheme, onDisconnect }: { theme: Theme; setTheme: (t:
           <Badge tone={up.tone}>{up.short}</Badge>
         </a>
       ) : null}
+      {status ? (
+        <span className="topbar-item" data-testid="upgrade-chains">
+          {status.chains.map((c) => (
+            <UpgradeBadge key={c.chain} chain={c} />
+          ))}
+        </span>
+      ) : null}
       <span className="topbar-item" role="status" aria-label="Connection to the daemon">
         <Badge tone={connection === 'live' ? 'ok' : connection === 'connecting' ? 'info' : 'bad'}>{connection === 'live' ? 'Daemon: live' : connection === 'connecting' ? 'Daemon: connecting' : 'Daemon: no live link'}</Badge>
       </span>
@@ -269,6 +276,17 @@ function Shell({ onDisconnect }: { onDisconnect?: (() => void) | undefined }) {
             <Notice tone="bad" title="No answer from the daemon.">
               {describeError(statusError)}
             </Notice>
+          </div>
+        ) : null}
+        {status && status.chains.some((c) => upgradeStateOf(c) !== 'immutable') ? (
+          <div className={`upgrade-strip ${upgradeSummary(status.chains).tone}`} role="note" aria-label="Contract upgrade status" data-testid="upgrade-strip">
+            <strong>{upgradeSummary(status.chains).short}.</strong>
+            <ul>
+              {status.chains.map((c) => (
+                <li key={c.chain}>{upgradeLine(c)}</li>
+              ))}
+            </ul>
+            <a href="#/status">Details on Status</a>
           </div>
         ) : null}
         {status && status.mode === 'dry_run' ? (

@@ -1,9 +1,9 @@
 /** Pieces that know the product: swap states, manual actions, deposits, message threads, upgrade status. */
 import { useId, useState } from 'react';
-import { APPROVAL_MODE, CHAIN_CONSTS, type ChainName, type SwapStateName } from '@xmrswap/protocol';
-import type { ChainConnection, DepositView, InboxItem, SwapAction, SwapSummary } from '@xmrswap/protocol/daemon-api';
+import { APPROVAL_MODE, type ChainName, type SwapStateName } from '@xmrswap/protocol';
+import type { DepositView, InboxItem, SwapAction, SwapSummary } from '@xmrswap/protocol/daemon-api';
 import { ApiFailure, describeError } from '../api/client.js';
-import { REFUSAL_REASONS, outcomeOf, type ActionOutcome, type RefusalReason, type SwapInstruction } from '../api/extensions.js';
+import { REFUSAL_REASONS, outcomeOf, type ActionOutcome, type ChainConnectionX, type RefusalReason, type SwapInstruction, type UpgradeStatus } from '../api/extensions.js';
 import { useAction, useChainNow, useClient, useLive, useToasts } from '../api/hooks.js';
 import { chainLabel } from '../lib/config/schema.js';
 import { MARKET_LABEL, fmtMarketAmount, fmtTime } from '../lib/format.js';
@@ -466,11 +466,32 @@ export function MessageThread({ items, swap, onChanged }: { items: InboxItem[]; 
   );
 }
 
+/** One chain's upgrade state: the daemon's `upgrade_status` when it sends one, else derived from `upgradeable`. */
+export function upgradeStateOf(c: ChainConnectionX): UpgradeStatus {
+  return c.upgrade_status ?? (c.upgradeable === true ? 'upgradable' : c.upgradeable === false ? 'immutable' : 'unknown');
+}
+const contractNoun = (c: ChainConnectionX): string => (c.chain === 'solana' ? 'program' : 'contract');
+
+/** One plain sentence per chain: upgradable (and by whom), immutable, or unknown with the reason and when it was last checked. */
+export function upgradeLine(c: ChainConnectionX): string {
+  const name = chainLabel(c.chain);
+  const state = upgradeStateOf(c);
+  const checked = c.upgrade_checked_at ? ` Last checked ${fmtTime(c.upgrade_checked_at)}.` : '';
+  if (state === 'upgradable') {
+    const by = c.upgrade_authority ? ` by ${c.upgrade_authority}` : ' (the authority could not be read)';
+    const pending = c.upgrade_pending_authority ? ` A transfer of that authority to ${c.upgrade_pending_authority} is waiting to be accepted.` : '';
+    return `${name}: the ${contractNoun(c)} is upgradable${by}.${pending}${checked}`;
+  }
+  if (state === 'immutable') return `${name}: the ${contractNoun(c)} is immutable; no upgrade authority exists.${checked}`;
+  return `${name}: unknown${c.upgrade_reason ? `, because ${c.upgrade_reason}` : ''}. Treat it as upgradable until this shows otherwise.${checked}`;
+}
+
 /** Whether the contracts can still be changed. Stated plainly, never hidden (DESIGN "Upgrades, then immutability"). */
-export function upgradeSummary(chains: readonly ChainConnection[]): { tone: 'warn' | 'ok' | 'info'; short: string; text: string } {
-  const up = chains.filter((c) => c.upgradeable === true);
-  const unknown = chains.filter((c) => c.upgradeable === null);
-  const names = (list: readonly ChainConnection[]): string => list.map((c) => chainLabel(c.chain)).join(' and ');
+export function upgradeSummary(chains: readonly ChainConnectionX[]): { tone: 'warn' | 'ok' | 'info'; short: string; text: string } {
+  const up = chains.filter((c) => upgradeStateOf(c) === 'upgradable');
+  const unknown = chains.filter((c) => upgradeStateOf(c) === 'unknown');
+  const names = (list: readonly ChainConnectionX[]): string => list.map((c) => chainLabel(c.chain)).join(' and ');
+  if (chains.length === 0) return { tone: 'info', short: 'Upgrade status unknown', text: 'No chain is connected, so whether the contracts can still be upgraded is unknown. Treat them as upgradable.' };
   if (up.length > 0) {
     const both = up.length === chains.length;
     return {
@@ -483,31 +504,69 @@ export function upgradeSummary(chains: readonly ChainConnection[]): { tone: 'war
   return { tone: 'ok', short: 'Contracts are frozen', text: 'The contracts are frozen: the upgrade authority is revoked on both chains and nobody can change the rules.' };
 }
 
-export function UpgradeTable({ chains }: { chains: readonly ChainConnection[] }) {
+const UPGRADE_BADGE: Record<UpgradeStatus, { tone: Tone; label: string }> = {
+  upgradable: { tone: 'warn', label: 'Upgradable' },
+  immutable: { tone: 'ok', label: 'Immutable' },
+  unknown: { tone: 'info', label: 'Unknown' },
+};
+export function UpgradeBadge({ chain }: { chain: ChainConnectionX }) {
+  const b = UPGRADE_BADGE[upgradeStateOf(chain)];
+  return (
+    <Badge tone={b.tone} title={upgradeLine(chain)}>
+      {chainLabel(chain.chain)}: {b.label.toLowerCase()}
+    </Badge>
+  );
+}
+
+export function UpgradeTable({ chains }: { chains: readonly ChainConnectionX[] }) {
   return (
     <div className="table-wrap">
-      <table className="tbl">
+      <table className="tbl" aria-label="Upgrade status by chain">
         <thead>
           <tr>
             <th scope="col">Chain</th>
             <th scope="col">Program or contract</th>
             <th scope="col">Can it still be upgraded?</th>
             <th scope="col">Upgrade authority</th>
-            <th scope="col">Identity-link delay</th>
+            <th scope="col">Implementation</th>
+            <th scope="col">Last checked</th>
           </tr>
         </thead>
         <tbody>
-          {chains.map((c) => (
-            <tr key={c.chain}>
-              <th scope="row">{chainLabel(c.chain)}</th>
-              <td>
-                <Id value={c.contract} head={10} tail={8} />
-              </td>
-              <td>{c.upgradeable === true ? <Badge tone="warn">Yes, still upgradable</Badge> : c.upgradeable === false ? <Badge tone="ok">No, frozen</Badge> : <Badge tone="info">Unknown</Badge>}</td>
-              <td>{c.upgradeable === false ? <span className="muted">revoked</span> : <Id value={c.upgrade_authority} head={10} tail={8} />}</td>
-              <td>{CHAIN_CONSTS[c.chain].linkDelaySecs / 86_400} days</td>
-            </tr>
-          ))}
+          {chains.map((c) => {
+            const state = upgradeStateOf(c);
+            return (
+              <tr key={c.chain} data-upgrade={state}>
+                <th scope="row">{chainLabel(c.chain)}</th>
+                <td>
+                  <Id value={c.contract} head={10} tail={8} />
+                </td>
+                <td>
+                  {state === 'upgradable' ? <Badge tone="warn">Yes, still upgradable</Badge> : state === 'immutable' ? <Badge tone="ok">No, immutable</Badge> : <Badge tone="info">Unknown</Badge>}
+                  {state === 'unknown' ? <div className="muted">{c.upgrade_reason ?? 'the daemon gave no reason'}; treat it as upgradable</div> : null}
+                </td>
+                <td>
+                  {state === 'immutable' ? (
+                    <span className="muted">none: revoked</span>
+                  ) : c.upgrade_authority ? (
+                    <code style={{ overflowWrap: 'anywhere' }}>{c.upgrade_authority}</code>
+                  ) : (
+                    <span className="muted">not read</span>
+                  )}
+                  {c.upgrade_pending_authority ? (
+                    <div className="msg warning">
+                      <b>Transfer waiting:</b> to <code style={{ overflowWrap: 'anywhere' }}>{c.upgrade_pending_authority}</code>
+                    </div>
+                  ) : null}
+                </td>
+                <td>
+                  <Id value={c.upgrade_implementation} head={10} tail={8} />
+                  <div className="muted">{c.chain === 'solana' ? 'ProgramData account' : 'behind the proxy'}</div>
+                </td>
+                <td>{c.upgrade_checked_at ? <Time at={c.upgrade_checked_at} /> : <span className="muted">not reported</span>}</td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>

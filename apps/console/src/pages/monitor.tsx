@@ -2,10 +2,12 @@
 import { useId, useMemo, useState } from 'react';
 import { MARKETS, SWAP_STATE_NAMES, type ChainName, type Market, type SwapStateName } from '@xmrswap/protocol';
 import type { AdvanceApprovalRecord, Alert, DepositView, InboxItem, SwapDeadlines, SwapSummary, SwapsQuery } from '@xmrswap/protocol/daemon-api';
+import { ApiFailure } from '../api/client.js';
 import { useAction, useChainNow, useClient, useLive, useNow, useQuery } from '../api/hooks.js';
 import { chainLabel } from '../lib/config/schema.js';
 import { MARKET_LABEL, fmtInt, fmtMarketAmount, fmtRate, fmtTime, fmtUnits, fmtUsd, fmtXmr, parseUnits } from '../lib/format.js';
-import { DIR_LABEL, DepositSummary, InstructionNote, MessageThread, StateBadge, SwapActions, SwapLink } from '../ui/domain.js';
+import { ACTION_NOUN, DIR_LABEL, DepositSummary, InstructionNote, MessageThread, StateBadge, SwapActions, SwapLink, refusalText } from '../ui/domain.js';
+import { OwnerTransaction, TxNotice } from '../ui/owner-tx.js';
 import { Async, Badge, Button, Card, ConfirmButton, Countdown, Empty, Id, Notice, PageHead, Stat, Time } from '../ui/kit.js';
 
 // ------------------------------------------------------------------ dashboard
@@ -214,6 +216,8 @@ function CounterTable({ counters }: { counters: { chain: ChainName; values: Part
 // ------------------------------------------------------------------ swaps
 
 const dirLabel = (s: Pick<SwapSummary, 'direction'>): string => DIR_LABEL[s.direction];
+/** The approval mode a swap was opened under (`APPROVAL_MODE`). */
+export const MODE_NAME: Record<number, string> = { 0: 'auto-accept', 1: 'approval window', 2: 'approved in advance', 3: 'quote on request' };
 
 export function SwapsPage() {
   const [filter, setFilter] = useState<'open' | 'all' | 'settled'>('open');
@@ -296,10 +300,20 @@ export function SwapsPage() {
                         <td>
                           <StateBadge state={s.state} needsReview={s.needs_review} />
                           <div className="muted">{s.outcome ? s.outcome.replace(/_/g, ' ') : s.phase.replace(/_/g, ' ')}</div>
+                          {s.instruction ? (
+                            <div data-testid="list-instruction">
+                              <Badge tone={s.instruction.status === 'pending' ? 'info' : s.instruction.status === 'refused' ? 'bad' : 'ok'} title={s.instruction.status === 'refused' ? refusalText(s.instruction.reason).why : undefined}>
+                                {ACTION_NOUN[s.instruction.action]} {s.instruction.status === 'carried_out' ? 'carried out' : s.instruction.status}
+                              </Badge>
+                            </div>
+                          ) : null}
                         </td>
                         <td>
                           {MARKET_LABEL[s.market]}
-                          <div className="muted">{dirLabel(s)}</div>
+                          <div className="muted">
+                            {dirLabel(s)}
+                            {s.mode !== undefined ? ` · ${MODE_NAME[s.mode] ?? `mode ${s.mode}`}` : ''}
+                          </div>
                         </td>
                         <td className="num">{fmtUnits(s.xmr, 12, 4)}</td>
                         <td className="num">
@@ -317,7 +331,7 @@ export function SwapsPage() {
                           )}
                         </td>
                         <td className="actions">
-                          <SwapActions swap={s} onDone={swaps.reload} />
+                          <SwapActions swap={s} instruction={s.instruction} onDone={swaps.reload} />
                         </td>
                       </tr>
                     ))}
@@ -390,6 +404,8 @@ export function SwapDetailPage({ swapRef }: { swapRef: string }) {
                     <dd>
                       {MARKET_LABEL[s.market]} · {dirLabel(s)} · {chainLabel(s.chain)}
                     </dd>
+                    <dt>Approval mode</dt>
+                    <dd>{MODE_NAME[s.mode] ?? `mode ${s.mode}`}</dd>
                     <dt>XMR</dt>
                     <dd>{fmtXmr(s.xmr, 12)}</dd>
                     <dt>Amount</dt>
@@ -526,6 +542,8 @@ export function SwapDetailPage({ swapRef }: { swapRef: string }) {
                 </div>
               </div>
 
+              <ParkedPayout swapRef={s.ref} chain={s.chain} />
+
               <Card title="Messages" note="Encrypted messages from this taker about this swap.">
                 {s.messages.length === 0 ? <Empty title="No messages about this swap" /> : <MessageThread items={s.messages} swap={s} onChanged={reload} />}
               </Card>
@@ -534,6 +552,62 @@ export function SwapDetailPage({ swapRef }: { swapRef: string }) {
         }}
       </Async>
     </>
+  );
+}
+
+/**
+ * A payout the contract could not deliver (a missing or frozen token account, a recipient that
+ * rejects ETH) is parked for its owner. Withdrawing it is an owner-key transaction: the daemon
+ * builds it, the owner signs it, the daemon relays it.
+ */
+function ParkedPayout({ swapRef, chain }: { swapRef: string; chain: ChainName }) {
+  const client = useClient();
+  const [open, setOpen] = useState(false);
+  const [result, setResult] = useState<{ tone: 'ok' | 'bad' | 'info'; title: string; body: React.ReactNode } | null>(null);
+  return (
+    <Card title="Parked payout" note="When a payout cannot be delivered at settlement it is parked in the contract instead of failing the swap.">
+      <div className="row">
+        <Button
+          disabled={open}
+          onClick={() => {
+            setResult(null);
+            setOpen(true);
+          }}
+        >
+          Withdraw parked payout
+        </Button>
+        <span className="muted">Asks the daemon for the withdrawal transaction, which you sign with the owner’s wallet. The daemon never holds that key.</span>
+      </div>
+      {open ? (
+        <OwnerTransaction
+          chain={chain}
+          build={async () => {
+            try {
+              return await client.withdrawOwedTx(swapRef);
+            } catch (e) {
+              // Nothing to withdraw is an answer, not a failure: say so in place and close the panel.
+              if (e instanceof ApiFailure && e.code === 'nothing_owed') {
+                setOpen(false);
+                setResult({ tone: 'info', title: 'Nothing is parked for this swap.', body: 'Every payout of this swap was delivered, or it has already been withdrawn.' });
+              }
+              throw e;
+            }
+          }}
+          onCancel={() => setOpen(false)}
+          onDone={(tx) => {
+            setOpen(false);
+            setResult(tx.status === 'failed' ? { tone: 'bad', title: 'The withdrawal failed.', body: tx.error ?? 'The chain refused the transaction.' } : { tone: 'ok', title: 'Withdrawn.', body: <TxNotice tx={tx} /> });
+          }}
+        />
+      ) : null}
+      {result ? (
+        <div style={{ marginTop: 8 }} data-testid="parked-result">
+          <Notice tone={result.tone} title={result.title}>
+            {result.body}
+          </Notice>
+        </div>
+      ) : null}
+    </Card>
   );
 }
 

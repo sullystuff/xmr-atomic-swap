@@ -196,8 +196,8 @@ export class MockDaemon {
       changes: [{ path: '(file)', old: null, new: 'loaded at start' }],
       source: 'file',
     });
-    if (this.registration.solana.link.current) this.linkLog.push({ chain: 'solana', old: `0x${'00'.repeat(20)}`, new: linkBytesHex(this.registration.solana.link.current), effective_at: now - 200 * 86_400 });
-    if (this.registration.ethereum.link.current) this.linkLog.push({ chain: 'ethereum', old: `0x${'00'.repeat(32)}`, new: linkBytesHex(this.registration.ethereum.link.current), effective_at: now - 200 * 86_400 + 600 });
+    if (this.registration.solana.link.current) this.linkLog.push(linkEntry('solana', null, this.registration.solana.link.current, now - 200 * 86_400));
+    if (this.registration.ethereum.link.current) this.linkLog.push(linkEntry('ethereum', null, this.registration.ethereum.link.current, now - 200 * 86_400 + 600));
     this.defineRoutes();
   }
 
@@ -273,7 +273,7 @@ export class MockDaemon {
       swaps: this.swaps.map((x) => summary(this.view(x))),
       offers: this.offers().offers,
       inbox: this.inbox,
-      rebalance: this.refills,
+      rebalance: this.refills.map((r) => this.refillView(r)),
       alerts: this.alerts,
     };
     return data[channel];
@@ -298,6 +298,20 @@ export class MockDaemon {
 
   // ---------------------------------------------------------------- derived state
 
+  /** Test seam: a two-step transfer of the Ethereum proxy's ownership is waiting. */
+  pendingUpgradeAuthority: string | null = null;
+  /** Test seam: why a chain's upgrade status could not be read. */
+  upgradeReason = 'the RPC endpoint did not answer the upgrade-authority read';
+  private upgradeExtras(chain: ChainName, now: number): object {
+    const u = this.upgradeable[chain];
+    return {
+      upgrade_status: u === true ? 'upgradable' : u === false ? 'immutable' : 'unknown',
+      upgrade_reason: u === null ? this.upgradeReason : null,
+      upgrade_pending_authority: chain === 'ethereum' && u === true ? this.pendingUpgradeAuthority : null,
+      upgrade_implementation: u === null ? null : chain === 'solana' ? fakeSol('program-data') : `0x${fakeHex('implementation', 20)}`,
+      upgrade_checked_at: now - 20,
+    };
+  }
   private get mode(): DaemonMode {
     return getPath(this.parsed, 'daemon.mode') === 'live' ? 'live' : 'dry_run';
   }
@@ -369,6 +383,7 @@ export class MockDaemon {
           contract: ADDR.program,
           upgradeable: this.upgradeable.solana,
           upgrade_authority: this.upgradeable.solana ? ADDR.upgradeAuthoritySol : null,
+          ...this.upgradeExtras('solana', now),
         },
         {
           chain: 'ethereum',
@@ -382,6 +397,7 @@ export class MockDaemon {
           contract: ADDR.contract,
           upgradeable: this.upgradeable.ethereum,
           upgrade_authority: this.upgradeable.ethereum ? ADDR.upgradeAuthorityEth : null,
+          ...this.upgradeExtras('ethereum', now),
         },
       ],
       monero: {
@@ -395,9 +411,11 @@ export class MockDaemon {
       },
       tor: {
         enabled: getPath(this.parsed, 'tor.enabled') === true,
-        onion: this.registration.solana.onion,
-        published: this.registration.solana.onion !== null,
-        reachable: getPath(this.parsed, 'tor.enabled') === true ? true : null,
+        // What the daemon wants listed, against what the registry shows (A12). It runs no Tor client, so `reachable` is never known.
+        onion: this.desired.onion !== undefined ? this.desired.onion : this.registration.solana.onion,
+        published: (this.desired.onion !== undefined ? this.desired.onion : this.registration.solana.onion) !== null && (this.desired.onion === undefined || this.desired.onion === this.registration.solana.onion),
+        reachable: null,
+        ...({ registry_onion: this.registration.solana.onion } as object),
       },
       // `chains` is the daemon's addition: the owner's pause is per chain, and on Ethereum the operator cannot pause.
       paused: {
@@ -494,9 +512,13 @@ export class MockDaemon {
     if (s.deadlines.t_notice !== null && !s.evidence_published && s.direction === 'A' && s.state !== 'NOTICED' && s.state !== 'READY') out.push('publish-evidence');
     return out;
   }
+  private instructionOf(ref: string): object | null {
+    const i = this.instructions.get(ref);
+    return i ? { action: i.action, at: i.at, status: i.status, reason: i.reason, tx: i.tx } : null;
+  }
   /** The swap as the API shows it: actions computed now, and the operator's latest instruction. */
   private view(s: SwapDetail): SwapDetail {
-    return { ...s, actions: this.actionsOf(s), ...({ instruction: this.instructions.get(s.ref) ?? null } as object) };
+    return { ...s, actions: this.actionsOf(s), ...({ instruction: this.instructionOf(s.ref) } as object) };
   }
   private settle(s: SwapDetail, outcome: SwapDetail['outcome']): void {
     s.state = 'DONE';
@@ -506,9 +528,16 @@ export class MockDaemon {
     s.deadlines.t_settled = this.now();
   }
   private readonly acknowledged = new Set<string>();
+  /** Swaps with a payout parked on chain, and the address it is keyed to. */
+  private readonly parked = new Map<string, string>();
+  private readonly owedRequests = new Map<string, string>();
+  /** Test seam: a payout of this swap could not be delivered and is parked in the contract. */
+  parkPayout(ref: string, keyedTo: string): void {
+    this.parked.set(ref, keyedTo);
+  }
   private desired: { contacts?: { kind: number; value: string }[]; onion?: string | null } = {};
   /** Every recorded `LinkChanged`, as 0x-hex bytes. Seeded with the two first links. */
-  private linkLog: { chain: ChainName; old: string; new: string; effective_at: number }[] = [];
+  private linkLog: { chain: ChainName; old: string; new: string; old_hex: string; new_hex: string; effective_at: number; superseded: boolean }[] = [];
   private readonly instructions = new Map<string, { action: SwapAction; at: number; status: 'pending' | 'carried_out' | 'refused'; reason: string | null; tx: string | null; body: unknown }>();
   private readonly inFlight = new Map<string, string>();
   private readonly chainRefuses = new Map<string, string>();
@@ -673,8 +702,12 @@ export class MockDaemon {
       }),
       in_transit_usd: inTransit.reduce((sum, r) => sum + usdValue(r), 0),
       max_in_transit_usd: typeof cap === 'number' ? cap : null,
-      refills: [...this.refills].sort((a, b) => b.started_at - a.started_at),
+      refills: [...this.refills].sort((a, b) => b.started_at - a.started_at).map((r) => this.refillView(r)),
     };
+  }
+  private refillView(r: RefillView): RefillView {
+    const acknowledged = r.state === 'failed' && this.acknowledged.has(r.id);
+    return { ...r, ...({ needs_acknowledgement: r.state === 'held' || (r.state === 'failed' && !acknowledged), acknowledged } as object) };
   }
   private findRefill(id: string): RefillView {
     return this.refills.find((r) => r.id === id) ?? fail(404, 'unknown_refill', `No refill ${id}.`);
@@ -778,6 +811,15 @@ export class MockDaemon {
   }
   private registrationSubmit(body: unknown): TxResult {
     if (!isTable(body) || typeof body.request_id !== 'string' || typeof body.signed !== 'string') return fail(400, 'bad_request', 'request_id and signed are required.');
+    const owed = this.owedRequests.get(body.request_id);
+    if (owed !== undefined) {
+      const sw = this.findSwap(owed);
+      const good = sw.chain === 'solana' ? /^[A-Za-z0-9+/]{80,}={0,2}$/.test(body.signed) : /^0x[0-9a-fA-F]{20,}$/.test(body.signed);
+      if (!good) return fail(400, 'bad_signature', sw.chain === 'solana' ? 'Expected a signed Solana transaction in base64.' : 'Expected a signed raw Ethereum transaction as 0x-hex.');
+      this.owedRequests.delete(body.request_id);
+      this.parked.delete(owed);
+      return this.tx(sw.chain, 'withdraw_owed');
+    }
     const a = this.registrationRequests.get(body.request_id);
     if (!a) return fail(404, 'unknown_request', 'No unsigned transaction with that request id; build it again.');
     const okShape = a.chain === 'solana' ? /^[A-Za-z0-9+/]{80,}={0,2}$/.test(body.signed) : /^0x[0-9a-fA-F]{20,}$/.test(body.signed);
@@ -789,8 +831,11 @@ export class MockDaemon {
     const setLink = (side: 'solana' | 'ethereum', target: string): void => {
       const link = reg[side].link;
       const next = target === '' ? null : target;
-      const hex = (v: string | null): string => (v === null || v === '' ? `0x${'00'.repeat(side === 'solana' ? 20 : 32)}` : linkBytesHex(v));
-      if (next !== link.current) this.linkLog.unshift({ chain: side, old: hex(link.current), new: hex(next), effective_at: link.current === null && link.pending === null ? now : now + delay });
+      if (next !== link.current) {
+        // A change made while another is still pending replaces it: that one never takes effect.
+        for (const e of this.linkLog) if (e.chain === side && e.effective_at > now) e.superseded = true;
+        this.linkLog.unshift(linkEntry(side, link.current, next, link.current === null && link.pending === null ? now : now + delay));
+      }
       if (link.current === null && link.pending === null) link.current = next; // the first link is immediate
       else if (next === link.current) {
         link.pending = null;
@@ -866,7 +911,7 @@ export class MockDaemon {
       if (body.base_revision !== revisionOf(this.toml)) return fail(409, 'revision_conflict', 'The configuration changed since you loaded it. Reload, then apply your edit again.');
       return this.applyConfig(body.toml, 'api');
     });
-    this.route('configValidate', ({ body }) => this.validation(this.parseOr400(isTable(body) ? body.toml : undefined)));
+    this.route('configValidate', ({ body }) => ({ ...this.validation(this.parseOr400(isTable(body) ? body.toml : undefined)), sol_usd: this.solUsd, compute_units_per_update: REFRESH_CU }));
     this.route('configLog', () => ({ entries: [...this.log].reverse() }));
     this.route('configExport', () => ({ toml: this.toml, exported_at: this.now() }));
     this.route('configImport', ({ body }) => {
@@ -884,6 +929,8 @@ export class MockDaemon {
     // Additions to the frozen API (the daemon's "Console contract" A5).
     this.routeAt('registrationPublished', 'PUT', '/api/registration/published', ({ body }) => {
       const b = isTable(body) ? body : {};
+      // Refused in dry run before anything is stored (A13).
+      this.requireLive('the registry update');
       if (b.contacts !== undefined) {
         const c = b.contacts;
         const ok = Array.isArray(c) && c.length <= 6 && c.every((x) => isTable(x) && Number.isInteger(x.kind) && (x.kind as number) >= 0 && (x.kind as number) <= 255 && typeof x.value === 'string' && new TextEncoder().encode(x.value).length <= 96);
@@ -895,8 +942,6 @@ export class MockDaemon {
         if (o !== null && (typeof o !== 'string' || !/^[a-z2-7]{56}\.onion$/.test(o))) return fail(400, 'bad_request', 'onion: a v3 onion host (56 base32 characters + .onion), or null to follow the Tor hostname file.');
         this.desired.onion = o as string | null;
       }
-      // As the daemon: the wanted values are stored first, then publishing needs live mode.
-      this.requireLive('the registry update');
       const reg = this.registration.solana;
       const changed = JSON.stringify(reg.contacts) !== JSON.stringify(this.desired.contacts ?? reg.contacts) || (this.desired.onion !== undefined && this.desired.onion !== reg.onion);
       if (this.desired.contacts) reg.contacts = this.desired.contacts;
@@ -927,7 +972,7 @@ export class MockDaemon {
       } else if (r.state === 'failed') this.acknowledged.add(r.id);
       else return fail(409, 'refill_refused', `refill ${r.id} is neither held nor failed`);
       this.push('rebalance');
-      return r;
+      return this.refillView(r);
     });
 
     this.route('offers', () => this.offers());
@@ -955,10 +1000,22 @@ export class MockDaemon {
       const last = page[page.length - 1];
       return { swaps: page.map((x) => summary(this.view(x))), next_before: list.length > limit && last ? last.opened_at : null };
     });
-    this.route('swap', ({ params }) => {
-      const { body: _body, ...ins } = this.instructions.get(params.ref ?? '') ?? { body: null };
-      void _body;
-      return { ...this.view(this.findSwap(params.ref ?? '')), instruction: 'action' in ins ? ins : null };
+    this.route('swap', ({ params }) => this.view(this.findSwap(params.ref ?? '')));
+    // A14: the unsigned transaction that withdraws a payout parked for this swap.
+    this.routeAt('withdrawOwedTx', 'POST', '/api/swaps/:ref/withdraw-owed-tx', ({ params }) => {
+      const sw = this.findSwap(params.ref ?? '');
+      const who = this.parked.get(sw.ref);
+      if (who === undefined) return fail(409, 'nothing_owed', 'Nothing is parked for this swap.');
+      const request_id = this.nextId('owed');
+      this.owedRequests.set(request_id, sw.ref);
+      const summaryText = `Withdraw the payout parked for this swap to ${who}. It was parked because the payout address could not receive it when the swap settled.`;
+      if (sw.chain === 'solana') {
+        const message = new Uint8Array(96);
+        message[0] = 1;
+        for (let i = 3; i < message.length; i++) message[i] = (i * 17 + request_id.length) & 0xff;
+        return { request_id, unsigned: { chain: 'solana', message_b64: toBase64(message), recent_blockhash: fakeSol(`blockhash:${request_id}`), fee_payer: this.registration.solana.owner ?? ADDR.solOwner }, summary: summaryText };
+      }
+      return { request_id, unsigned: { chain: 'ethereum', chain_id: 1, to: ADDR.contract, data: `0x${fakeHex(`calldata:${request_id}`, 36)}`, value: '0' }, summary: summaryText };
     });
     const action = (name: RouteName, a: SwapAction): void => this.route(name, ({ params, body }) => this.swapAction(params.ref ?? '', a, body));
     action('swapApprove', 'approve');
@@ -1074,7 +1131,7 @@ export class MockDaemon {
       if (refill.state === 'pending') this.checkTransitCap(refill, state);
       this.refills.push(refill);
       this.push('rebalance');
-      return refill;
+      return this.refillView(refill);
     });
     this.route('rebalanceApprove', ({ params }) => {
       const r = this.findRefill(params.id ?? '');
@@ -1083,7 +1140,7 @@ export class MockDaemon {
       this.checkTransitCap(r, this.rebalance());
       r.state = 'pending';
       this.push('rebalance');
-      return r;
+      return this.refillView(r);
     });
     this.route('rebalanceCancel', ({ params }) => {
       const r = this.findRefill(params.id ?? '');
@@ -1091,7 +1148,7 @@ export class MockDaemon {
       r.state = 'cancelled';
       r.finished_at = this.now();
       this.push('rebalance');
-      return r;
+      return this.refillView(r);
     });
     this.route('rebalanceManual', ({ body }) => {
       const b = body as RebalanceManualRequest;
@@ -1101,7 +1158,7 @@ export class MockDaemon {
       const r: RefillView = { id: this.nextId('refill'), venue: 'manual', from: b.from, to: b.to, amount_in: b.amount_in, amount_out: b.amount_out, cost_pct: null, fees_usd: null, state: 'done', started_at: now, finished_at: now, venue_order_id: null, txids: [], detail: b.note ?? null };
       this.refills.push(r);
       this.push('rebalance');
-      return r;
+      return this.refillView(r);
     });
 
     this.route('keys', () => this.keysResponse());
@@ -1153,6 +1210,11 @@ export class MockDaemon {
   }
 }
 
+function linkEntry(chain: ChainName, old: string | null, next: string | null, effective_at: number): { chain: ChainName; old: string; new: string; old_hex: string; new_hex: string; effective_at: number; superseded: boolean } {
+  const hex = (v: string | null): string => (v === null || v === '' ? `0x${'00'.repeat(chain === 'solana' ? 20 : 32)}` : linkBytesHex(v));
+  return { chain, old: old ?? '', new: next ?? '', old_hex: hex(old), new_hex: hex(next), effective_at, superseded: false };
+}
+
 /** A link target as the chain stores it: 20 bytes for an Ethereum address, 32 for a Solana key. */
 function linkBytesHex(v: string): string {
   if (/^0x[0-9a-fA-F]+$/.test(v)) return v.toLowerCase();
@@ -1170,6 +1232,7 @@ function usdValue(r: RefillView): number {
 }
 
 function summary(s: SwapDetail): SwapSummary {
+  const x = s as SwapDetail & { instruction?: unknown };
   return {
     chain: s.chain,
     ref: s.ref,
@@ -1187,6 +1250,8 @@ function summary(s: SwapDetail): SwapSummary {
     outcome: s.outcome,
     needs_review: s.needs_review,
     actions: s.actions,
+    // The daemon's additions (A13).
+    ...({ mode: s.mode, instruction: x.instruction ?? null } as object),
   };
 }
 

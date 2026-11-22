@@ -11,6 +11,7 @@ import { setPath } from '../lib/config/toml.js';
 import { fmtDuration, fmtTime } from '../lib/format.js';
 import { watchSigners, type OwnerSigner } from '../lib/wallet.js';
 import { UpgradeTable, upgradeSummary } from '../ui/domain.js';
+import { OwnerTransaction, TxNotice } from '../ui/owner-tx.js';
 import { Async, Badge, Button, Card, ConfirmButton, Countdown, Empty, Id, Notice, PageHead, Stat, Time } from '../ui/kit.js';
 import { AlertList } from './monitor.js';
 
@@ -26,113 +27,6 @@ const CONTACT_LABEL: Record<number, string> = {
   [CONTACT_KIND.OTHER]: 'Other',
 };
 const LINK_DELAY_DAYS = CHAIN_CONSTS.solana.linkDelaySecs / 86_400;
-
-/**
- * One owner-key action from start to finish: the daemon builds the unsigned transaction, the
- * owner signs it in a wallet or offline, the daemon relays it.
- */
-function OwnerTransaction({ action, onDone, onCancel }: { action: RegistrationAction; onDone: (tx: TxResult) => void; onCancel: () => void }) {
-  const client = useClient();
-  const id = useId();
-  const [built, setBuilt] = useState<RegistrationTxResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [signed, setSigned] = useState('');
-  const [busy, setBusy] = useState<string | null>('build');
-  const [signers, setSigners] = useState<OwnerSigner[]>([]);
-
-  useEffect(() => watchSigners(setSigners), []);
-  useEffect(() => {
-    let live = true;
-    setBusy('build');
-    client.call('registrationTx', { body: action }).then(
-      (r) => {
-        if (!live) return;
-        setBuilt(r);
-        setBusy(null);
-      },
-      (e: unknown) => {
-        if (!live) return;
-        setError(describeError(e));
-        setBusy(null);
-      },
-    );
-    return () => {
-      live = false;
-    };
-    // The action object is fixed for the life of this panel.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client]);
-
-  const submit = async (value: string): Promise<void> => {
-    if (!built) return;
-    setBusy('submit');
-    setError(null);
-    try {
-      onDone(await client.call('registrationSubmit', { body: { request_id: built.request_id, signed: value.trim() } }));
-    } catch (e) {
-      setError(describeError(e));
-    } finally {
-      setBusy(null);
-    }
-  };
-  const signWith = async (s: OwnerSigner): Promise<void> => {
-    if (!built) return;
-    setBusy(`sign:${s.name}`);
-    setError(null);
-    try {
-      const value = await s.sign(built.unsigned);
-      setSigned(value);
-      await submit(value);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setBusy(null);
-    }
-  };
-
-  const usable = signers.filter((s) => s.chain === action.chain);
-  return (
-    <section className="notice" aria-label="Owner transaction" style={{ marginTop: 10 }}>
-      {busy === 'build' ? <p role="status">The daemon is building the unsigned transaction…</p> : null}
-      {built ? (
-        <div className="stack" style={{ gap: 8 }}>
-          <p>
-            <strong>Signing this will:</strong> {built.summary}
-          </p>
-          <label htmlFor={`${id}-u`} className="muted">
-            Unsigned transaction for the owner key on {chainLabel(action.chain)}
-          </label>
-          <textarea id={`${id}-u`} readOnly rows={4} value={JSON.stringify(built.unsigned, null, 1)} />
-          <div className="row">
-            {usable.map((s) => (
-              <Button key={s.name} variant="primary" busy={busy === `sign:${s.name}`} onClick={() => void signWith(s)}>
-                Sign with {s.name}
-              </Button>
-            ))}
-            {usable.length === 0 ? <span className="muted">No {chainLabel(action.chain)} wallet was found in this browser. Sign offline with the owner key and paste the result.</span> : null}
-          </div>
-          <label htmlFor={`${id}-s`}>Signed transaction {action.chain === 'solana' ? '(base64)' : '(raw, 0x-hex)'}</label>
-          <textarea id={`${id}-s`} rows={3} value={signed} spellCheck={false} onChange={(e) => setSigned(e.target.value)} />
-          <div className="row">
-            <Button variant={usable.length === 0 ? 'primary' : 'default'} disabled={signed.trim() === ''} busy={busy === 'submit'} onClick={() => void submit(signed)}>
-              Relay the signed transaction
-            </Button>
-            <Button onClick={onCancel}>Cancel</Button>
-          </div>
-        </div>
-      ) : null}
-      {error ? (
-        <p className="msg error" role="alert" style={{ marginTop: 6 }}>
-          <b>Error:</b> {error}{' '}
-          {!built ? (
-            <Button small onClick={onCancel}>
-              Close
-            </Button>
-          ) : null}
-        </p>
-      ) : null}
-    </section>
-  );
-}
 
 /** A small form that collects the fields of one owner action, then hands over to `OwnerTransaction`. */
 function ActionForm({
@@ -151,6 +45,7 @@ function ActionForm({
   onDone: () => void;
 }) {
   const id = useId();
+  const client = useClient();
   const [values, setValues] = useState<Record<string, string>>({});
   const [action, setAction] = useState<RegistrationAction | null>(null);
   const [result, setResult] = useState<TxResult | null>(null);
@@ -189,7 +84,8 @@ function ActionForm({
       {disabled && disabledReason ? <p className="help muted">{disabledReason}</p> : null}
       {action ? (
         <OwnerTransaction
-          action={action}
+          chain={action.chain}
+          build={() => client.call('registrationTx', { body: action })}
           onCancel={() => setAction(null)}
           onDone={(tx) => {
             setAction(null);
@@ -200,16 +96,6 @@ function ActionForm({
         />
       ) : null}
       {result ? <TxNotice tx={result} /> : null}
-    </div>
-  );
-}
-
-function TxNotice({ tx }: { tx: TxResult }) {
-  return (
-    <div style={{ marginTop: 8 }}>
-      <Notice tone={tx.status === 'failed' ? 'bad' : 'ok'} title={tx.status === 'failed' ? 'The transaction failed.' : tx.status === 'confirmed' ? 'Relayed and confirmed.' : 'Relayed.'}>
-        {tx.error ?? ''} <Id value={tx.id} head={10} tail={8} />
-      </Notice>
     </div>
   );
 }
@@ -259,6 +145,7 @@ function LinkSide({ title, link, target }: { title: string; link: LinkStatus; ta
 
 export function RegistrationPage() {
   const reg = useQuery('registration', undefined, ['status']);
+  const client = useClient();
   const { status } = useLive();
   const [removing, setRemoving] = useState<RegistrationAction | null>(null);
   const [removed, setRemoved] = useState<TxResult | null>(null);
@@ -422,7 +309,8 @@ export function RegistrationPage() {
                 {removing ? (
                   <OwnerTransaction
                     key={removing.chain}
-                    action={removing}
+                    chain={removing.chain}
+                    build={() => client.call('registrationTx', { body: removing })}
                     onCancel={() => setRemoving(null)}
                     onDone={(tx) => {
                       setRemoving(null);
@@ -538,15 +426,17 @@ function LinkHistory({ reloadKey }: { reloadKey: number }) {
             </thead>
             <tbody>
               {state.entries.map((e, i) => {
-                const from = linkTarget(e.old);
-                const to = linkTarget(e.new);
+                // The daemon sends display addresses beside the raw bytes; an older one sent only the bytes.
+                const shown = (v: string, hex: string | undefined): string | null => (hex === undefined ? linkTarget(v) : v === '' ? null : v);
+                const from = shown(e.old, e.old_hex);
+                const to = shown(e.new, e.new_hex);
                 return (
                   <tr key={`${e.chain}-${e.effective_at}-${i}`}>
                     <th scope="row">{chainLabel(e.chain)}</th>
                     <td>{from ? <code style={{ overflowWrap: 'anywhere' }}>{from}</code> : <span className="muted">no link</span>}</td>
                     <td>{to ? <code style={{ overflowWrap: 'anywhere' }}>{to}</code> : <span className="muted">link removed</span>}</td>
                     <td>
-                      {e.effective_at > now ? <Badge tone="warn">Pending</Badge> : null} <span className="mono">{fmtTime(e.effective_at)}</span>
+                      {e.superseded ? <Badge title="Replaced by a later change before it took effect">Superseded</Badge> : e.effective_at > now ? <Badge tone="warn">Pending</Badge> : null} <span className="mono">{fmtTime(e.effective_at)}</span>
                     </td>
                   </tr>
                 );
@@ -704,6 +594,7 @@ function PublishedEditor({ reg, torEnabled, onDone }: { reg: RegistrationRespons
 }
 
 function OwnerPause({ ownerPaused, perChain, registered, onDone }: { ownerPaused: boolean | null; perChain: ChainPause[] | undefined; registered: Record<ChainName, boolean>; onDone: () => void }) {
+  const client = useClient();
   const [action, setAction] = useState<RegistrationAction | null>(null);
   const [result, setResult] = useState<TxResult | null>(null);
   const chains: ChainName[] = ['solana', 'ethereum'];
@@ -736,7 +627,8 @@ function OwnerPause({ ownerPaused, perChain, registered, onDone }: { ownerPaused
       {action ? (
         <OwnerTransaction
           key={`${action.chain}-${String('paused' in action && action.paused)}`}
-          action={action}
+          chain={action.chain}
+          build={() => client.call('registrationTx', { body: action })}
           onCancel={() => setAction(null)}
           onDone={(tx) => {
             setAction(null);
@@ -1018,11 +910,22 @@ export function StatusPage() {
           <Card title="Tor and identity">
             <dl className="kv">
               <dt>Tor service</dt>
-              <dd>{status.tor.enabled ? (status.tor.reachable ? <Badge tone="ok">Reachable</Badge> : <Badge tone="bad">Not reachable</Badge>) : <span className="muted">off: on-chain messaging only</span>}</dd>
-              <dt>Onion address</dt>
-              <dd>
-                {status.tor.onion ? <code style={{ overflowWrap: 'anywhere' }}>{status.tor.onion}</code> : <span className="muted">none</span>} {status.tor.onion ? (status.tor.published ? <span className="muted">published</span> : <Badge tone="warn">Not published</Badge>) : null}
+              <dd>{status.tor.enabled ? <Badge tone="ok">On</Badge> : <span className="muted">off: on-chain messaging only</span>}</dd>
+              <dt>Reachable over Tor</dt>
+              <dd data-testid="tor-reachable">
+                {status.tor.reachable === true ? <Badge tone="ok">Reachable</Badge> : status.tor.reachable === false ? <Badge tone="bad">Not reachable</Badge> : <span>Not checked by the daemon: it runs no Tor client of its own. Test the address from another machine.</span>}
               </dd>
+              <dt>Onion address</dt>
+              <dd data-testid="tor-onion">
+                {status.tor.onion ? <code style={{ overflowWrap: 'anywhere' }}>{status.tor.onion}</code> : <span className="muted">none wanted</span>}{' '}
+                {status.tor.onion ? status.tor.published ? <Badge tone="ok">Published in the registry</Badge> : <Badge tone="warn">Not published yet</Badge> : null}
+              </dd>
+              {status.tor.registry_onion !== undefined && status.tor.registry_onion !== status.tor.onion ? (
+                <>
+                  <dt>Registry shows</dt>
+                  <dd data-testid="tor-registry">{status.tor.registry_onion ? <code style={{ overflowWrap: 'anywhere' }}>{status.tor.registry_onion}</code> : <span className="muted">no onion address</span>}</dd>
+                </>
+              ) : null}
               <dt>Solana maker</dt>
               <dd>
                 <Id value={status.maker.solana} head={10} tail={8} />

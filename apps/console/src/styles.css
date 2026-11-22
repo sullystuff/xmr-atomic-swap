@@ -988,3 +988,26 @@ details > summary {
   max-width: 52ch;
   font-size: 0.92rem;
 }
+
+.upgrade-strip {
+  border: 1px solid var(--warn);
+  background: var(--warn-bg);
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  display: flex;
+  gap: 4px 16px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+.upgrade-strip.info {
+  border-color: var(--info);
+  background: var(--info-bg);
+}
+.upgrade-strip ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  flex: 1 1 60ch;
+  overflow-wrap: anywhere;
+}

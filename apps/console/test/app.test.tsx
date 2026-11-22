@@ -166,7 +166,9 @@ describe('contract upgrade status', () => {
     mount('#/status', { upgradeable: { solana: false, ethereum: false } });
     expect(text(await screen.findByTestId('upgrade-badge'))).toBe('Contracts are frozen');
     expect(text(await screen.findByTestId('upgrade-statement'))).toContain('nobody can change the rules');
-    expect(screen.getAllByText('No, frozen')).toHaveLength(2);
+    expect(screen.getAllByText('No, immutable')).toHaveLength(2);
+    // Nothing to warn about: no strip.
+    expect(screen.queryByTestId('upgrade-strip')).toBeNull();
   });
   it('names the chain when only one is still upgradable', async () => {
     mount('#/status', { upgradeable: { solana: false, ethereum: true } });

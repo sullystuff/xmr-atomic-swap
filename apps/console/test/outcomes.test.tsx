@@ -147,21 +147,34 @@ describe('daemon contract: added routes and fields (A2 to A9)', () => {
     expect((await failure(client.publishRegistration({ onion: 'example.onion' }))).status).toBe(400);
     expect((await failure(client.publishRegistration({ contacts: [{ kind: 1, value: 'x'.repeat(97) }] }))).status).toBe(400);
     expect((await failure(client.publishRegistration({ contacts: Array.from({ length: 7 }, () => ({ kind: 0, value: 'a' })) }))).status).toBe(400);
+    // In dry run the edit is refused before anything is stored: it does not go out later either.
     const dry = setup({ toml: DESIGN_BOTH_TOML });
-    expect((await failure(dry.client.publishRegistration({ contacts: [] }))).code).toBe('dry_run');
+    expect((await failure(dry.client.publishRegistration({ contacts: [], onion }))).code).toBe('dry_run');
+    expect((await dry.client.call('status')).tor.onion).toBeNull();
+    expect((await dry.client.call('registration')).solana.contacts).toHaveLength(3);
   });
 
-  it('serves the identity link’s trace, newest first, as bytes', async () => {
+  it('serves the identity link’s trace, newest first, as display addresses beside the raw bytes', async () => {
     const { client } = setup();
     const before = (await client.linkHistory()).entries;
     expect(before.map((e) => e.chain)).toEqual(['ethereum', 'solana']);
-    expect(before[1]).toMatchObject({ old: `0x${'00'.repeat(20)}`, new: ADDR.ethOwner });
-    expect(linkTarget(before[0]?.new ?? '')).toBe(ADDR.solOwner);
-    const built = await client.call('registrationTx', { body: { chain: 'solana', action: 'set_eth_link', eth_address: '0x00000000000000000000000000000000000000aa' } });
-    await client.call('registrationSubmit', { body: { request_id: built.request_id, signed: 'A'.repeat(200) } });
-    const after = (await client.linkHistory()).entries;
+    expect(before[1]).toEqual({ chain: 'solana', old: '', new: ADDR.ethOwner, old_hex: `0x${'00'.repeat(20)}`, new_hex: ADDR.ethOwner, effective_at: T0 - 200 * 86_400, superseded: false });
+    // The Ethereum record points at a Solana key: base58 for display, 32 bytes beside it.
+    expect(before[0]?.new).toBe(ADDR.solOwner);
+    expect(before[0]?.new_hex).toMatch(/^0x[0-9a-f]{64}$/);
+    expect(linkTarget(before[0]?.new_hex ?? '')).toBe(ADDR.solOwner);
+    const change = async (to: string) => {
+      const built = await client.call('registrationTx', { body: { chain: 'solana', action: 'set_eth_link', eth_address: to } });
+      await client.call('registrationSubmit', { body: { request_id: built.request_id, signed: 'A'.repeat(200) } });
+    };
+    await change('0x00000000000000000000000000000000000000aa');
+    let after = (await client.linkHistory()).entries;
     expect(after).toHaveLength(3);
-    expect(after[0]).toEqual({ chain: 'solana', old: ADDR.ethOwner, new: '0x00000000000000000000000000000000000000aa', effective_at: T0 + 604_800 });
+    expect(after[0]).toMatchObject({ chain: 'solana', old: ADDR.ethOwner, new: '0x00000000000000000000000000000000000000aa', effective_at: T0 + 604_800, superseded: false });
+    // A second change before the first took effect supersedes it.
+    await change('0x00000000000000000000000000000000000000bb');
+    after = (await client.linkHistory()).entries;
+    expect(after.filter((e) => e.chain === 'solana').map((e) => [e.new.slice(-2), e.superseded])).toEqual(expect.arrayContaining([['aa', true], ['bb', false]]));
   });
 
   it('acknowledges alerts and refills', async () => {

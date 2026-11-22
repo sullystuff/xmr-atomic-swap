@@ -60,28 +60,24 @@ devices; the real refusals come from the SDK flows.
 
 ## Requests to the daemon
 
-Behaviour that looks wrong or leaves the console unable to do what DESIGN asks. None is worked
-around silently.
+Answered by the daemon in its A11 to A16 and read by the console: upgrade status per chain with
+authority, reason and check time; a dry-run published edit refused before it is stored;
+`tor.published` and `registry_onion`; `needs_acknowledgement` / `acknowledged` on refills; `mode`
+and `instruction` on every swap summary; link history as display addresses with `superseded`;
+`sol_usd` and `compute_units_per_update` on validate; one list of ten refusal reasons; the
+unsigned transaction for a parked payout.
 
-1. **Upgrade status is always `null`** (its M4). DESIGN requires the UI to state whether the
-   contracts are still upgradable; against the real daemon the console can only say "unknown,
-   treat as upgradable". Please read the Solana upgrade authority and the proxy admin.
-2. **`PUT /api/registration/published` in dry run** stores the wanted contacts and onion address
-   and then answers `409 dry_run`. The console reports "Not published", yet the edit is kept and
-   goes out when the daemon turns live. Refuse before storing, or answer 200 with "saved, not sent".
-3. **`tor.published` is always `false` and `tor.reachable` always `null`**, so the Status page
-   shows a listed onion address as "Not published".
-4. **A failed refill has no "acknowledged" flag** in `RefillView`: after `POST /api/rebalance/ack`
-   the console cannot tell and keeps offering Acknowledge (the in-transit total does drop).
-5. **Swap summaries carry neither `mode` nor `instruction`** (list and WebSocket). In lists the
-   console therefore cannot pre-disable a reject of a Solana take outside window mode, nor hold
-   other actions while an instruction is pending; both work on the swap's own page.
-6. **Refusal reasons differ between documents**: the work order lists `cannot-exit-after-funding`;
-   the daemon lists `not-available-in-state` and `dry-run` instead. The console has words for all
-   ten and shows the daemon's `detail` for any other.
-7. **Link history is raw bytes** (`0x` hex for Solana keys too) with no marker for an entry that
-   was superseded before it took effect; the console converts 32-byte values to base58.
-8. `POST /api/config/validate` carries no `sol_usd`; the draft estimate uses the price from
-   `GET /api/fees` or `GET /api/offers`.
-9. Still missing: a route to redeem held wXMR, and `withdraw_owed` for a parked payout (its M2
-   says this is left to the console, but no unsigned-transaction action exists for it).
+Still open. None is worked around silently.
+
+1. **Nothing on a swap says a payout is parked** (only an alert). The console therefore offers
+   "Withdraw parked payout" on every swap page and reports `409 nothing_owed` in place as
+   "Nothing is parked for this swap". A `parked` amount on the swap detail would let it show the
+   action only where it applies, and name the amount.
+2. **Held wXMR has no route** (declined, A15). The console marks stopped bridge refills as needing
+   manual action; it cannot tell how much wXMR the wallet actually holds, because no field
+   reports it.
+3. **`tor.reachable` is always `null`** (the daemon runs no Tor client). The console says "not
+   checked by the daemon".
+4. On Ethereum the parked-payout transaction is signed by whichever address the balance is keyed
+   to; the console shows the daemon's summary naming it, but cannot check the wallet's account
+   against it before signing, since the response does not carry that address as a field.

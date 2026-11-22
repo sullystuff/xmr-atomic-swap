@@ -127,7 +127,8 @@ function Editor({
   const [review, setReview] = useState(false);
   const summaryRef = useRef<HTMLDivElement>(null);
 
-  const { solUsd, cuLimit } = costBasis(fees, offers, { update_cost: base.validation.update_cost });
+  const [basisFromValidate, setBasisFromValidate] = useState<{ sol_usd?: number | null; compute_units_per_update?: number } | null>(null);
+  const { solUsd, cuLimit } = costBasis(basisFromValidate, fees, offers, { update_cost: base.validation.update_cost });
   const expected = base.validation.update_cost?.triggered_per_day.expected;
   const local = useMemo(
     () => validateConfig(draft, { blobEndpoint, solUsd, ...(expected !== undefined ? { expectedTriggeredPerDay: expected } : {}) }),
@@ -150,6 +151,7 @@ function Editor({
         (validation) => {
           if (!live) return;
           setRemote({ toml, validation });
+          setBasisFromValidate(validation);
           setRemoteError(null);
         },
         (e: unknown) => live && setRemoteError(e),
