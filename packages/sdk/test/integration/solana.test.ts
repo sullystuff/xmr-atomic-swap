@@ -591,3 +591,33 @@ describe('taker-bound quote and advance approval', () => {
     }
   });
 });
+
+describe('pay or park', () => {
+  it('a frozen payout token account parks the claim instead of failing it; the owner withdraws later', async () => {
+    const { plan, s: active, share, pricing } = await lockA(1, X);
+    // No XMR is needed to exercise the escrow: the contract only sees the notice.
+    const fakeTxid = new Uint8Array(32).fill(0xee);
+    await w.exec(active, makerStep({ swap: active, now: await w.now(), commitmentsOk: true, lockTx: 'prepared' }), {}, { notice: buildNotice(active, w.makerEnc.encSecret, fakeTxid, share.view) });
+    let s = (await w.swap(plan.swapPda))!;
+    await w.warpTo(deadlinesOf('solana', s).tCo!);
+    const payoutAta = (await import('../../src/solana/pdas.js')).ata(w.payout.publicKey, w.usdc).toBase58();
+    const before = await w.tokenBalance(w.payout.publicKey);
+    await w.svm.setTokenAccountFrozen(payoutAta, true);
+    const sig = await w.exec(s, makerStep({ swap: s, now: await w.now(), lockTx: 'relayed', withoutReady: 'claim' }), {}, { secret: share.spend });
+    s = (await w.swap(plan.swapPda))!;
+    // The claim succeeded and its secret is in state; the payout stayed in escrow.
+    expect(s).toMatchObject({ state: SWAP_STATE.DONE, outcome: COUNTER.claims_without_ready, owedMaker: pricing.amount - pricing.fee, owedTaker: 0n });
+    expect(hex(s.revealed)).toBe(hex(share.spend));
+    expect(await w.tokenBalance(w.payout.publicKey)).toBe(before);
+    expect((await w.client.eventsOf(sig)).map((e) => e.name)).toEqual(expect.arrayContaining(['Claimed', 'PayoutParked']));
+    // The maker's owner key pulls it once the account can receive again.
+    const d = makerStep({ swap: s, now: await w.now(), lockTx: 'relayed' });
+    expect(d).toMatchObject({ do: 'call', call: { name: 'withdraw_owed', who: 'maker' }, caller: 'owner' });
+    await expect(w.exec(s, d, {})).rejects.toBeInstanceOf(ProgramError);
+    await w.svm.setTokenAccountFrozen(payoutAta, false);
+    await w.exec(s, d, {});
+    s = (await w.swap(plan.swapPda))!;
+    expect(s.owedMaker).toBe(0n);
+    expect(await w.tokenBalance(w.payout.publicKey)).toBe(before + pricing.amount - pricing.fee);
+  });
+});

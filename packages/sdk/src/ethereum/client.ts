@@ -346,6 +346,8 @@ export class EthereumClient {
     } catch (e) {
       throw new ContractError(contractErrorName(revertData(e)) ?? 'CallFailed', (e as Error).message);
     }
+    // An empty answer is "no code at this address at this block": the tag predates the deployment, or the address is wrong.
+    if (data === '0x') throw new ContractError('NoContract', `no contract at ${this.contract.address} at block ${String(tag)}`);
     return decodeFunctionResult({ abi: ABI, functionName, data }) as T;
   }
 
@@ -412,17 +414,44 @@ export class EthereumClient {
 
   /** The swap as a chain-neutral view, or `null` when no such swap exists (state 0). `withOwed` also reads the parked payouts. */
   async getSwap(swapId: Bytes, tag: BlockTag = 'finalized', withOwed = false): Promise<SwapView | null> {
-    const s = await this.read<EthSwapStruct>('getSwap', [b32(swapId)], tag);
+    let s: EthSwapStruct;
+    try {
+      s = await this.read<EthSwapStruct>('getSwap', [b32(swapId)], tag);
+    } catch (e) {
+      // At a block before the contract existed there is no such swap either.
+      if (e instanceof ContractError && e.code === 'NoContract') return null;
+      throw e;
+    }
     if (s.state === 0) return null;
     if (!withOwed) return viewFromEthereum(hex0x(swapId), s);
-    const [taker, maker] = await Promise.all([this.owedOf(s.token as Address, s.taker as Address, tag), this.makerOwed(s, tag)]);
-    return viewFromEthereum(hex0x(swapId), s, { taker, maker });
+    const owed = await this.owedFor(s.token as Address, s.taker as Address, s.maker as Address, tag);
+    return viewFromEthereum(hex0x(swapId), s, { taker: owed.taker, maker: owed.payout + owed.operator + owed.owner });
   }
-  private async makerOwed(s: EthSwapStruct, tag: BlockTag): Promise<bigint> {
-    const m = await this.getMaker(s.maker as Address, tag);
-    if (!m) return 0n;
-    const [a, b] = await Promise.all([this.owedOf(s.token as Address, m.payout, tag), this.owedOf(s.token as Address, m.operator, tag)]);
-    return m.payout.toLowerCase() === m.operator.toLowerCase() ? a : a + b;
+
+  /**
+   * Parked payouts that a swap's parties can pull. The contract keys them by the address the
+   * push would have gone to, not by swap: the taker; the maker's **payout** address (a
+   * direction-A claim); its current **operator** (a direction-B refund); and the maker's
+   * **owner** address (the escrow parked by `expireUnnoticed`). Each account pulls its own with
+   * `withdrawOwed(token, to)`. The figures are account totals and may include other swaps.
+   */
+  async owedFor(token: Address, taker: Address, maker: Address, tag: BlockTag = 'finalized'): Promise<{ taker: bigint; payout: bigint; operator: bigint; owner: bigint; accounts: { payout: Address; operator: Address; owner: Address } | null }> {
+    const m = await this.getMaker(maker, tag);
+    const takerOwed = await this.owedOf(token, taker, tag);
+    if (!m) return { taker: takerOwed, payout: 0n, operator: 0n, owner: 0n, accounts: null };
+    const owner = maker.toLowerCase() as Address;
+    // One address may play several roles; count each address once.
+    const seen = new Map<string, bigint>();
+    const of = async (a: Address): Promise<bigint> => {
+      if (seen.has(a)) return 0n;
+      const v = await this.owedOf(token, a, tag);
+      seen.set(a, v);
+      return v;
+    };
+    const payout = await of(m.payout);
+    const operator = await of(m.operator);
+    const ownerOwed = await of(owner);
+    return { taker: takerOwed, payout, operator, owner: ownerOwed, accounts: { payout: m.payout, operator: m.operator, owner } };
   }
   /** The maker record, or `null` when the address is not registered. */
   async getMaker(maker: Address, tag: BlockTag = 'finalized'): Promise<EthMaker | null> {

@@ -211,6 +211,12 @@ describe('EthereumClient over a fake transport', () => {
     expect(hex(s!.swapRef)).toBe(hex(swapId));
     expect(s!.eth).toMatchObject({ takerKey: '0x08f5cbc4564871f0ca60c9a36f99baadcbfea448' });
     expect(await client.getSwap(b32())).toBe(null);
+    // A tag that predates the deployment answers with no data: "no such swap", and a named error for other reads.
+    const real = fake.request.bind(fake);
+    fake.request = async (a) => (a.method === 'eth_call' && a.params![1] === '0x1' ? '0x' : real(a));
+    expect(await client.getSwap(swapId, 1n)).toBe(null);
+    await expect(client.read('usdc', [], 1n)).rejects.toMatchObject({ code: 'NoContract' });
+    fake.request = real;
     // State is read at `finalized` unless the caller says otherwise.
     const calls = fake.requests.filter((q) => q.method === 'eth_call');
     expect(calls.every((q) => q.params![1] === 'finalized')).toBe(true);
@@ -224,7 +230,9 @@ describe('EthereumClient over a fake transport', () => {
     fake.views.getMaker = () => makerRecord();
     fake.views.owedOf = ([, account]) => (String(account).toLowerCase() === '0x0f8183aefdf068dd8489b6edbf4e07965cf29246' ? 5n : String(account).toLowerCase().endsWith('bb') ? 7n : 11n);
     const s = await client.getSwap(swapId, 'finalized', true);
-    expect([s!.owedTaker, s!.owedMaker]).toEqual([5n, 18n]);
+    // Taker 5; maker side = payout 7 + operator 11 + owner 11 (parked payouts are keyed by account).
+    expect([s!.owedTaker, s!.owedMaker]).toEqual([5n, 29n]);
+    expect(await client.owedFor(zeroAddr, '0x0f8183aefdf068dd8489b6edbf4e07965cf29246', '0x0fbfe9b14731dddd51b145d6b23104e8bf7f676b')).toMatchObject({ taker: 5n, payout: 7n, operator: 11n, owner: 11n });
   });
 
   it('reads the registry: maker, counters, key use, cancellations, a taker\'s swaps', async () => {
