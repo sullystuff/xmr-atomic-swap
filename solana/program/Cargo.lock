@@ -2983,6 +2983,7 @@ dependencies = [
  "anchor-spl",
  "solana-curve25519",
  "solana-msg",
+ "solana-sha256-hasher",
 ]
 
 [[package]]

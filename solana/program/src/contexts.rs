@@ -6,7 +6,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{Mint, Token, TokenAccount};
 
-use crate::{args::*, constants::*, state::*};
+use crate::{args::*, constants::*, errors::SwapError, state::*};
 
 // ------------------------------------------------------------------ admin
 
@@ -116,7 +116,7 @@ pub struct RefreshOffers<'info> {
     #[account(seeds = [b"maker", maker.owner.as_ref()], bump = maker.bump)]
     pub maker: Account<'info, Maker>,
     #[account(mut)]
-    pub eth_board: Option<Account<'info, EthBoard>>,
+    pub eth_board: Option<Box<Account<'info, EthBoard>>>,
 }
 
 #[derive(Accounts)]
@@ -189,8 +189,10 @@ pub struct PostMessage<'info> {
 /// `approval_ix` is; the last four are present for USDC and absent for SOL.
 #[derive(Accounts)]
 pub struct OpenSwap<'info> {
-    #[account(mut)]
-    pub taker: Signer<'info>,
+    /// CHECK: the taker's wallet. It must sign; a missing signature is `Unauthorized` (the
+    /// vectors' "wrong caller" rows), so this is not a `Signer` (which fails with Anchor's own code).
+    #[account(mut, signer @ SwapError::Unauthorized)]
+    pub taker: UncheckedAccount<'info>,
     /// CHECK: PDA `["swap", taker, swap_nonce]`, created here; the taker pays its rent.
     #[account(mut)]
     pub swap: UncheckedAccount<'info>,
@@ -223,7 +225,7 @@ pub struct OpenSwap<'info> {
 #[derive(Accounts)]
 pub struct Approve<'info> {
     pub operator: Signer<'info>,
-    #[account(mut)]
+    #[account(mut, has_one = maker @ SwapError::Unauthorized)]
     pub swap: Box<Account<'info, Swap>>,
     #[account(mut, seeds = [b"maker", maker.owner.as_ref()], bump = maker.bump)]
     pub maker: Box<Account<'info, Maker>>,
@@ -235,7 +237,7 @@ pub struct Approve<'info> {
 pub struct Fund<'info> {
     #[account(mut)]
     pub operator: Signer<'info>,
-    #[account(mut)]
+    #[account(mut, has_one = maker @ SwapError::Unauthorized)]
     pub swap: Box<Account<'info, Swap>>,
     #[account(mut, seeds = [b"maker", maker.owner.as_ref()], bump = maker.bump)]
     pub maker: Box<Account<'info, Maker>>,
@@ -257,7 +259,7 @@ pub struct Fund<'info> {
 pub struct Short<'info> {
     #[account(mut)]
     pub caller: Signer<'info>,
-    #[account(mut)]
+    #[account(mut, has_one = maker @ SwapError::Unauthorized)]
     pub swap: Box<Account<'info, Swap>>,
     #[account(mut, seeds = [b"maker", maker.owner.as_ref()], bump = maker.bump)]
     pub maker: Box<Account<'info, Maker>>,
@@ -277,7 +279,7 @@ pub struct Short<'info> {
 pub struct Settle<'info> {
     #[account(mut)]
     pub caller: Signer<'info>,
-    #[account(mut)]
+    #[account(mut, has_one = maker @ SwapError::Unauthorized)]
     pub swap: Box<Account<'info, Swap>>,
     #[account(mut, seeds = [b"maker", maker.owner.as_ref()], bump = maker.bump)]
     pub maker: Box<Account<'info, Maker>>,

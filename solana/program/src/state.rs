@@ -252,3 +252,153 @@ pub struct Swap {
     /// 694
     pub reserved: [u8; 42],
 }
+
+// ------------------------------------------------------------------ derived values
+
+use crate::constants::*;
+
+impl Maker {
+    /// Counter updates saturate; they can never fail an instruction (SPEC 3.7).
+    pub fn bump(&mut self, id: u8) {
+        if let Some(slot) = self.counters.get_mut(id as usize) {
+            *slot = slot.saturating_add(1);
+        }
+    }
+    pub fn pending_opened(&mut self) {
+        self.open_pending = self.open_pending.saturating_add(1);
+    }
+    pub fn pending_closed(&mut self) {
+        self.open_pending = self.open_pending.saturating_sub(1);
+    }
+}
+
+impl Swap {
+    /// `T_nl = t_final − d_c − w_c − 86,400`: the latest notice (direction B).
+    pub fn t_nl(&self) -> i64 {
+        self.t_final - self.d_c as i64 - self.w_c as i64 - DAY_SECS
+    }
+    pub fn t_exp(&self) -> i64 {
+        self.t_final.saturating_add(EXPIRY_SECS)
+    }
+    pub fn t_hold(&self) -> i64 {
+        self.t_refund.saturating_add(HOLD_SECS)
+    }
+    pub fn t_split(&self) -> i64 {
+        self.t_refund.saturating_add(SPLIT_SECS)
+    }
+    /// Earliest `set_ready`.
+    pub fn t_ready_min(&self) -> i64 {
+        self.t_notice + self.depth as i64 * READY_MIN_SECS_PER_CONF
+    }
+    pub fn has(&self, f: u8) -> bool {
+        self.flags & f != 0
+    }
+    pub fn is_a(&self) -> bool {
+        self.direction == DIR_A
+    }
+    /// SPEC 3.12: what `approve`, `fund` and `reject` bind to. Recomputed from the account.
+    pub fn open_hash(&self, swap_key: &Pubkey) -> [u8; 32] {
+        crate::util::sha256(&[
+            DS_OPEN,
+            swap_key.as_ref(),
+            &self.t_lock.to_le_bytes(),
+            &[self.direction, self.asset],
+            &self.xmr.to_le_bytes(),
+            &self.amount.to_le_bytes(),
+            &self.deposit.to_le_bytes(),
+            &self.taker_spend_pub,
+            &self.locker_view,
+            &self.taker_enc_key,
+            &self.maker_enc_key,
+        ])
+    }
+    /// `SHA256(DS("notice") ‖ swap PDA ‖ txid ‖ view)` (SPEC 2.8).
+    pub fn notice_opening(swap_key: &Pubkey, txid: &[u8; 32], view: &[u8; 32]) -> [u8; 32] {
+        crate::util::sha256(&[DS_NOTICE, swap_key.as_ref(), txid, view])
+    }
+    /// An all-zero swap on the heap (the struct is 728 bytes: keep it off the caller's frame).
+    #[inline(never)]
+    pub fn new_boxed() -> Box<Swap> {
+        Box::new(Swap {
+            taker: Pubkey::default(),
+            maker: Pubkey::default(),
+            state: 0,
+            direction: 0,
+            asset: 0,
+            mode: 0,
+            outcome: counter::NONE,
+            deposit_state: 0,
+            depth: 0,
+            flags: 0,
+            bump: 0,
+            vault_bump: 0,
+            swap_nonce: [0; 16],
+            session_key: Pubkey::default(),
+            taker_enc_key: [0; 32],
+            maker_enc_version: 0,
+            maker_enc_key: [0; 32],
+            amount: 0,
+            deposit: 0,
+            xmr: 0,
+            price: 0,
+            dep_bps: 0,
+            fee_bps: 0,
+            w_n: 0,
+            d_c: 0,
+            w_c: 0,
+            taker_spend_pub: [0; 32],
+            maker_spend_pub: [0; 32],
+            locker_view: [0; 32],
+            notice_commitment: [0; 32],
+            notice_ct: [0; 104],
+            evidence_txid: [0; 32],
+            evidence_view: [0; 32],
+            revealed: [0; 32],
+            t_lock: 0,
+            t_pending_deadline: 0,
+            t_active: 0,
+            t_note_deadline: 0,
+            t_notice: 0,
+            t_cut: 0,
+            t_claim_open: 0,
+            t_ready: 0,
+            t_claim_deadline: 0,
+            t_final: 0,
+            t_refund: 0,
+            t_settled: 0,
+            owed_taker: 0,
+            owed_maker: 0,
+            owed_treasury: 0,
+            reserved: [0; 42],
+        })
+    }
+}
+
+impl Offer {
+    /// SPEC 4.2 `terms_hash`.
+    pub fn compute_terms_hash(&self) -> [u8; 32] {
+        let mut pre = [0u8; 54];
+        pre[0] = self.asset;
+        pre[1] = self.direction;
+        pre[2] = self.mode;
+        pre[3..5].copy_from_slice(&self.dep_bps.to_le_bytes());
+        pre[5..7].copy_from_slice(&FEE_BPS.to_le_bytes());
+        let mut at = 7;
+        for w in [self.w_a, self.w_n, self.d_c, self.w_c, self.w_f] {
+            pre[at..at + 4].copy_from_slice(&w.to_le_bytes());
+            at += 4;
+        }
+        for i in 0..3 {
+            pre[at..at + 8].copy_from_slice(&self.depth_above[i].to_le_bytes());
+            pre[at + 8] = self.depths[i];
+            at += 9;
+        }
+        crate::util::sha256(&[DS_TERMS, &pre])
+    }
+    pub fn prices_used(&self) -> [bool; 3] {
+        [self.prices[0] != 0, self.prices[1] != 0, self.prices[2] != 0]
+    }
+    pub fn depths_used(&self) -> [bool; 3] {
+        [self.depths[0] != 0, self.depths[1] != 0, self.depths[2] != 0]
+    }
+}

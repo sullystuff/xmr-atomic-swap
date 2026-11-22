@@ -119,3 +119,31 @@ pub mod counter {
     /// `outcome` while the swap is open; the counter byte of an event that moves none.
     pub const NONE: u8 = 0xff;
 }
+
+/// `DS(tag)` = `"xmrswap/v1/" ‖ tag ‖ 0x00` (SPEC 2.1).
+pub const DS_POK: &[u8] = b"xmrswap/v1/pok\0";
+pub const DS_TERMS: &[u8] = b"xmrswap/v1/terms\0";
+pub const DS_OPEN: &[u8] = b"xmrswap/v1/open\0";
+pub const DS_NOTICE: &[u8] = b"xmrswap/v1/notice\0";
+pub const DS_SOL_APPROVAL: &[u8; 24] = b"xmrswap/v1/sol-approval\0";
+
+/// Values of `Swap.deposit_state`.
+pub mod deposit_state {
+    pub const NONE: u8 = 0;
+    pub const HELD: u8 = 1;
+    pub const WITHHELD: u8 = 2;
+    pub const RETURNED: u8 = 3;
+    pub const RELEASED: u8 = 4;
+    pub const SPLIT: u8 = 5;
+}
+
+/// Offer or quote modes, and the effective mode stored in the swap.
+pub mod mode {
+    pub const AUTO: u8 = 0;
+    pub const WINDOW: u8 = 1;
+    pub const ADVANCE: u8 = 2;
+    pub const QUOTE: u8 = 3;
+}
+
+pub const DIR_A: u8 = 0;
+pub const DIR_B: u8 = 1;

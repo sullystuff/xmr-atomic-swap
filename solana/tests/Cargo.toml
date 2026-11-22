@@ -1,0 +1,46 @@
+[package]
+name = "xmr-swap-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+rust-version = "1.94"
+autotests = false
+
+# In-process LiteSVM tests of ../program (SPEC 9.1). They load the built `.so`
+# (`cd ../program && cargo build-sbf`) and encode instructions by hand from the frozen IDL; the
+# program crate is not linked (Anchor 0.32 and LiteSVM 0.16 use incompatible Pubkey types).
+# Nothing here talks to a validator or a cluster.
+
+[dev-dependencies]
+litesvm = { version = "=0.16.0", features = ["precompiles"] }
+litesvm-token = "=0.16.0"
+solana-account = "4"
+solana-keypair = "3"
+solana-signer = "3"
+solana-transaction = "4"
+solana-message = "4"
+solana-instruction = "3"
+solana-pubkey = { version = "4", features = ["curve25519"] }
+solana-clock = "3"
+solana-rent = "4"
+solana-system-interface = { version = "3", features = ["bincode"] }
+sha2 = "0.10"
+curve25519-dalek = "4"
+base64 = "0.22"
+rand = "0.8"
+serde_json = "1"
+hex = "0.4"
+
+# One test binary (tests/suite.rs): LiteSVM links statically and each binary is large.
+[[test]]
+name = "suite"
+path = "tests/suite.rs"
+
+[profile.dev]
+debug = false
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[workspace]

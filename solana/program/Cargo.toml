@@ -26,6 +26,7 @@ anchor-lang = "=0.32.1"
 anchor-spl = { version = "=0.32.1", default-features = false, features = ["token", "associated_token", "token_2022"] }
 solana-curve25519 = "=2.3.13"
 solana-msg = "2"
+solana-sha256-hasher = "2.3"
 
 [profile.release]
 overflow-checks = true
