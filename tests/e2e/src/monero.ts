@@ -155,6 +155,10 @@ export interface NodeProxy {
   mode: NodeMode;
   /** Requests served, by route. */
   hits: Record<string, number>;
+  /** Hold every answer back this long (a slow node). */
+  delayMs: number;
+  /** Requests this proxy is holding or forwarding right now. */
+  pending: number;
   close(): Promise<void>;
 }
 
@@ -165,7 +169,7 @@ export interface NodeProxy {
  * with a different hash. CORS is answered here so a browser page can use it like the node itself.
  */
 export async function startNodeProxy(target: string): Promise<NodeProxy> {
-  const state: NodeProxy = { url: '', mode: 'honest', hits: {}, close: async () => undefined };
+  const state: NodeProxy = { url: '', mode: 'honest', hits: {}, delayMs: 0, pending: 0, close: async () => undefined };
   const server = http.createServer((req, res) => {
     const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': 'POST, GET, OPTIONS' };
     if (req.method === 'OPTIONS') return void res.writeHead(204, cors).end();
@@ -177,6 +181,9 @@ export async function startNodeProxy(target: string): Promise<NodeProxy> {
         const body = Buffer.concat(chunks);
         const route = (req.url ?? '/').replace(/^\//, '');
         state.hits[route] = (state.hits[route] ?? 0) + 1;
+        state.pending++;
+        res.once('close', () => state.pending--);
+        if (state.delayMs > 0) await sleep(state.delayMs);
         try {
           const up = await fetch(`${target}/${route}`, { method: req.method ?? 'POST', headers: { 'content-type': 'application/json' }, ...(req.method === 'POST' ? { body } : {}) });
           let out = Buffer.from(await up.arrayBuffer());

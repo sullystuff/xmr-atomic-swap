@@ -14,6 +14,16 @@ Each confirmed bug has: the package, the symptom, the reproduction command, a di
 
 **Test.** `scenarios/99-known-failures.test.ts`, reported under "known failures" by `scripts/run.mjs`; it fails the run when the bug stops reproducing. Meanwhile `03-modes-console` proves hot-apply through the daemon's configuration API (the request the console's save would send) and still opens the console's form.
 
+### BUG-3 · `packages/daemon` (`src/swaps/executor.ts`, `manual` / `step` / `settleInstruction`) · a valid operator instruction is refused when it arrives during the daemon's own pass over the swap
+
+**Symptom.** Intermittently, an operator action that the swap's state accepts comes back "not carried out … The swap has moved on and is no longer in a state that accepts this" (`refused: not-available-in-state`), nothing is sent, and the swap is in fact still in the same state with the action still offered. Seen in `03-modes-console` as "Release deposit" on a WITHHELD deposit refused while the row still showed WITHHELD and `actions: ["release"]`; pressing the button again works. The answer is wrong (the state did not move on) and, for a time-boxed action such as a withhold inside the 30-minute hold or an approval inside its window, an operator who trusts it loses the action.
+
+**Reproduce.** `pnpm --filter @xmrswap/e2e test -- scenarios/99-known-failures.test.ts` (test "BUG-3", about a minute). A swap is put in HOLD; one of the daemon's Monero nodes is made slow (4 s per answer) so that each of the daemon's passes over the swap, which look for its lock, lasts seconds; the test waits until such a pass is provably in flight (a request is waiting in the slow node) and sends `POST /api/swaps/:ref/release`. Expected: carried out (or pending, then carried out), `deposits_returned` moves. Observed: refused, nothing sent.
+
+**Diagnosis.** `manual()` writes the instruction to the row (`facts.instruction`, status `pending`) and then awaits `step(ref)`, which is serialised per swap. If the periodic tick's `step` for the same swap is already running, it finishes first; at its end it calls `settleInstruction(ref, last)`, finds a pending instruction that its own pass (decided before the instruction existed) did not carry out, matches none of the "still in flight" cases, and falls through to `refused: ownRefusal(...)` = `not-available-in-state`, clearing the flag. The instruction's own `step` then finds nothing to do. Suggested fix for the owner: let a step settle only an instruction that existed when the step read its facts (for example compare `instruction.at`/`mark` with a marker taken at the start of the pass), or settle only inside the step that `manual()` itself started.
+
+**Test.** `scenarios/99-known-failures.test.ts`. Until it is fixed, the ordinary scenarios press an operator action again when exactly this answer comes back while the action is still offered (`Maker.instruct`, `pressUntil` in `03-modes-console`); the effect on-chain is asserted as before.
+
 ## Fixed
 
 ### BUG-1 (FIXED) · `packages/sdk` (`src/flows/taker.ts`, `takerA`, state NOTICED) · the taker's confirmed refund request is ignored once the XMR lock is confirmed

@@ -4,9 +4,10 @@
 // scenarios; when it stops throwing the test fails, so the fix is noticed (scenarios/known.ts).
 import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect } from 'vitest';
+import { COUNTER } from '@xmrswap/protocol';
 import { SdkTaker } from '../src/taker.js';
 import { type TakerTab, openTab } from '../src/ui.js';
-import { waitFor } from '../src/util.js';
+import { XMR, waitFor } from '../src/util.js';
 import { type World, startWorld, stopShared } from '../src/world.js';
 import { track } from './helpers.js';
 import { knownFailure } from './known.js';
@@ -24,6 +25,28 @@ afterAll(async () => {
 });
 
 describe('KNOWN FAILURES (bugs in other packages; see tests/e2e/BUGS.md)', () => {
+  knownFailure('BUG-3', 'packages/daemon: an operator instruction that the swap\'s state accepts must be carried out (or stay pending) even when it arrives while the daemon\'s own pass over that swap is in flight; instead that pass settles it as refused (not-available-in-state) and nothing is sent', async () => {
+    const taker = new SdkTaker(w);
+    const c0 = [...(await w.maker.counters('solana'))];
+    const o = await taker.open('sol', 0, XMR / 4n);
+    await waitFor('the daemon\'s lock', async () => (await w.maker.swapDetail(o.ref)).phase === 'xmr_relayed', { timeoutMs: 120_000 });
+    await taker.refund(o);
+    await waitFor('the hold in the daemon\'s view', async () => (await w.maker.swapDetail(o.ref)).state === 'HOLD', { timeoutMs: 60_000 });
+    // One of the daemon's Monero nodes answers slowly, so each of its passes over this swap (it looks for its lock to take the
+    // XMR back) takes several seconds. The instruction is sent while such a pass is provably in flight.
+    w.makerNodeB.delayMs = 4000;
+    try {
+      await waitFor('a pass in flight', () => w.makerNodeB.pending > 0, { intervalMs: 20, timeoutMs: 60_000 });
+      const r = await w.maker.api<{ outcome: string; refused?: string }>('POST', `/api/swaps/${o.ref}/release`, {});
+      // HOLD inside the 30 minutes: the operator may release at any time (SPEC 3.6).
+      expect(r.refused).toBeUndefined();
+      await waitFor('the release on-chain', async () => (await w.maker.counters('solana'))[COUNTER.deposits_returned] === (c0[COUNTER.deposits_returned] ?? 0) + 1, { timeoutMs: 60_000, context: () => w.maker.swapDetail(o.ref) });
+      expect((await w.maker.swapDetail(o.ref)).instruction).toMatchObject({ action: 'release', status: 'carried_out' });
+    } finally {
+      w.makerNodeB.delayMs = 0;
+    }
+  });
+
   knownFailure('BUG-2', 'apps/console: "Validate and save" must accept a configuration the daemon itself accepts and runs on; a file with `[pricing.sources.coingecko].base_url` (a daemon key) is refused as an unknown key, so no edit can be saved', async () => {
     const { page } = tab;
     expect((await new SdkTaker(w).offer(w.maker, 'sol', 1)).prices[0]).toBe(1_470_000_000n);

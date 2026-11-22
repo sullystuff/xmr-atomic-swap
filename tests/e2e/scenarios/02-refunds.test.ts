@@ -281,7 +281,7 @@ describe('early maker abort (A7b, then A10d)', () => {
     const inv0 = await holdings(w.maker.wallet);
     const o = await taker.open('usdc_sol', 0, HALF);
     await makerLocks(o);
-    await w.maker.api('POST', `/api/swaps/${o.ref}/abort`, {});
+    expect((await w.maker.instruct(o.ref, 'abort')).outcome).not.toBe('refused');
     await untilState(w, o.ref, 'ABORTED_FREE');
     await taker.refund(o);
     const b1 = await balances(w, 'usdc_sol');
@@ -342,7 +342,7 @@ describe('direction B unwinds (the taker sells XMR)', () => {
     const o = await taker.open('usdc_sol', 1, QUARTER);
     await untilState(w, o.ref, 'ACTIVE');
     await untilPhase(w, o.ref, 'funded');
-    await w.maker.api('POST', `/api/swaps/${o.ref}/abort`, {});
+    expect((await w.maker.instruct(o.ref, 'abort')).outcome).not.toBe('refused');
     await waitFor('the backout', async () => counterDelta(c0, await counters(w.maker, 'solana'))['backouts_pre_notice'] === 1, { context: () => w.maker.swapDetail(o.ref) });
     const b1 = await balances(w, 'usdc_sol');
     expect(b1.taker).toBe(b0.taker);

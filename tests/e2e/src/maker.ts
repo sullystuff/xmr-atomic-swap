@@ -265,6 +265,22 @@ ${o.extraToml ?? ''}`;
     return j as T;
   }
 
+  /**
+   * An operator instruction through the daemon's API, as the console sends it. While BUG-3 (tests/e2e/BUGS.md) is open, an
+   * instruction that lands during one of the daemon's own passes over the swap can come back refused as
+   * `not-available-in-state` although the state accepts it; an operator would press the button again, and so does this.
+   * Any other refusal is returned as it is.
+   */
+  async instruct(ref: string, action: 'approve' | 'reject' | 'abort' | 'withhold' | 'release', body: unknown = {}): Promise<{ ok: boolean; outcome?: string; refused?: string; detail?: string }> {
+    let last: { ok: boolean; outcome?: string; refused?: string; detail?: string } = { ok: false };
+    for (let attempt = 0; attempt < 4; attempt++) {
+      last = await this.api('POST', `/api/swaps/${encodeURIComponent(ref)}/${action}`, body);
+      const stillOffered = ((await this.swapDetail(ref).catch(() => null))?.actions ?? []).includes(action);
+      if (!(last.outcome === 'refused' && last.refused === 'not-available-in-state' && stillOffered)) break;
+    }
+    return last;
+  }
+
   /** Register on Solana, then Ethereum, then link the two, each signed by the owner key outside the daemon. */
   async register(): Promise<void> {
     const submitSol = async (action: Record<string, unknown>): Promise<void> => {
