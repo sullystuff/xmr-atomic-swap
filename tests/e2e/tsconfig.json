@@ -1,0 +1,5 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "noEmit": true, "types": ["node"], "lib": ["ES2022", "DOM", "DOM.Iterable"], "declaration": false, "declarationMap": false, "sourceMap": false, "allowImportingTsExtensions": false, "rootDir": "../.." },
+  "include": ["src", "scenarios", "scripts", "vitest.config.ts"]
+}

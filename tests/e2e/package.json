@@ -3,16 +3,23 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "description": "End-to-end harness (SPEC 9.3, 9.4): the real daemon, relay, built web UI and console against svm-rpc, anvil and the Monero regtest. Loopback only.",
   "scripts": {
-    "build": "echo '@xmrswap/e2e: not implemented yet (owned by WP11)' && exit 1",
-    "test": "echo '@xmrswap/e2e: not implemented yet (owned by WP11)' && exit 1"
+    "build": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "flock /tmp/xmrswap-integration.lock node scripts/run.mjs",
+    "stack": "flock /tmp/xmrswap-integration.lock tsx scripts/dev-stack.ts"
   },
   "dependencies": {
     "@xmrswap/core-wasm": "workspace:*",
     "@xmrswap/protocol": "workspace:*",
     "@xmrswap/sdk": "workspace:*",
     "@xmrswap/daemon": "workspace:*",
-    "@xmrswap/relay": "workspace:*"
+    "@xmrswap/relay": "workspace:*",
+    "@xmrswap/svm-rpc": "workspace:*",
+    "@solana/web3.js": "1.98.4",
+    "@solana/spl-token": "0.4.15",
+    "viem": "2.58.4"
   },
   "devDependencies": {
     "typescript": "7.0.2",
