@@ -3,14 +3,21 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "description": "Maker console: configures and monitors the maker's own daemon over its local API (SPEC 8.1)",
   "scripts": {
-    "build": "echo '@xmrswap/console: not implemented yet (owned by WP9)' && exit 1",
-    "test": "echo '@xmrswap/console: not implemented yet (owned by WP9)' && exit 1"
+    "dev": "vite --mode mock",
+    "dev:daemon": "vite",
+    "mock": "tsx server/main.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "tsc -p tsconfig.json --noEmit && vitest run"
   },
   "dependencies": {
     "@xmrswap/protocol": "workspace:*",
     "react": "19.1.10",
-    "react-dom": "19.1.10"
+    "react-dom": "19.1.10",
+    "smol-toml": "1.9.1"
   },
   "devDependencies": {
     "typescript": "7.0.2",
@@ -22,6 +29,12 @@
     "tailwindcss": "4.3.5",
     "@tailwindcss/vite": "4.3.5",
     "@types/react": "19.3.0",
-    "@types/react-dom": "19.3.0"
+    "@types/react-dom": "19.3.0",
+    "@testing-library/react": "16.3.3",
+    "@testing-library/user-event": "14.6.13",
+    "@testing-library/dom": "10.4.2",
+    "jsdom": "31.0.1",
+    "ws": "8.23.0",
+    "@types/ws": "8.18.2"
   }
 }
