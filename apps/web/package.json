@@ -3,9 +3,17 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "description": "Taker web UI: static files; every operation that touches funds runs in the browser (SPEC 8.2 to 8.7)",
   "scripts": {
-    "build": "echo '@xmrswap/web: not implemented yet (owned by WP10)' && exit 1",
-    "test": "echo '@xmrswap/web: not implemented yet (owned by WP10)' && exit 1"
+    "ensure": "node scripts/ensure-core.mjs",
+    "dev": "node scripts/ensure-core.mjs && vite",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "node scripts/ensure-core.mjs && tsc -p tsconfig.json --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "node scripts/ensure-core.mjs && tsc -p tsconfig.json --noEmit && vitest run",
+    "test:browser": "node scripts/ensure-core.mjs && flock /tmp/xmrswap-integration.lock vitest run --config vitest.browser.config.ts",
+    "screenshots": "node scripts/ensure-core.mjs && vite build && tsx scripts/screenshots.ts",
+    "stack": "flock /tmp/xmrswap-integration.lock tsx scripts/dev-stack.ts"
   },
   "dependencies": {
     "@xmrswap/core-wasm": "workspace:*",
@@ -17,7 +25,8 @@
     "viem": "2.58.4",
     "@solana/wallet-adapter-base": "0.9.27",
     "@solana/wallet-adapter-react": "0.15.39",
-    "@solana/wallet-adapter-wallets": "0.19.38"
+    "@solana/wallet-adapter-wallets": "0.19.38",
+    "buffer": "6.0.3"
   },
   "devDependencies": {
     "typescript": "7.0.2",
@@ -30,6 +39,11 @@
     "@tailwindcss/vite": "4.3.5",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
-    "playwright-core": "1.56.1"
+    "playwright-core": "1.56.1",
+    "@testing-library/react": "16.3.3",
+    "@testing-library/user-event": "14.6.13",
+    "@testing-library/dom": "10.4.2",
+    "jsdom": "31.0.1",
+    "@xmrswap/svm-rpc": "workspace:*"
   }
 }
