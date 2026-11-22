@@ -876,3 +876,59 @@ fn post_message_checks_the_cap_and_the_magic_and_writes_nothing() {
     assert_err(post(&mut w, b"SX rest"), "MessageMalformed");
     assert_eq!(w.data(&m.pda), maker_before, "the recipient is only named");
 }
+
+#[test]
+fn lamports_sent_to_a_swap_or_vault_address_in_advance_cannot_block_the_lock() {
+    for asset in [ASSET_SOL, ASSET_USDC] {
+        let mut w = World::new();
+        let mut m = w.register_maker();
+        let offer = w.live_offer(&mut m, asset, DIR_A, &Terms::default(), PRICE);
+        let (fx, raw) = w.prepare_open(&m, asset, DIR_A, XMR, Source::Offer(offer));
+        // Someone who saw the nonce pre-funds both addresses (a plain create_account would fail).
+        w.svm.airdrop(&fx.pda, 700_000).unwrap(); // below the swap account's rent: topped up
+        w.svm.airdrop(&fx.vault, 5_000_000).unwrap();
+        ok(w.send_open(&fx, &raw));
+        let s = w.swap(&fx.pda).unwrap();
+        assert_eq!((s.state, s.amount), (ACTIVE, PRICE));
+        if asset == ASSET_USDC {
+            assert_eq!(w.tokens(&fx.vault), PRICE);
+            assert_eq!(w.lamports(&fx.pda), w.rent(736));
+        } else {
+            assert_eq!(w.lamports(&fx.pda), w.rent(736) + PRICE);
+        }
+        // The swap runs to the end and closes; stray lamports end with the taker.
+        let session = fx.session.insecure_clone();
+        ok(w.call(&m, &fx, &Call::Refund(fx.s_t), &session));
+        let op = m.operator.insecure_clone();
+        ok(w.call(&m, &fx, &Call::ReleaseDeposit, &op));
+        ok(w.call(&m, &fx, &Call::CloseSwap, &op));
+        assert!(w.swap(&fx.pda).is_none());
+        assert_eq!(w.lamports(&fx.pda), 0);
+    }
+}
+
+#[test]
+fn keyless_calls_cannot_be_used_to_park_the_takers_money_by_omitting_its_account() {
+    let mut w = World::new();
+    let (m, fx) = w.swap_at(ASSET_USDC, DIR_A, &Terms::default(), Stage::Active);
+    let s = w.swap(&fx.pda).unwrap();
+    w.set_time(s.t_note_deadline);
+    let stranger = w.stranger.insecure_clone();
+    // refund_unnoticed with the taker's token account left out, or pointed elsewhere.
+    let mut ix = w.call_ix(&m, &fx, &Call::RefundUnnoticed, &stranger.pubkey());
+    ix.accounts[S_TAKER_TOKEN] = opt(None, true);
+    assert_err(w.send(&[ix], &[&stranger]), "WrongAsset");
+    let mut ix = w.call_ix(&m, &fx, &Call::RefundUnnoticed, &stranger.pubkey());
+    ix.accounts[S_TAKER_TOKEN].pubkey = w.make_ata(&stranger.pubkey());
+    assert_err(w.send(&[ix], &[&stranger]), "Unauthorized");
+    // The token accounts as a whole left out of a USDC swap's instruction.
+    let mut ix = w.call_ix(&m, &fx, &Call::RefundUnnoticed, &stranger.pubkey());
+    for i in [S_MINT, S_VAULT, S_TAKER_TOKEN, S_MAKER_TOKEN, S_TREASURY_VAULT, S_TOKEN_PROGRAM] {
+        ix.accounts[i] = opt(None, false);
+    }
+    assert_err(w.send(&[ix], &[&stranger]), "WrongAsset");
+    assert_eq!(w.swap(&fx.pda).unwrap().state, ACTIVE);
+    ok(w.call(&m, &fx, &Call::RefundUnnoticed, &stranger));
+    assert!(w.swap(&fx.pda).is_none());
+    assert_eq!(w.tokens(&w.ata(&fx.taker.pubkey())), 1_000_000_000_000);
+}

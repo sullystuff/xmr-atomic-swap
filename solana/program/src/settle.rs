@@ -214,10 +214,10 @@ impl<'info> Settle<'info> {
         }
         match p.to {
             Party::Taker => {
-                let Some(dest) = &self.taker_token else {
-                    return Ok(false);
-                };
-                // The address is fixed for the life of the swap: a wrong one is refused.
+                // The address is fixed for the life of the swap: a missing or wrong one is the
+                // caller's mistake and is refused (otherwise any caller of a keyless instruction
+                // could force the taker's money to be parked).
+                let dest = self.taker_token.as_ref().ok_or(SwapError::WrongAsset)?;
                 require_keys_eq!(
                     dest.key(),
                     get_associated_token_address(&self.swap.taker, &mint_key),
@@ -242,9 +242,7 @@ impl<'info> Settle<'info> {
             }
             Party::Treasury if burn => self.vault_burn(p.amount)?,
             Party::Treasury => {
-                let Some(dest) = &self.treasury_vault else {
-                    return Ok(false);
-                };
+                let dest = self.treasury_vault.as_ref().ok_or(SwapError::WrongAsset)?;
                 let (expected, _) =
                     Pubkey::find_program_address(&[b"treasury_vault", mint_key.as_ref()], &crate::ID);
                 require_keys_eq!(dest.key(), expected, SwapError::Unauthorized);

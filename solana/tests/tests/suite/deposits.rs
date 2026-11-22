@@ -348,3 +348,59 @@ fn publish_evidence_is_the_claimers_and_must_open_the_commitment() {
         assert_eq!(w.swap(&fx.pda).unwrap().flags & 0b10, 0b10);
     }
 }
+
+#[test]
+fn notice_json_commitments_and_the_binding_to_the_swap() {
+    let v = vectors("notice");
+    assert_eq!(v["ciphertext_len"], 104);
+    let mut checked = 0;
+    for case in v["cases"].as_array().unwrap() {
+        let (i, out) = (&case["input"], &case["output"]);
+        let (Some(txid), Some(commitment)) = (i.get("txid"), out.get("commitment")) else { continue };
+        let (txid, view, swap_ref) = (h32(txid), h32(&i["view"]), h32(&i["swap_ref"]));
+        // The harness's formula is the vectors'.
+        assert_eq!(
+            notice_commitment(&solana_pubkey::Pubkey::new_from_array(swap_ref), &txid, &view),
+            h32(commitment),
+            "{}",
+            case["name"]
+        );
+        let Some(ct) = out.get("ciphertext") else {
+            checked += 1;
+            continue;
+        };
+        let ct: [u8; 104] = h(ct).try_into().unwrap();
+
+        // On-chain the commitment is over this swap's PDA. Post the vector's opening and
+        // ciphertext for a real swap, refund, and withhold with it.
+        let mut w = World::new();
+        let (m, mut fx) = w.swap_at(ASSET_SOL, DIR_A, &Terms::default(), Stage::Active);
+        let op = m.operator.insecure_clone();
+        let real = notice_commitment(&fx.pda, &txid, &view);
+        ok(w.call(&m, &fx, &Call::PostNotice { commitment: real, ct }, &op));
+        fx.notice = Some((txid, view));
+        let s = w.swap(&fx.pda).unwrap();
+        assert_eq!((s.notice_commitment, s.notice_ct.as_slice()), (real, &ct[..]), "the notice is account state");
+        let session = fx.session.insecure_clone();
+        ok(w.call(&m, &fx, &Call::Refund(fx.s_t), &session));
+        ok(w.would(&m, &fx, &Call::Withhold(Some((txid, view))), &op));
+
+        // The same opening does not open a commitment made for another swap (the vectors'
+        // placeholder swap_ref), a wrong txid or a wrong view share.
+        let (m2, fx2) = w.swap_at(ASSET_SOL, DIR_A, &Terms::default(), Stage::Active);
+        let op2 = m2.operator.insecure_clone();
+        ok(w.call(&m2, &fx2, &Call::PostNotice { commitment: h32(commitment), ct }, &op2));
+        let session2 = fx2.session.insecure_clone();
+        ok(w.call(&m2, &fx2, &Call::Refund(fx2.s_t), &session2));
+        assert_err(w.call(&m2, &fx2, &Call::Withhold(Some((txid, view))), &op2), "EvidenceMismatch");
+        let mut other = txid;
+        other[0] ^= 1;
+        assert_err(w.call(&m, &fx, &Call::Withhold(Some((other, view))), &op), "EvidenceMismatch");
+        let mut other = view;
+        other[31] ^= 1;
+        assert_err(w.call(&m, &fx, &Call::Withhold(Some((txid, other))), &op), "EvidenceMismatch");
+        ok(w.call(&m, &fx, &Call::Withhold(Some((txid, view))), &op));
+        checked += 1;
+    }
+    assert_eq!(checked, 4);
+}
