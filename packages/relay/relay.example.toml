@@ -1,0 +1,42 @@
+# Example relay.toml for @xmrswap/relay (SPEC 6.5). Every key is optional; the values shown are
+# the defaults unless a comment says otherwise. An environment variable overrides the file.
+# The file is found through RELAY_CONFIG, or as ./relay.toml in the working directory.
+
+# Address the relay listens on. Localhost only unless changed on purpose.       env: RELAY_BIND
+bind = "127.0.0.1:8787"
+
+# Tor's SOCKS5 proxy. Host names are resolved by Tor, never by the relay.       env: RELAY_TOR_SOCKS
+tor_socks = "127.0.0.1:9050"
+
+# NAME of the environment variable holding the Solana RPC URL (the URL itself is a secret and
+# never goes in this file). Without it the registry is empty and every forward is refused.
+#                                                                         env: RELAY_SOLANA_RPC_URL_ENV
+solana_rpc_url_env = "SOLANA_RPC_URL"
+
+# The swap program whose maker accounts form the registry. No default: use the id pinned in
+# the release.                                                                  env: RELAY_PROGRAM_ID
+# program_id = "<program id>"
+
+# Monero nodes served at POST /monero/<n>/... (n counts from 0). Default: none (proxy off).
+# http(s)://host[:port] only. A .onion node is reached through Tor.            env: RELAY_MONERO_NODES (comma-separated)
+# monero_nodes = ["http://127.0.0.1:18081"]
+
+# Largest Monero node response the proxy carries.                      env: RELAY_MONERO_MAX_RESPONSE_BYTES
+monero_max_response_bytes = 16777216
+
+# Origins allowed to call the relay from a browser page served elsewhere; "*" = any.
+# Default: none (same-origin only, e.g. behind one reverse proxy with the UI).  env: RELAY_ALLOWED_ORIGINS
+allowed_origins = []
+
+# Reverse proxies in front of the relay whose X-Forwarded-For is trusted for the per-IP
+# limits. 0 = use the TCP peer address.                                         env: RELAY_TRUST_PROXY_HOPS
+trust_proxy_hops = 0
+
+# Log client IPs and the onion addresses they contact. Off by default; the relay prints a
+# warning at start when it is on. Bodies are never logged.                      env: RELAY_DEBUG_LOG
+debug_log = false
+
+[rate_limit]
+# Per client IP, per minute.          env: RELAY_RATE_REQUESTS_PER_MINUTE, RELAY_RATE_BYTES_PER_MINUTE
+requests_per_minute = 60
+bytes_per_minute = 4194304

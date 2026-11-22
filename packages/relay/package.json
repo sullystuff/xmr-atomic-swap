@@ -3,14 +3,33 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "description": "Tor relay for the taker web UI and the allow-listed Monero node proxy (SPEC 6.5)",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "xmrswap-relay": "./dist/main.js"
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "build": "echo '@xmrswap/relay: not implemented yet (owned by WP6)' && exit 1",
-    "test": "echo '@xmrswap/relay: not implemented yet (owned by WP6)' && exit 1"
+    "build": "tsc -p tsconfig.json",
+    "prepare": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "test": "tsc -p tsconfig.test.json && vitest run"
   },
   "dependencies": {
     "@xmrswap/protocol": "workspace:*",
     "@solana/web3.js": "1.98.4",
     "express": "4.22.3",
+    "smol-toml": "1.9.1",
     "ws": "8.23.0",
     "socks": "2.8.11"
   },
