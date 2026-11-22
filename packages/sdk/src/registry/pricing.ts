@@ -1,32 +1,19 @@
 /**
  * What a swap of a given size costs against an offer or a quote (SPEC 3.1 arithmetic). Rounding
- * (`payAmount`, `receiveAmount`, `depositOf`, `feeOf`) is the core's; only the tier lookup lives
- * here, because the frozen wasm API does not export it. It is tested against `amounts.json`.
+ * (`payAmount`, `receiveAmount`, `depositOf`, `feeOf`) and the tier lookup are the core's.
  */
-import { type EthQuote, depositOf, feeOf, payAmount, receiveAmount } from '@xmrswap/core-wasm';
+import { type EthQuote, depositOf, feeOf, payAmount, receiveAmount, tierValue as coreTierValue } from '@xmrswap/core-wasm';
 import { CHAIN_CONSTS, type ChainName, type Offer } from '@xmrswap/protocol';
 import { SdkError } from '../util.js';
 
 /**
- * The value of the highest used tier with `xmr >= above[i]`. Tiers are well formed when
- * `above[0] == 0`, tier 0 is used (nonzero value), used thresholds strictly increase and unused
- * tiers trail (the threshold of an unused tier is ignored). Anything else is `TiersInvalid`.
+ * The value of the highest used tier with `xmr >= above[i]` (the core's `tierValue`). Tiers are
+ * well formed when `above[0] == 0`, tier 0 is used (nonzero value), used thresholds strictly
+ * increase and unused tiers trail. Anything else throws with code `TiersInvalid`.
  */
 export function tierValue(above: readonly bigint[], values: readonly bigint[], xmr: bigint): bigint {
   if (above.length !== 3 || values.length !== 3) throw new SdkError('TiersInvalid', 'three tiers are expected');
-  if (above[0] !== 0n || values[0] === 0n) throw new SdkError('TiersInvalid', 'tier 0 must start at zero and be used');
-  let value = values[0]!;
-  let ended = false;
-  for (let i = 1; i < 3; i++) {
-    if (values[i] === 0n) {
-      ended = true;
-      continue;
-    }
-    if (ended) throw new SdkError('TiersInvalid', 'a used tier follows an unused one');
-    if (above[i]! <= above[i - 1]!) throw new SdkError('TiersInvalid', 'tier thresholds must strictly increase');
-    if (xmr >= above[i]!) value = values[i]!;
-  }
-  return value;
+  return coreTierValue([above[0]!, above[1]!, above[2]!], [values[0]!, values[1]!, values[2]!], xmr);
 }
 
 /** The terms a swap of `xmr` piconero gets. */
@@ -47,6 +34,8 @@ function price(chain: ChainName, direction: number, xmr: bigint, tierXmr: readon
   const p = tierValue(tierXmr, tierPrice, xmr);
   const depth = Number(tierValue(depthXmr, depths.map(BigInt), xmr));
   const amount = direction === 0 ? payAmount(xmr, p, chain) : receiveAmount(xmr, p, chain);
+  // Both contracts refuse a swap of nothing: a dust take that rounds to zero would lock XMR against no escrow.
+  if (xmr === 0n || amount === 0n) throw new SdkError('AmountOutOfRange', 'a swap of zero XMR, or one whose amount rounds to zero, is refused');
   return { price: p, depth, amount, deposit: depositOf(amount, depBps), fee: feeOf(amount, CHAIN_CONSTS[chain].feeBps) };
 }
 

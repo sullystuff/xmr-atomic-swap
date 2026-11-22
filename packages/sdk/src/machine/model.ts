@@ -1,18 +1,13 @@
 /**
- * The state machine of SPEC section 3 as a pure function, a line-for-line port of the reference
- * model `swap_core::model::apply`. It has no I/O and no cryptography: a secret is "it opens the
- * commitment or it does not", evidence and the open hash likewise.
- *
- * The flows (`../flows`) decide with this model and nothing else, so what the SDK proposes is
- * what the contracts accept. `interfaces/vectors/transitions.json` is replayed against it row by
- * row in the unit tests; the conventions it encodes (check order, `TooEarly` versus `TooLate`,
- * "closed" rows) are those of `docs/research/wp1-deviations.md` M1 to M12.
- *
- * All per-swap arithmetic (bounds, `Δ_cut`, deposit, fee, split) comes from `@xmrswap/core-wasm`;
- * nothing of SPEC section 2 or the rounding rules is re-derived here.
+ * The state machine of SPEC section 3, as the flows and the UIs see it. The machine itself is
+ * the reference model of `crates/swap-core`, reached through `@xmrswap/core-wasm`
+ * (`modelApply`): there is one implementation, and the two contracts replay the same vectors
+ * against it. This module only translates between the SDK's shapes (camelCase, `bigint`) and
+ * the model's (the field names of `transitions.json`), and derives the deadlines that are plain
+ * sums of stored fields.
  */
-import { deadlines, depositOf, feeOf, splitOf } from '@xmrswap/core-wasm';
-import { CHAIN_CONSTS, type ChainConsts, type ChainName, COUNTER, COUNTER_NONE, COUNTER_SLOTS, DAY_SECS, DEPOSIT_STATE, SWAP_FLAG, SWAP_STATE } from '@xmrswap/protocol';
+import { CoreError, type ModelCall as CoreCall, type ModelEffects as CoreEffects, type ModelSwap as CoreSwap, modelApply } from '@xmrswap/core-wasm';
+import { CHAIN_CONSTS, type ChainConsts, type ChainName, COUNTER_NONE, COUNTER_SLOTS, DAY_SECS, PICONERO_PER_XMR, SWAP_STATE, SWAP_STATE_NAMES } from '@xmrswap/protocol';
 
 export type Role = 'taker' | 'session' | 'operator' | 'owner' | 'anyone';
 export type Party = 'taker' | 'maker' | 'treasury';
@@ -104,8 +99,10 @@ export interface OpenArgs extends SwapParams {
   offerMode: number;
   /** A valid advance approval is presented. */
   approval: boolean;
-  /** The escrowed amount (A: paid by the taker now; B: funded by the maker later). */
+  /** The escrowed amount (A: paid by the taker now; B: funded by the maker later). Zero is refused. */
   amount: bigint;
+  /** The swap's size in piconero. Zero is refused (`AmountOutOfRange`). Defaults to 1 XMR when a caller only models the escrow. */
+  xmr?: bigint;
 }
 
 export type EvidenceArg = 'absent' | 'opens' | 'mismatch';
@@ -183,6 +180,7 @@ export type ModelErrorName =
   | 'ApprovalRequired'
   | 'TooManyPending'
   | 'MathOverflow'
+  | 'AmountOutOfRange'
   | 'DepositTooHigh'
   | 'ApprovalWindowOutOfRange'
   | 'NoticeWindowOutOfRange'
@@ -204,16 +202,7 @@ export class ModelError extends Error {
   }
 }
 
-const fail = (code: ModelErrorName): never => {
-  throw new ModelError(code);
-};
-const auth = (ok: boolean): void => void (ok || fail('Unauthorized'));
-const inState = (ok: boolean): void => void (ok || fail('BadState'));
-const gateBefore = (now: bigint, limit: bigint): void => void (now < limit || fail('TooLate'));
-const gateFrom = (now: bigint, start: bigint): void => void (now >= start || fail('TooEarly'));
 const min = (a: bigint, b: bigint): bigint => (a < b ? a : b);
-const has = (s: ModelSwap, flag: number): boolean => (s.flags & flag) !== 0;
-const isTaker = (r: Role): boolean => r === 'taker' || r === 'session';
 
 /** `T_nl = t_final − d_c − w_c − 86,400`: the latest notice in direction B. */
 export const tNl = (s: ModelSwap): bigint => s.tFinal - BigInt(s.dC) - BigInt(s.wC) - BigInt(DAY_SECS);
@@ -238,377 +227,132 @@ export function pendingKind(chain: ChainName, direction: DirectionCode, offerMod
   return { pending, effectiveMode };
 }
 
+// ------------------------------------------------------------------ translation to and from the core's model
+
+function toCore(s: ModelSwap): CoreSwap | null {
+  if (s.state === SWAP_STATE.NONE) return null;
+  return {
+    state: SWAP_STATE_NAMES[s.state] as CoreSwap['state'],
+    state_code: s.state,
+    direction: s.direction === 0 ? 'A' : 'B',
+    mode: s.mode,
+    outcome: s.outcome,
+    deposit_state: s.depositState,
+    depth: s.depth,
+    flags: s.flags,
+    amount: s.amount.toString(),
+    deposit: s.deposit.toString(),
+    fee_bps: s.feeBps,
+    w_n: s.wN,
+    d_c: s.dC,
+    w_c: s.wC,
+    t_lock: Number(s.tLock),
+    t_pending_deadline: Number(s.tPendingDeadline),
+    t_active: Number(s.tActive),
+    t_note_deadline: Number(s.tNoteDeadline),
+    t_notice: Number(s.tNotice),
+    t_cut: Number(s.tCut),
+    t_claim_open: Number(s.tClaimOpen),
+    t_ready: Number(s.tReady),
+    t_claim_deadline: Number(s.tClaimDeadline),
+    t_final: Number(s.tFinal),
+    t_refund: Number(s.tRefund),
+    t_settled: Number(s.tSettled),
+    owed_taker: s.owedTaker.toString(),
+    owed_maker: s.owedMaker.toString(),
+    owed_treasury: s.owedTreasury.toString(),
+  };
+}
+
+function fromCore(j: CoreSwap): ModelSwap {
+  return {
+    state: j.state_code,
+    direction: j.direction === 'A' ? 0 : 1,
+    mode: j.mode,
+    outcome: j.outcome,
+    depositState: j.deposit_state,
+    depth: j.depth,
+    flags: j.flags,
+    amount: BigInt(j.amount),
+    deposit: BigInt(j.deposit),
+    feeBps: j.fee_bps,
+    wN: j.w_n,
+    dC: j.d_c,
+    wC: j.w_c,
+    tLock: BigInt(j.t_lock),
+    tPendingDeadline: BigInt(j.t_pending_deadline),
+    tActive: BigInt(j.t_active),
+    tNoteDeadline: BigInt(j.t_note_deadline),
+    tNotice: BigInt(j.t_notice),
+    tCut: BigInt(j.t_cut),
+    tClaimOpen: BigInt(j.t_claim_open),
+    tReady: BigInt(j.t_ready),
+    tClaimDeadline: BigInt(j.t_claim_deadline),
+    tFinal: BigInt(j.t_final),
+    tRefund: BigInt(j.t_refund),
+    tSettled: BigInt(j.t_settled),
+    owedTaker: BigInt(j.owed_taker),
+    owedMaker: BigInt(j.owed_maker),
+    owedTreasury: BigInt(j.owed_treasury),
+  };
+}
+
+function callToCore(call: Call): CoreCall {
+  switch (call.name) {
+    case 'lock':
+    case 'take': {
+      const a = call.args;
+      return {
+        call: call.name,
+        args: { direction: call.name === 'lock' ? 'A' : 'B', offer_mode: a.offerMode, approval: a.approval, xmr: (a.xmr ?? PICONERO_PER_XMR).toString(), amount: a.amount.toString(), w_a: a.wA, w_n: a.wN, d_c: a.dC, w_c: a.wC, w_f: a.wF, depth: a.depth, dep_bps: a.depBps },
+      };
+    }
+    case 'approve':
+    case 'fund':
+      return { call: call.name, args: { open_ok: call.openOk !== false } };
+    case 'reject':
+      return { call: 'reject', args: { open_ok: call.openOk !== false, reason: call.reason } };
+    case 'refund':
+    case 'claim':
+      return { call: call.name, args: { secret_ok: call.secretOk !== false } };
+    case 'withhold':
+      return { call: 'withhold', args: { evidence: call.evidence ?? 'opens' } };
+    case 'publish_evidence':
+      return { call: 'publish_evidence', args: { opens: call.opens !== false } };
+    case 'withdraw_owed':
+      return { call: 'withdraw_owed', args: { who: call.who } };
+    default:
+      return { call: call.name };
+  }
+}
+
+/** The model's own error name for a chain's (Solana calls `BadSecret` `ScalarMismatch`). */
+const modelName = (code: string): ModelErrorName => (code === 'ScalarMismatch' ? 'BadSecret' : (code as ModelErrorName));
+
 /**
  * Apply one call. `swap` is `NO_SWAP` for `lock` and `take`. Returns the effects or throws a
- * `ModelError`. Check order: direction, caller, state and open hash, time gate, then secret or
- * evidence.
+ * `ModelError`. This is the reference model of the core: check order, error names and every
+ * amount are the ones the contracts are tested against.
  */
 export function apply(chain: ChainName, swap: ModelSwap, call: Call, caller: Role, now: bigint, env: Env = ENV_OK): Effects {
-  const c = CHAIN_CONSTS[chain];
-  const s = swap;
-  const n: ModelSwap = { ...s };
-  const payouts: Payout[] = [];
-  const fx: Effects = { swap: n, payouts, escrowIn: 0n, counter: null, responseSecs: null, volume: 0n, withheldVolume: 0n, openPending: 0, closed: false };
-  const isA = s.direction === 0;
-  // The locker escrows the chain asset and can refund it; the claimer locks XMR and can claim.
-  const locker = (r: Role) => (isA ? isTaker(r) : r === 'operator');
-  const claimer = (r: Role) => (isA ? r === 'operator' : isTaker(r));
-  const can = (p: Party) => (p === 'taker' ? env.takerCanReceive : p === 'maker' ? env.makerCanReceive : env.treasuryCanReceive);
-  const park = (to: Party, amount: bigint) => {
-    if (amount === 0n) return;
-    if (to === 'taker') n.owedTaker += amount;
-    else if (to === 'maker') n.owedMaker += amount;
-    else n.owedTreasury += amount;
-    payouts.push({ to, amount, parked: true });
-  };
-  const pay = (to: Party, amount: bigint) => {
-    if (amount === 0n) return;
-    if (!can(to)) park(to, amount);
-    else payouts.push({ to, amount, parked: false });
-  };
-  const settle = (counter: number) => {
-    n.state = SWAP_STATE.DONE;
-    n.outcome = counter;
-    n.tSettled = now;
-    fx.counter = counter;
-  };
-  const close = (counter: number) => {
-    settle(counter);
-    fx.closed = !payouts.some((p) => p.parked);
-  };
-
-  if (call.name === 'lock' || call.name === 'take') {
-    const a = call.args;
-    const direction: DirectionCode = call.name === 'lock' ? 0 : 1;
-    inState(s.state === SWAP_STATE.NONE);
-    auth(caller === 'taker');
-    if (a.offerMode > 3 || a.offerMode < 0) fail('BadState');
-    if (a.offerMode === 2 && !a.approval) fail('ApprovalRequired');
-    const { pending, effectiveMode } = pendingKind(chain, direction, a.offerMode, a.approval);
-    const d = deadlines({ chain, pending, wA: a.wA, wN: a.wN, dC: a.dC, wC: a.wC, wF: a.wF, depth: a.depth, depBps: a.depBps, tLock: now });
-    if (d.boundError) fail(d.boundError as ModelErrorName);
-    if (a.amount > MAX_AMOUNT[chain]) fail('MathOverflow');
-    if (pending !== 'none' && env.openPending >= c.maxOpenPending) fail('TooManyPending');
-    n.direction = direction;
-    n.mode = effectiveMode;
-    n.outcome = COUNTER_NONE;
-    n.depth = a.depth;
-    n.amount = a.amount;
-    n.deposit = depositOf(a.amount, a.depBps);
-    n.feeBps = c.feeBps;
-    n.wN = a.wN;
-    n.dC = a.dC;
-    n.wC = a.wC;
-    n.tLock = now;
-    n.tFinal = now + BigInt(a.wF);
-    if (pending === 'none') {
-      n.state = SWAP_STATE.ACTIVE;
-      n.tActive = now;
-      n.tNoteDeadline = now + BigInt(a.wN);
-    } else {
-      n.state = SWAP_STATE.PENDING;
-      n.tPendingDeadline = now + BigInt(d.wP);
-      fx.openPending = 1;
-    }
-    if (direction === 0) {
-      fx.escrowIn = a.amount;
-      fx.counter = COUNTER.locks;
-    } else {
-      fx.escrowIn = n.deposit;
-      fx.counter = COUNTER.takes;
-    }
-    return fx;
+  let fx: CoreEffects;
+  try {
+    fx = modelApply(chain, toCore(swap), callToCore(call), caller, now, { taker_can_receive: env.takerCanReceive, maker_can_receive: env.makerCanReceive, treasury_can_receive: env.treasuryCanReceive, open_pending: env.openPending });
+  } catch (e) {
+    if (e instanceof CoreError) throw new ModelError(modelName(e.code));
+    throw e;
   }
-
-  inState(s.state !== SWAP_STATE.NONE);
-  const texp = tExp(s, c);
-  // What a pending exit returns to the taker.
-  const pendingStake = isA ? s.amount : s.deposit;
-  const S = SWAP_STATE;
-
-  switch (call.name) {
-    case 'approve':
-    case 'fund': {
-      if (call.name === 'approve' ? !isA : isA) fail('WrongDirection');
-      auth(caller === 'operator');
-      inState(s.state === S.PENDING && call.openOk !== false);
-      gateBefore(now, s.tPendingDeadline);
-      n.state = S.ACTIVE;
-      n.tActive = now;
-      n.tNoteDeadline = now + BigInt(s.wN);
-      if (call.name === 'fund') fx.escrowIn = s.amount;
-      fx.counter = COUNTER.approvals;
-      fx.responseSecs = now - s.tLock;
-      fx.openPending = -1;
-      break;
-    }
-    case 'reject': {
-      auth(caller === 'operator');
-      inState(s.state === S.PENDING && call.openOk !== false);
-      // B3: window mode only; always available under EXPLICIT_APPROVE.
-      inState(isA || s.mode === 1 || c.explicitApprove);
-      pay('taker', pendingStake);
-      close(call.reason === 0 ? COUNTER.rejections : COUNTER.rejections_no_fault);
-      fx.openPending = -1;
-      break;
-    }
-    case 'cancel_pending': {
-      auth(isTaker(caller));
-      inState(s.state === S.PENDING);
-      pay('taker', pendingStake);
-      close(COUNTER.pending_cancels);
-      fx.openPending = -1;
-      break;
-    }
-    case 'expire_pending': {
-      inState(s.state === S.PENDING);
-      gateFrom(now, s.tPendingDeadline);
-      pay('taker', pendingStake);
-      // A lapsed take outside window mode is the maker's fault where there is no explicit approval step.
-      const fault = !isA && s.mode !== 1 && c.lapseIsFault;
-      close(fault ? COUNTER.missed_funds : COUNTER.approval_timeouts);
-      fx.openPending = -1;
-      break;
-    }
-    case 'post_notice': {
-      auth(claimer(caller));
-      inState(s.state === S.ACTIVE);
-      if (isA) gateBefore(now, min(s.tNoteDeadline, s.tFinal));
-      else {
-        // A late notice is still accepted until T_nl.
-        gateBefore(now, min(tNl(s), s.tFinal));
-        if (now >= s.tNoteDeadline) n.flags |= SWAP_FLAG.LATE_NOTICE;
-      }
-      n.state = S.NOTICED;
-      n.flags |= SWAP_FLAG.NOTICE;
-      n.tNotice = now;
-      n.tCut = now + deltaCut(s.depth, c);
-      n.tClaimOpen = now + BigInt(s.dC);
-      fx.counter = COUNTER.notices;
-      break;
-    }
-    case 'set_ready': {
-      auth(locker(caller));
-      inState(s.state === S.NOTICED);
-      gateFrom(now, tReadyMin(s, c));
-      gateBefore(now, min(s.tClaimOpen, s.tFinal));
-      n.state = S.READY;
-      n.tReady = now;
-      n.tClaimDeadline = now + BigInt(s.wC);
-      fx.counter = COUNTER.readies;
-      break;
-    }
-    case 'abort': {
-      auth(claimer(caller));
-      if (isA) {
-        if (s.state === S.ACTIVE) {
-          gateBefore(now, min(s.tNoteDeadline, s.tFinal));
-          pay('taker', s.amount);
-          close(COUNTER.aborts_pre_notice);
-        } else if (s.state === S.NOTICED) {
-          gateBefore(now, s.tFinal);
-          if (now < s.tClaimOpen) {
-            n.state = S.ABORTED_FREE;
-            fx.counter = COUNTER.aborts_early;
-          } else {
-            n.state = S.ABORTED_HOLD;
-            fx.counter = COUNTER.aborts_late;
-          }
-        } else if (s.state === S.READY) {
-          gateBefore(now, s.tFinal);
-          n.state = S.ABORTED_FREE;
-          fx.counter = COUNTER.missed_claims;
-        } else fail('BadState');
-      } else {
-        inState(s.state === S.NOTICED || s.state === S.READY);
-        gateBefore(now, s.tFinal);
-        n.state = S.ABORTED_HOLD;
-        fx.counter = COUNTER.taker_aborts;
-      }
-      break;
-    }
-    case 'refund_unnoticed': {
-      if (!isA) fail('WrongDirection');
-      inState(s.state === S.ACTIVE);
-      gateFrom(now, s.tNoteDeadline);
-      pay('taker', s.amount);
-      close(COUNTER.missed_notices);
-      break;
-    }
-    case 'expire_unnoticed': {
-      if (isA) fail('WrongDirection');
-      inState(s.state === S.ACTIVE);
-      gateFrom(now, texp);
-      pay('taker', s.deposit);
-      // The maker's escrow is parked, never pushed: nobody with authority over it is present.
-      park('maker', s.amount);
-      settle(COUNTER.expired_refunds);
-      break;
-    }
-    case 'refund': {
-      auth(c.openSecretCalls || locker(caller));
-      const row = refundRow(s, now, texp);
-      if (call.secretOk === false) fail('BadSecret');
-      n.flags |= SWAP_FLAG.REVEALED | SWAP_FLAG.REVEALER_LOCKER;
-      n.tRefund = now;
-      const held = row.held && s.deposit > 0n;
-      if (isA) pay('taker', held ? s.amount - s.deposit : s.amount); // D is part of amount
-      else {
-        pay('maker', s.amount);
-        if (!held) pay('taker', s.deposit);
-      }
-      if (held) {
-        n.state = S.HOLD;
-        n.depositState = DEPOSIT_STATE.HELD;
-        fx.counter = row.counter;
-      } else settle(row.counter);
-      break;
-    }
-    case 'claim': {
-      auth(c.openSecretCalls || claimer(caller));
-      const counter = claimRow(s, now, texp);
-      if (call.secretOk === false) fail('BadSecret');
-      const fee = feeOf(s.amount, s.feeBps);
-      n.flags |= SWAP_FLAG.REVEALED;
-      if (isA) pay('maker', s.amount - fee);
-      else pay('taker', s.amount - fee + s.deposit);
-      pay('treasury', fee);
-      fx.volume = s.amount;
-      settle(counter);
-      break;
-    }
-    case 'release_deposit': {
-      if (s.state === S.HOLD) {
-        if (caller !== 'operator') gateFrom(now, tHold(s, c));
-        pay('taker', s.deposit);
-        n.depositState = DEPOSIT_STATE.RETURNED;
-        settle(COUNTER.deposits_returned);
-      } else if (s.state === S.WITHHELD) {
-        auth(caller === 'operator');
-        pay('taker', s.deposit);
-        n.depositState = DEPOSIT_STATE.RELEASED;
-        settle(COUNTER.releases);
-      } else fail('BadState');
-      break;
-    }
-    case 'withhold': {
-      auth(caller === 'operator');
-      inState(s.state === S.HOLD);
-      // Refused at or after T_hold even if nobody has cranked release_deposit.
-      gateBefore(now, tHold(s, c));
-      if (isA && has(s, SWAP_FLAG.NOTICE)) {
-        const ev = call.evidence ?? 'opens';
-        if (ev === 'absent') fail('EvidenceRequired');
-        if (ev === 'mismatch') fail('EvidenceMismatch');
-        n.flags |= SWAP_FLAG.EVIDENCE;
-      }
-      n.state = S.WITHHELD;
-      n.depositState = DEPOSIT_STATE.WITHHELD;
-      fx.counter = COUNTER.withholds;
-      fx.withheldVolume = s.deposit;
-      break;
-    }
-    case 'split_deposit': {
-      inState(s.state === S.WITHHELD);
-      gateFrom(now, tSplit(s, c));
-      const { toTaker, toTreasury } = splitOf(s.deposit);
-      pay('taker', toTaker);
-      pay('treasury', toTreasury);
-      n.depositState = DEPOSIT_STATE.SPLIT;
-      settle(COUNTER.splits);
-      break;
-    }
-    case 'publish_evidence': {
-      auth(claimer(caller));
-      // "NOTICED or later, any state including DONE": a notice is on record.
-      inState(has(s, SWAP_FLAG.NOTICE));
-      if (call.opens === false) fail('EvidenceMismatch');
-      n.flags |= SWAP_FLAG.EVIDENCE;
-      break;
-    }
-    case 'withdraw_owed': {
-      const who = call.who;
-      const ok = who === 'taker' ? caller === 'taker' : who === 'maker' ? caller === 'owner' : true;
-      const owed = who === 'taker' ? s.owedTaker : who === 'maker' ? s.owedMaker : s.owedTreasury;
-      auth(ok);
-      if (owed === 0n) fail('NothingOwed');
-      if (who === 'taker') n.owedTaker = 0n;
-      else if (who === 'maker') n.owedMaker = 0n;
-      else n.owedTreasury = 0n;
-      payouts.push({ to: who, amount: owed, parked: false });
-      break;
-    }
-  }
-  return fx;
-}
-
-/** Which refund row applies (A10a-g, B9a-h): whether the deposit is held and which counter moves. Throws when no row is open. */
-function refundRow(s: ModelSwap, now: bigint, texp: bigint): { held: boolean; counter: number } {
-  const S = SWAP_STATE;
-  const C = COUNTER;
-  const expiry = (): { held: boolean; counter: number } => {
-    // Between the end of the last pre-expiry window and T_exp a refund is TooLate.
-    if (now < texp) fail('TooLate');
-    return { held: false, counter: C.expired_refunds }; // A10f, B9g
+  return {
+    swap: fromCore(fx.swap),
+    payouts: fx.payouts.map((p) => ({ to: p.to, amount: BigInt(p.amount), parked: p.parked })),
+    escrowIn: BigInt(fx.escrow_in),
+    counter: fx.counter,
+    responseSecs: fx.response_secs === null ? null : BigInt(fx.response_secs),
+    volume: BigInt(fx.volume),
+    withheldVolume: BigInt(fx.withheld_volume),
+    openPending: fx.open_pending as -1 | 0 | 1,
+    closed: fx.closed,
   };
-  if (s.direction === 0) {
-    switch (s.state) {
-      case S.ACTIVE: // a keyed refund is valid in ACTIVE at every instant
-        return now < s.tNoteDeadline ? { held: true, counter: C.taker_cancels_approved } : { held: false, counter: C.missed_notices }; // A10a, A10g
-      case S.NOTICED:
-        return now < min(s.tClaimOpen, s.tFinal) ? { held: true, counter: C.taker_refunds_noticed } : expiry(); // A10b
-      case S.READY:
-        if (now < s.tClaimDeadline) fail('TooEarly');
-        return now < s.tFinal ? { held: false, counter: C.missed_claims } : expiry(); // A10e
-      case S.ABORTED_HOLD:
-        return now < s.tFinal ? { held: true, counter: C.refunds_after_abort } : expiry(); // A10c
-      case S.ABORTED_FREE:
-        return now < s.tFinal ? { held: false, counter: C.refunds_after_abort } : expiry(); // A10d
-      default:
-        return fail('BadState');
-    }
-  }
-  switch (s.state) {
-    case S.ACTIVE:
-      return now < s.tNoteDeadline ? { held: false, counter: C.backouts_pre_notice } : { held: true, counter: C.taker_no_notice }; // B9a, B9b
-    case S.NOTICED:
-      if (now < min(s.tCut, s.tFinal)) return has(s, SWAP_FLAG.LATE_NOTICE) ? { held: true, counter: C.taker_no_notice } : { held: false, counter: C.backouts_post_notice }; // B9h, B9c
-      return now < min(s.tClaimOpen, s.tFinal) ? { held: true, counter: C.refunds_unconfirmed } : expiry(); // B9d
-    case S.READY:
-      if (now < s.tClaimDeadline) fail('TooEarly');
-      return now < s.tFinal ? { held: true, counter: C.taker_missed_claims } : expiry(); // B9e
-    case S.ABORTED_HOLD:
-      return now < s.tFinal ? { held: true, counter: C.refunds_after_abort } : expiry(); // B9f
-    default:
-      return fail('BadState');
-  }
-}
-
-/** Which claim row applies (A11a-c, B10a-c): the counter. Throws when no row is open. */
-function claimRow(s: ModelSwap, now: bigint, texp: bigint): number {
-  const S = SWAP_STATE;
-  const C = COUNTER;
-  const afterFinal = (): number => {
-    // [T_final, T_exp): the claimer may claim in any post-notice state.
-    gateBefore(now, texp);
-    return C.claims_after_final; // A11c, B10c
-  };
-  switch (s.state) {
-    case S.READY:
-      if (now < min(s.tClaimDeadline, s.tFinal)) return C.completed; // A11a, B10a
-      if (now < s.tFinal) fail('TooLate');
-      return afterFinal();
-    case S.NOTICED:
-      if (now < s.tClaimOpen) fail('TooEarly');
-      if (now < s.tFinal) return s.direction === 0 ? C.claims_without_ready : C.taker_claims_without_ready; // A11b, B10b
-      return afterFinal();
-    case S.ABORTED_FREE:
-    case S.ABORTED_HOLD:
-      if (now < s.tFinal) fail('TooEarly');
-      return afterFinal();
-    default:
-      return fail('BadState');
-  }
 }
 
 /** Whether a call would succeed with every destination able to receive. */

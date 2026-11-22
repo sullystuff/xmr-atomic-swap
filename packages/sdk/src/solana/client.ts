@@ -4,7 +4,7 @@
  * polling and subscription watchers. Everything goes through a `SolanaTransport`.
  */
 import { ed25519 } from '@noble/curves/ed25519.js';
-import { Keypair, PublicKey, type Transaction, type TransactionInstruction } from '@solana/web3.js';
+import { AddressLookupTableAccount, Keypair, PublicKey, Transaction, type TransactionInstruction, type VersionedTransaction } from '@solana/web3.js';
 import {
   ACCOUNTS,
   type AccountName,
@@ -29,7 +29,7 @@ import { type Bytes, SdkError, bytesEqual, leToBig } from '../util.js';
 import { XmrSwapProgram } from './instructions.js';
 import { type Key, ethBoardPda, pk } from './pdas.js';
 import { type Level, type ProgramFilter, type SolanaAccount, type SolanaTransport, matchesFilters } from './transport.js';
-import { SIMULATION_CU_LIMIT, assertFits, cuLimitFromSimulation, legacyTransaction } from './tx.js';
+import { SIMULATION_CU_LIMIT, assertFits, cuLimitFromSimulation, legacyTransaction, v0Transaction } from './tx.js';
 
 /** Anything that can sign a transaction message: a derived session key, the daemon's operator key, a test key. */
 export interface SolanaSigner {
@@ -208,6 +208,31 @@ export class SolanaClient {
   }
 
   /**
+   * Every `LinkChanged` event of a maker, oldest first, read from the transactions that mention
+   * its PDA. Feed it to `linkIntervals` / `rememberPastLinks` so that an unlink does not shed
+   * history. Transaction history can be pruned by an RPC node; what is found is a lower bound.
+   */
+  async linkChanges(makerPda: Key): Promise<{ old: Bytes; next: Bytes; effectiveAt: bigint }[]> {
+    const pda = pk(makerPda).toBase58();
+    const out: { old: Bytes; next: Bytes; effectiveAt: bigint }[] = [];
+    let before: string | undefined;
+    const sigs: { signature: string; err: unknown | null }[] = [];
+    for (;;) {
+      const page = await this.transport.getSignaturesForAddress(pda, { limit: 1000, ...(before ? { before } : {}) });
+      sigs.push(...page);
+      if (page.length < 1000) break;
+      before = page[page.length - 1]!.signature;
+    }
+    for (const s of sigs.reverse()) {
+      if (s.err) continue;
+      const tx = await this.transport.getTransaction(s.signature);
+      if (!tx || tx.err) continue;
+      for (const e of parseEventLogs(tx.logs)) if (e.name === 'LinkChanged' && e.data.maker === pda) out.push({ old: e.data.old, next: e.data.new, effectiveAt: e.data.effectiveAt });
+    }
+    return out;
+  }
+
+  /**
    * Messages posted to `recipient` with `post_message` (SPEC 6.2), oldest first. `until` is the
    * newest signature already processed. Failed transactions are skipped.
    */
@@ -255,8 +280,37 @@ export class SolanaClient {
     return tx;
   }
 
-  /** Sign a prepared transaction with every required signer and send it (with preflight). Returns the signature. */
-  async signAndSend(tx: Transaction, signers: SolanaSigner[]): Promise<string> {
+  /** An address lookup table as the endpoint holds it (the protocol table of SPEC 4.10), or `null`. */
+  async getLookupTable(address: Key, level?: Level): Promise<AddressLookupTableAccount | null> {
+    const a = await this.transport.getAccount(pk(address).toBase58(), level);
+    return a ? new AddressLookupTableAccount({ key: pk(address), state: AddressLookupTableAccount.deserialize(a.data) }) : null;
+  }
+
+  /**
+   * As `prepare`, for a v0 transaction that loads static accounts from lookup tables: the
+   * optional way to put two USDC legs of a batch in one transaction (SPEC 4.10).
+   */
+  async prepareV0(payer: Key, instructions: TransactionInstruction[], lookupTables: AddressLookupTableAccount[], opts: { cuPrice?: bigint | number } = {}): Promise<VersionedTransaction> {
+    const { blockhash } = await this.transport.getLatestBlockhash();
+    const cuPrice = opts.cuPrice ?? this.priorityFee;
+    const probe = v0Transaction({ payer, blockhash, instructions, cuLimit: SIMULATION_CU_LIMIT, cuPrice }, lookupTables);
+    assertFits(probe);
+    const sim = await this.transport.simulate(probe.serialize());
+    if (sim.err) throw new ProgramError(programErrorName(sim.err), sim.err, sim.logs);
+    if (sim.unitsConsumed === null) throw new SdkError('NoSimulation', 'the endpoint did not report consumed compute units');
+    const tx = v0Transaction({ payer, blockhash, instructions, cuLimit: cuLimitFromSimulation(sim.unitsConsumed), cuPrice }, lookupTables);
+    assertFits(tx);
+    return tx;
+  }
+
+  /** Sign a prepared transaction (legacy or v0) with every required signer and send it (with preflight). Returns the signature. */
+  async signAndSend(tx: Transaction | VersionedTransaction, signers: SolanaSigner[]): Promise<string> {
+    if (!(tx instanceof Transaction)) {
+      const bytes = tx.message.serialize();
+      for (const s of signers) tx.addSignature(new PublicKey(s.publicKey), await s.sign(bytes));
+      if (tx.signatures.some((sig) => sig.every((x) => x === 0))) throw new SdkError('MissingSignature', 'the transaction is not fully signed');
+      return this.transport.send(tx.serialize());
+    }
     const message = tx.serializeMessage();
     for (const s of signers) tx.addSignature(new PublicKey(s.publicKey), Buffer.from(await s.sign(message)));
     if (!tx.verifySignatures(true)) throw new SdkError('MissingSignature', 'the transaction is not fully signed');

@@ -395,6 +395,30 @@ describe('amounts.json', () => {
     }
   });
 
+  it('prices a swap as the contracts do, and refuses one of zero XMR or whose amount rounds to zero', () => {
+    const swaps = v.cases.filter((c: any) => c.input.op === 'swap');
+    expect(swaps.length).toBe(20);
+    let refused = 0;
+    for (const c of swaps) {
+      const i = c.input;
+      const xmr = BigInt(i.xmr);
+      const direction = i.direction === 'A' ? 0 : 1;
+      const f =
+        i.chain === 'solana'
+          ? () => priceOffer({ direction, minXmr: 0n, maxXmr: (1n << 64n) - 1n, capacityXmr: (1n << 64n) - 1n, priceAbove: [0n, 0n, 0n], prices: [BigInt(i.price), 0n, 0n], depthAbove: [0n, 0n, 0n], depths: Uint8Array.of(2, 0, 0), depBps: 100 } as unknown as Offer, xmr).amount
+          : () => priceEthQuote({ ...quoteFromMessage(vector('eip712').cases[0].input.typed_data.message), direction, minXmr: 0n, maxXmr: (1n << 64n) - 1n, tierXmr: [0n, 0n, 0n], tierPrice: [BigInt(i.price), 0n, 0n] }, xmr).amount;
+      if (c.valid) expect(f().toString(), c.name).toBe(c.output.amount);
+      else {
+        // A price of zero cannot reach the amount rule through an offer or a quote: it marks the tier unused,
+        // which both contracts refuse earlier, as malformed tiers.
+        expect(codeOf(f), c.name).toBe(i.price === '0' ? 'TiersInvalid' : c.error);
+        refused++;
+      }
+    }
+    expect(refused).toBeGreaterThanOrEqual(4);
+    expect(v.cases.every((c: any) => Array.isArray(c.chains))).toBe(true);
+  });
+
   it('prices a size against an offer and a quote with the core\'s rounding', () => {
     const X = 1_000_000_000_000n;
     const offer = { direction: 0, minXmr: X / 10n, maxXmr: 100n * X, capacityXmr: 60n * X, priceAbove: [0n, X, 50n * X], prices: [150_000_000n, 149_000_000n, 148_000_000n], depthAbove: [0n, X, 50n * X], depths: Uint8Array.of(2, 10, 25), depBps: 100 } as unknown as Offer;

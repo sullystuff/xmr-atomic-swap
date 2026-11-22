@@ -4,10 +4,10 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { PublicKey } from '@solana/web3.js';
 import { init } from '@xmrswap/core-wasm';
-import { ACCOUNT_SIZE, type Address, CHAIN_CONSTS, COUNTER, DEV_PROGRAM_ID, type EthBoard, type Maker, type Offer, base58Encode, encodeAccount } from '@xmrswap/protocol';
+import { ACCOUNT_SIZE, type Address, CHAIN_CONSTS, COUNTER, DEV_PROGRAM_ID, type EthBoard, type Maker, type Offer, base58Encode, encodeAccount, encodeEvent } from '@xmrswap/protocol';
 import { EthereumClient } from '../src/ethereum/client.js';
-import { listMakerProfiles, listOffers, verifiedBoardQuotes } from '../src/registry/reader.js';
-import { LinkMemory, effectiveEthLink, effectiveSolanaLink, linkStatus, mergeCounters, mergedReputation, reputationOf } from '../src/registry/reputation.js';
+import { listMakerProfiles, listOffers, makerProfile, rememberPastLinks, verifiedBoardQuotes } from '../src/registry/reader.js';
+import { LinkMemory, effectiveEthLink, effectiveSolanaLink, everMutuallyLinked, linkIntervals, linkStatus, mergeCounters, mergedReputation, pastEthLinks, reputationOf } from '../src/registry/reputation.js';
 import { encodeSignedQuote, quoteFromMessage } from '../src/signing/eip712.js';
 import { offerTermsHash } from '../src/signing/solana.js';
 import { SolanaClient } from '../src/solana/client.js';
@@ -151,6 +151,48 @@ describe('merged reputation', () => {
   });
 });
 
+describe('past links from LinkChanged events', () => {
+  const A = unhex(ETH);
+  const B = unhex(OTHER_ETH);
+  const Z = z(20);
+  const iv = (c: { old: Uint8Array; next: Uint8Array; effectiveAt: bigint }[], now: bigint) => linkIntervals(c, now).map((i) => [Buffer.from(i.value).toString('hex').slice(0, 4), i.from, i.to]);
+
+  it('rebuilds when each pointer was in effect, without event times', () => {
+    // First link: immediate.
+    expect(iv([{ old: Z, next: A, effectiveAt: T }], T + 5n)).toEqual([['0fbf', T, null]]);
+    // A change is pending for seven days, then in effect.
+    const change = [{ old: Z, next: A, effectiveAt: T }, { old: A, next: B, effectiveAt: T + 100n + DELAY }];
+    expect(iv(change, T + 100n + DELAY - 1n)).toEqual([['0fbf', T, null]]);
+    expect(iv(change, T + 100n + DELAY)).toEqual([['0fbf', T, T + 100n + DELAY], ['0000', T + 100n + DELAY, null]]);
+    // A second change before the first matured replaces it: B was never in effect.
+    const replaced = [...change, { old: A, next: Z, effectiveAt: T + 200n + DELAY }];
+    expect(iv(replaced, T + 300n + DELAY)).toEqual([['0fbf', T, T + 200n + DELAY]]);
+    // A change that did mature shows as the next event's `old`.
+    const matured = [...change, { old: B, next: Z, effectiveAt: T + 9n * DELAY }];
+    expect(iv(matured, T + 10n * DELAY)).toEqual([['0fbf', T, T + 100n + DELAY], ['0000', T + 100n + DELAY, T + 9n * DELAY]]);
+    // History that starts mid-way (pruned transactions): `old` was in effect before.
+    expect(iv([{ old: A, next: Z, effectiveAt: T + DELAY }], T + 2n * DELAY)).toEqual([['0fbf', 0n, T + DELAY]]);
+    expect(linkIntervals([], T)).toEqual([]);
+    expect(pastEthLinks(matured, T + 10n * DELAY)).toEqual([ETH, OTHER_ETH]);
+  });
+
+  it('two records were one identity only while both pointers were in effect at the same time', () => {
+    const now = { solana: T + 20n * DELAY, ethereum: T + 20n * DELAY };
+    const O = unhex(OWNER_HEX);
+    const sol = [{ old: Z, next: A, effectiveAt: T }, { old: A, next: Z, effectiveAt: T + 2n * DELAY }];
+    const ethLinked = [{ old: z(32), next: O, effectiveAt: T - 50n }];
+    expect(everMutuallyLinked(sol, ethLinked, OWNER, ETH, now)).toBe(true);
+    // The Ethereum record pointed back only after the Solana side had already unlinked: never mutual.
+    expect(everMutuallyLinked(sol, [{ old: z(32), next: O, effectiveAt: T + 3n * DELAY }], OWNER, ETH, now)).toBe(false);
+    // It pointed at somebody else, or never.
+    expect(everMutuallyLinked(sol, [{ old: z(32), next: z(32, 9), effectiveAt: T - 50n }], OWNER, ETH, now)).toBe(false);
+    expect(everMutuallyLinked(sol, [], OWNER, ETH, now)).toBe(false);
+    // A pending Solana link that was replaced before it took effect was never a link.
+    const never = [{ old: Z, next: B, effectiveAt: T }, { old: B, next: A, effectiveAt: T + DELAY + 5n }, { old: B, next: Z, effectiveAt: T + DELAY + 9n }];
+    expect(everMutuallyLinked(never, ethLinked, OWNER, ETH, now)).toBe(false);
+  });
+});
+
 describe('registry reader over fake chains', () => {
   const v = vector('eip712');
   const PROGRAM = new PublicKey(DEV_PROGRAM_ID);
@@ -208,6 +250,47 @@ describe('registry reader over fake chains', () => {
     // Without an Ethereum endpoint nothing is merged and nothing breaks.
     const solOnly = await listMakerProfiles(solana, null, { solana: T, ethereum: T });
     expect(solOnly.every((p) => !p.identity.merged)).toBe(true);
+  });
+
+  it('a fresh client rebuilds a past link from both chains\' events: unlinking does not shed the Ethereum record', async () => {
+    const { fs, fe, solana, ethereum, honest } = setup();
+    const pda = makerPda(PROGRAM, honest).toBase58();
+    const ownerHex = `0x${Buffer.from(honest.toBytes()).toString('hex')}`;
+    const tEth = fe.block(10n).timestamp;
+    // Chain history. Solana: linked at registration time, unlinked later (in effect after the delay).
+    const link = (signature: string, old: Uint8Array, next: Uint8Array, effectiveAt: bigint) =>
+      fs.addTransaction({ signature, slot: 1, blockTime: 1, err: null, instructions: [], logs: [`Program data: ${Buffer.from(encodeEvent('LinkChanged', { maker: pda, old, new: next, effectiveAt })).toString('base64')}`] }, [pda]);
+    link('l1', z(20), unhex(quoteMaker), tEth + 100n);
+    link('l2', unhex(quoteMaker), z(20), tEth + 1000n + DELAY);
+    // A failed transaction and another maker's event are not history.
+    fs.addTransaction({ signature: 'bad', slot: 2, blockTime: 2, err: { InstructionError: [0, { Custom: 6000 }] }, instructions: [], logs: [`Program data: ${Buffer.from(encodeEvent('LinkChanged', { maker: pda, old: z(20), new: z(20, 9), effectiveAt: 5n })).toString('base64')}`] }, [pda]);
+    // Ethereum: the record named the Solana owner at registration and still does.
+    fe.emit('MakerRegistered', { maker: quoteMaker, operator: v.operator, payout: v.operator, solanaOwner: ownerHex }, 10n);
+    fe.emit('MakerRegistered', { maker: OTHER_ETH, operator: v.operator, payout: v.operator, solanaOwner: ZERO32 }, 11n);
+    expect(await solana.linkChanges(pda)).toEqual([{ old: z(20), next: unhex(quoteMaker), effectiveAt: tEth + 100n }, { old: unhex(quoteMaker), next: z(20), effectiveAt: tEth + 1000n + DELAY }]);
+    expect(await ethereum.linkChanges(quoteMaker)).toEqual([{ old: z(32), next: unhex(ownerHex), effectiveAt: tEth }]);
+
+    // Current state: the maker has unlinked on Solana and the delay has passed.
+    const now = { solana: tEth + 2000n + DELAY, ethereum: tEth + 2000n + DELAY };
+    const unlinked = makerAccount(honest, { ethLink: z(20) });
+    const blind = await makerProfile(pda, unlinked, ethereum, now);
+    expect(blind.identity).toMatchObject({ merged: false, link: { status: 'none' } });
+    expect(blind.identity.reputation.faults.total).toBe(0);
+    // A fresh client with no stored memory reads the events and attaches the history again.
+    const memory = new LinkMemory();
+    expect(await rememberPastLinks(solana, ethereum, pda, unlinked, memory, now)).toEqual([quoteMaker]);
+    const seen = await makerProfile(pda, unlinked, ethereum, now, memory);
+    expect(seen.identity).toMatchObject({ merged: true, historical: true, link: { status: 'none' } });
+    expect(seen.identity.reputation.counts.completed).toBe(12);
+    expect(seen.identity.reputation.faults.total).toBe(2);
+    expect(seen.ethereum?.address).toBe(quoteMaker);
+    // A maker that only ever pointed one-sidedly at a record gains nothing from the same scan.
+    const { thief } = { thief: new PublicKey(z(32, 22)) };
+    const thiefPda = makerPda(PROGRAM, thief).toBase58();
+    fs.addTransaction({ signature: 't1', slot: 3, blockTime: 3, err: null, instructions: [], logs: [`Program data: ${Buffer.from(encodeEvent('LinkChanged', { maker: thiefPda, old: z(20), new: unhex(quoteMaker), effectiveAt: tEth + 100n })).toString('base64')}`] }, [thiefPda]);
+    const thiefMemory = new LinkMemory();
+    expect(await rememberPastLinks(solana, ethereum, thiefPda, makerAccount(thief, { ethLink: unhex(quoteMaker) }), thiefMemory, now)).toEqual([]);
+    expect(thiefMemory.toJSON()).toEqual([]);
   });
 
   it('shows a board quote only for the mutually linked maker and discards the rest', async () => {

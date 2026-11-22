@@ -9,7 +9,7 @@ import { type EthDeployment, verifyBoardQuote } from '../signing/eip712.js';
 import { offerProblem } from '../signing/solana.js';
 import type { SolanaClient } from '../solana/client.js';
 import type { Bytes } from '../util.js';
-import { type LinkMemory, type MergedIdentity, effectiveEthLink, ethAddressHex, mergedReputation } from './reputation.js';
+import { type LinkMemory, type MakerCounters, type MergedIdentity, effectiveEthLink, ethAddressHex, everMutuallyLinked, mergeCounters, mergedReputation, pastEthLinks, reputationOf } from './reputation.js';
 
 export interface MakerProfile {
   /** Maker PDA, base58. */
@@ -29,18 +29,58 @@ export interface RegistryClock {
   ethereum: bigint;
 }
 
-/** One maker's profile from its Solana record and, when it names one, its Ethereum record. */
+/**
+ * One maker's profile from its Solana record and the Ethereum records that are, or ever were,
+ * the same identity: the one its pointer names now, and every address `memory` remembers as
+ * once mutually linked (fill it from chain history with `rememberPastLinks`). History stays
+ * attached to both keys after an unlink, so a bad record cannot be shed.
+ */
 export async function makerProfile(pda: string, solana: Maker, ethereum: EthereumClient | null, now: RegistryClock, memory?: LinkMemory): Promise<MakerProfile> {
   const pointer = effectiveEthLink(solana, now.solana);
+  const toLink = (address: Address, record: EthMaker) => ({ address, solanaOwner: record.solanaOwner, solanaOwnerNext: record.solanaOwnerNext, solanaOwnerNextAt: record.solanaOwnerNextAt, counters: record.counters, responseSecsSum: record.responseSecsSum });
   let eth: MakerProfile['ethereum'] = null;
   if (pointer && ethereum) {
     const address = ethAddressHex(pointer) as Address;
     const record = await ethereum.getMaker(address);
     if (record) eth = { address, record };
   }
-  const identity = mergedReputation(solana, eth ? { address: eth.address, solanaOwner: eth.record.solanaOwner, solanaOwnerNext: eth.record.solanaOwnerNext, solanaOwnerNextAt: eth.record.solanaOwnerNextAt, counters: eth.record.counters, responseSecsSum: eth.record.responseSecsSum } : null, now, memory);
+  let identity = mergedReputation(solana, eth ? toLink(eth.address, eth.record) : null, now, memory);
+  // Records that were once this identity but are no longer what the pointer names.
+  const past = (memory?.ethereumOf(solana.owner) ?? []).filter((a) => a !== eth?.address);
+  if (ethereum && past.length) {
+    const records = [solana as MakerCounters];
+    if (identity.merged && eth) records.push(eth.record);
+    let any = false;
+    for (const address of past) {
+      const record = await ethereum.getMaker(address as Address);
+      if (!record) continue;
+      records.push(record);
+      any = true;
+      if (!eth) eth = { address: address as Address, record };
+    }
+    if (any) identity = { ...identity, merged: true, historical: true, reputation: reputationOf(mergeCounters(records)) };
+  }
   const blob = solana.contacts.find((c) => c.kind === CONTACT_KIND.BLOB_ENDPOINT && /^https:\/\//.test(c.value));
   return { pda, solana, ethereum: eth, identity, onion: solana.onion || null, blobEndpoint: blob?.value ?? null };
+}
+
+/**
+ * Fill `memory` from chain history: read the maker's `LinkChanged` events on Solana, and for
+ * every Ethereum address it ever pointed at, that record's link history (`MakerRegistered`,
+ * `LinkChanged`); remember each pair that was mutually in effect at some time. A fresh client
+ * calls this before `makerProfile`, so a maker cannot shed a record by unlinking. Returns the
+ * addresses remembered. `fromBlock` is the contract's deployment block.
+ */
+export async function rememberPastLinks(solana: SolanaClient, ethereum: EthereumClient, pda: string, maker: Maker, memory: LinkMemory, now: RegistryClock, fromBlock = 0n): Promise<string[]> {
+  const solChanges = await solana.linkChanges(pda);
+  const found: string[] = [];
+  for (const address of pastEthLinks(solChanges, now.solana)) {
+    const ethChanges = await ethereum.linkChanges(address as Address, { fromBlock, toBlock: 'finalized' });
+    if (!everMutuallyLinked(solChanges, ethChanges, maker.owner, address, now)) continue;
+    memory.remember(maker.owner, address);
+    found.push(address);
+  }
+  return found;
 }
 
 /** Every maker in the registry with its merged history. */

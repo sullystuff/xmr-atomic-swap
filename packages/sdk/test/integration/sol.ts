@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Connection, type TransactionInstruction } from '@solana/web3.js';
 import { type DerivedKeys } from '@xmrswap/core-wasm';
-import { DEV_PROGRAM_ID, type Maker, type OfferTerms, base58Decode } from '@xmrswap/protocol';
+import { PROGRAM_ID, type Maker, type OfferTerms, base58Decode } from '@xmrswap/protocol';
 import { type SvmRpc, startSvmRpc } from '@xmrswap/svm-rpc';
 import { type CallMaterial, solanaInstruction } from '../../src/flows/execute.js';
 import { makerShareKeys, solanaMakerShare } from '../../src/flows/keys.js';
@@ -64,15 +64,15 @@ export interface SolWorld {
 
 export async function startSolana(): Promise<SolWorld> {
   if (!existsSync(SO)) throw new Error(`integration: ${SO} is missing; build it with \`cd solana/program && cargo build-sbf\``);
-  const svm = await startSvmRpc({ programs: [{ programId: DEV_PROGRAM_ID, soPath: SO }], unixTimestamp: T0 });
+  const svm = await startSvmRpc({ programs: [{ programId: PROGRAM_ID, soPath: SO }], unixTimestamp: T0 });
   const transport = connectionTransport(new Connection(svm.url, 'confirmed'), { subscriptions: false });
   const [admin, owner, operator, payout, taker, stranger] = [1, 2, 3, 4, 5, 6].map((n) => seedSigner(seed(n))) as [SolanaSigner, SolanaSigner, SolanaSigner, SolanaSigner, SolanaSigner, SolanaSigner];
   for (const s of [admin, owner, operator, payout, taker, stranger]) await svm.airdrop(s.publicKey, 100_000_000_000n);
-  await svm.setUpgradeAuthority(DEV_PROGRAM_ID, admin.publicKey);
+  await svm.setUpgradeAuthority(PROGRAM_ID, admin.publicKey);
   const usdc = await svm.createMint(6, admin.publicKey);
   // Payouts never create token accounts: every party that may receive USDC has its account.
   for (const s of [operator, payout, taker]) await svm.mintTo(usdc, s.publicKey, 1_000_000_000_000n);
-  const client = new SolanaClient({ transport, programId: DEV_PROGRAM_ID, usdcMint: usdc, subscriptions: false });
+  const client = new SolanaClient({ transport, programId: PROGRAM_ID, usdcMint: usdc, subscriptions: false });
   const genesis = await transport.getGenesisHash();
   const makerSeed = seed(77);
   const makerEnc = makerShareKeys(makerSeed, 'solana', new Uint8Array(16).fill(1));

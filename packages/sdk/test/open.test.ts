@@ -49,6 +49,8 @@ describe('planSolanaOpen', () => {
     expect(plan).toMatchObject({ direction: 0, swapPda: pda.toBase58(), amount: 298_000_000n, deposit: 2_980_000n, depth: 10, limit: 298_000_000n, sessionLamports: 2_890_880n });
     expect(hex(plan.keys.spend)).toBe(hex(takerSwapKeys(seed, 'solana', nonce).spend));
     expect(plan.instructions.length).toBe(1);
+    // One signature: the base fee.
+    expect(plan.feeLamports).toBe(5_000n);
     const ix = plan.instructions[0]!;
     const d = coder.decode(Buffer.from(ix.data))!;
     expect(d.name).toBe('lock');
@@ -96,6 +98,8 @@ describe('planSolanaOpen', () => {
     const approval = signSolApproval(unhex(c.operator_seed), { clusterTag: unhex(f.cluster_tag), programId: unhex(f.program_id), maker: unhex(f.maker), taker: unhex(f.taker), asset: f.asset, direction: f.direction, maxXmr: BigInt(f.max_xmr), notBefore: BigInt(f.not_before), expiresAt: BigInt(f.expires_at), epoch: f.epoch, approvalId: BigInt(f.approval_id) });
     const plan = planSolanaOpen(input({ approval }));
     expect(plan.instructions.length).toBe(2);
+    // The Ed25519 precompile's signature is charged too: an approval transaction costs 10,000 lamports.
+    expect(plan.feeLamports).toBe(10_000n);
     expect(plan.instructions[0]!.programId.toBase58()).toBe('Ed25519SigVerify111111111111111111111111111');
     const a = (coder.decode(Buffer.from(plan.instructions[1]!.data))!.data as any).args;
     expect(a.approval_ix).toBe(APPROVAL_IX_INDEX);

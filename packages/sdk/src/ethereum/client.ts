@@ -280,10 +280,36 @@ export class XmrSwapContract {
 }
 
 /**
- * The session budget on Ethereum (SPEC 5.4): four calls at a capped gas price. The budget is
- * shown before locking; what is left returns to the taker with a plain transfer at the end.
+ * Gas used by the calls a session key sends, measured on anvil against the contract with the
+ * packed swap storage (the integration suite re-measures on every run and fails if a call
+ * exceeds its figure by more than the margin): the most expensive observed variant of each
+ * (USDC, first write of the slots it touches).
  */
-export function ethSessionBudget(maxFeePerGasWei: bigint, gasPerCall = 150_000n, calls = 4n): bigint {
+export const ETH_SESSION_GAS = {
+  /** A9. */
+  setReady: 63_100n,
+  /** A4, B2. */
+  cancelPending: 70_100n,
+  /** A10 with the deposit held, USDC. */
+  refund: 157_800n,
+  /** B6: stores the 104-byte ciphertext. */
+  postNotice: 216_200n,
+  /** B10, USDC. */
+  claim: 186_600n,
+} as const;
+/** Margin added on top of the measured figures, in percent. */
+export const ETH_SESSION_GAS_MARGIN_PCT = 25n;
+/** The dearest session-key call (`postNotice`, 216,200) plus the margin, rounded up to 1,000. */
+export const ETH_SESSION_GAS_PER_CALL = 271_000n;
+
+/**
+ * The session budget on Ethereum (SPEC 5.4): four calls at a capped gas price, each sized as
+ * the dearest measured session-key call plus 25%. The budget is shown before locking; what is
+ * left returns to the taker with a plain transfer at the end. A budget that runs out is a lost
+ * automatic refund, so it errs high: the worst real sequences (A: ready then refund, 221,000
+ * gas; B: notice then claim, 403,000) use well under half of it.
+ */
+export function ethSessionBudget(maxFeePerGasWei: bigint, gasPerCall = ETH_SESSION_GAS_PER_CALL, calls = 4n): bigint {
   return maxFeePerGasWei * gasPerCall * calls;
 }
 
@@ -532,6 +558,25 @@ export class EthereumClient {
     while (topics.length > 1 && topics[topics.length - 1] === null) topics.pop();
     const logs = (await this.transport.request({ method: 'eth_getLogs', params: [{ address: this.contract.address, fromBlock: tagParam(range.fromBlock), toBlock: tagParam(range.toBlock), topics }] })) as RawLog[];
     return logs.map((l) => this.decodeLog(l)).filter((e): e is DecodedEthEvent => e !== null);
+  }
+
+  /**
+   * The history of a maker's pointer at a Solana owner key: the value set at registration
+   * (`MakerRegistered`) and every `LinkChanged` since, oldest first. Feed it to
+   * `linkIntervals` / `rememberPastLinks` so that an unlink does not shed history.
+   */
+  async linkChanges(maker: Address, range: { fromBlock: bigint; toBlock: BlockTag } = { fromBlock: 0n, toBlock: 'finalized' }): Promise<{ old: Bytes; next: Bytes; effectiveAt: bigint }[]> {
+    const events = await this.getEvents(range, {});
+    const mine = events.filter((e) => (e.name === 'MakerRegistered' || e.name === 'LinkChanged') && String(e.args.maker).toLowerCase() === maker.toLowerCase());
+    const out: { old: Bytes; next: Bytes; effectiveAt: bigint }[] = [];
+    for (const e of mine) {
+      if (e.name === 'MakerRegistered') {
+        // The link named at registration is in effect at once.
+        const b = await this.block(e.blockNumber);
+        out.push({ old: new Uint8Array(32), next: unhex(e.args.solanaOwner as string), effectiveAt: b?.timestamp ?? 0n });
+      } else out.push({ old: unhex(e.args.oldOwner as string), next: unhex(e.args.newOwner as string), effectiveAt: BigInt(e.args.effectiveAt as bigint) });
+    }
+    return out;
   }
 
   /** Messages posted to `to` through the `Message` event (the fallback transport). */

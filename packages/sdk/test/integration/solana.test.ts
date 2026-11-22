@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PublicKey } from '@solana/web3.js';
 import { init } from '@xmrswap/core-wasm';
 import { type DerivedKeys, type JointAddress } from '@xmrswap/core-wasm';
-import { type ApprovalResponse, COUNTER, DEPOSIT_STATE, DEV_PROGRAM_ID, SWAP_FLAG, SWAP_STATE, base58Decode } from '@xmrswap/protocol';
+import { type ApprovalResponse, COUNTER, DEPOSIT_STATE, PROGRAM_ID, SWAP_FLAG, SWAP_STATE, base58Decode } from '@xmrswap/protocol';
 import { solanaInstruction } from '../../src/flows/execute.js';
 import { buildNotice, checkCounterpartyShare, contactKeys, jointSpendKey, openNotice, solanaMakerShare, swapJointAddress, takerSwapKeys } from '../../src/flows/keys.js';
 import { makerStep } from '../../src/flows/maker.js';
@@ -15,6 +15,7 @@ import { openFromMaker, openFromTaker, sealToMaker, sealToTaker } from '../../sr
 import { findDeposits } from '../../src/monero/watch.js';
 import { createRecoveryFile, encryptRecoveryFile, readRecoveryFile, recoverySeed, resumeSwapKeys, writeRecoveryFile } from '../../src/recovery/file.js';
 import { priceOffer } from '../../src/registry/pricing.js';
+import { effectiveEthLink, linkIntervals, pastEthLinks } from '../../src/registry/reputation.js';
 import { offerProblem, signSolApproval, solApprovalFromResponse, solApprovalProblem, solApprovalResponse, solQuoteProblem } from '../../src/signing/solana.js';
 import { ProgramError, seedSigner } from '../../src/solana/client.js';
 import { hex } from '../../src/util.js';
@@ -182,7 +183,7 @@ describe('buy XMR with SOL (direction A, auto mode)', () => {
     expect([m.counters[COUNTER.locks], m.counters[COUNTER.notices], m.counters[COUNTER.readies], m.counters[COUNTER.completed]]).toEqual([1, 1, 1, 1]);
     expect(m.volume[0]).toBe(pricing.amount);
     expect(hex(takerSwapKeys(takerSeed, 'solana', plan.swapNonce).spend)).toBe(hex(plan.keys.spend));
-    expect(DEV_PROGRAM_ID).toBe(w.client.programId);
+    expect(PROGRAM_ID).toBe(w.client.programId);
   });
 });
 
@@ -360,7 +361,7 @@ describe('refund paths (direction A)', () => {
   it('keyed refund after a notice, resumed from the recovery file; the maker withholds with evidence, recovers its XMR, then releases', async () => {
     await w.publishOffer({ asset: 1, direction: 0, mode: 0, price: 150_000_000n });
     // The recovery file is saved before the lock; here it is the passphrase-encrypted form.
-    const fileText = writeRecoveryFile(encryptRecoveryFile(createRecoveryFile({ seed: takerSeed, wallets: { solana: [w.taker.publicKey] }, programId: DEV_PROGRAM_ID, contract: '0x0000000000000000000000000000000000000000' }), 'hunter2'));
+    const fileText = writeRecoveryFile(encryptRecoveryFile(createRecoveryFile({ seed: takerSeed, wallets: { solana: [w.taker.publicKey] }, programId: PROGRAM_ID, contract: '0x0000000000000000000000000000000000000000' }), 'hunter2'));
     const usdcBefore = await w.tokenBalance(w.taker.publicKey);
     const { plan, s: active, share, pricing } = await lockA(1, 2n * X);
     expect(await w.tokenBalance(w.taker.publicKey)).toBe(usdcBefore - pricing.amount);
@@ -532,7 +533,7 @@ describe('taker-bound quote and advance approval', () => {
     expect(got.message).toMatchObject({ t: 'approval_request', taker: w.taker.publicKey });
     const config = (await w.client.getConfig())!;
     const now = await w.now();
-    const signed = signSolApproval(OPERATOR_SEED, { clusterTag: config.clusterTag, programId: base58Decode(DEV_PROGRAM_ID), maker: base58Decode(w.makerPda), taker: base58Decode(w.taker.publicKey), asset: 255, direction: 0, maxXmr: 5n * X, notBefore: now, expiresAt: now + 86_400n, epoch: maker.approvalEpoch, approvalId: 7n });
+    const signed = signSolApproval(OPERATOR_SEED, { clusterTag: config.clusterTag, programId: base58Decode(PROGRAM_ID), maker: base58Decode(w.makerPda), taker: base58Decode(w.taker.publicKey), asset: 255, direction: 0, maxXmr: 5n * X, notBefore: now, expiresAt: now + 86_400n, epoch: maker.approvalEpoch, approvalId: 7n });
     const reply = sealToTaker({ message: solApprovalResponse(signed), makerEncSecret: w.makerEnc.encSecret, makerKeyVersion: got.header.makerKeyVersion, takerPub: got.header.takerPub, operatorSeed: OPERATOR_SEED, transport: 'solana' });
     await w.send([w.client.program.postMessage(w.operator.publicKey, w.taker.publicKey, reply)], [w.operator]);
 
@@ -544,7 +545,7 @@ describe('taker-bound quote and advance approval', () => {
     const response = openFromMaker({ envelope: replies[0]!, ownEncSecret: contact.encSecret, maker, operatorPub: base58Decode(maker.operator), now: await w.now() }).message as ApprovalResponse;
     expect(response).toMatchObject({ t: 'approval_response', ok: true, chain: 'solana' });
     if (!response.ok || response.chain !== 'solana') throw new Error('unexpected response');
-    const bind = { clusterTag: config.clusterTag, programId: base58Decode(DEV_PROGRAM_ID), maker: base58Decode(w.makerPda), taker: base58Decode(w.taker.publicKey), operator: base58Decode(maker.operator) };
+    const bind = { clusterTag: config.clusterTag, programId: base58Decode(PROGRAM_ID), maker: base58Decode(w.makerPda), taker: base58Decode(w.taker.publicKey), operator: base58Decode(maker.operator) };
     const approval = solApprovalFromResponse(response, bind);
     const use = { asset: 0, direction: 0, xmr: X, now: await w.now(), approvalEpoch: maker.approvalEpoch };
     expect(solApprovalProblem(approval, bind, use)).toBe(null);
@@ -568,7 +569,8 @@ describe('taker-bound quote and advance approval', () => {
     const s = (await w.swap(plan.swapPda))!;
     expect(s).toMatchObject({ state: SWAP_STATE.ACTIVE, mode: 2 });
     const rentSwap = await w.transport.getMinimumBalanceForRentExemption(736);
-    expect(before - (await w.balance(w.taker.publicKey))).toBe(s.amount + plan.sessionLamports + rentSwap + 10_000n);
+    expect(plan.feeLamports).toBe(10_000n);
+    expect(before - (await w.balance(w.taker.publicKey))).toBe(s.amount + plan.sessionLamports + rentSwap + plan.feeLamports);
     // The approval is reusable until it expires…
     const second = planSolanaOpen({ ...base, approval });
     await w.send(second.instructions, [w.taker]);
@@ -619,5 +621,74 @@ describe('pay or park', () => {
     s = (await w.swap(plan.swapPda))!;
     expect(s.owedMaker).toBe(0n);
     expect(await w.tokenBalance(w.payout.publicKey)).toBe(before + pricing.amount - pricing.fee);
+  });
+});
+
+describe('batched locks in one v0 transaction (the protocol lookup table)', () => {
+  it('two USDC legs for two makers: too large as a legacy transaction, accepted as v0 with the lookup table', async () => {
+    // A second maker with its own USDC offer.
+    const owner2 = seedSigner(new Uint8Array(32).fill(8));
+    const operator2 = seedSigner(new Uint8Array(32).fill(9));
+    for (const k of [owner2, operator2]) await w.svm.airdrop(k.publicKey, 10_000_000_000n);
+    const program = w.client.program;
+    const maker2 = program.makerPda(owner2.publicKey).toBase58();
+    await w.send([program.registerMaker({ owner: owner2.publicKey, operator: operator2.publicKey, payout: owner2.publicKey, encKey: w.makerEnc.encPub })], [owner2]);
+    const terms = { mode: 0, minXmr: X / 100n, maxXmr: 1000n * X, validSecs: 3600, priceAbove: [0n, 0n, 0n], depthAbove: [0n, 0n, 0n], depths: Uint8Array.of(2, 0, 0), depBps: 100, wA: 60, wN: 600, dC: 3600, wC: 1800, wF: 604_800 };
+    await w.send([program.setOffer(operator2.publicKey, maker2, 1, 0, terms)], [operator2]);
+    await w.send([program.refillKeys(operator2.publicKey, maker2, 1, [0, 1].map((index) => ({ index, ...solanaMakerShare(w.newShare(), base58Decode(maker2)) })))], [operator2]);
+    await w.send([program.refreshOffers(operator2.publicKey, maker2, [{ asset: 1, direction: 0, enabled: true, prices: [151_000_000n, 0n, 0n], capacityXmr: 1000n * X }])], [operator2]);
+    await w.publishOffer({ asset: 1, direction: 0, mode: 0, price: 150_000_000n });
+
+    const legs = await Promise.all(
+      [w.makerPda, maker2].map(async (makerPda) => {
+        const maker = (await w.client.getMaker(makerPda))!;
+        const offer = (await w.client.getOffer(makerPda, 1, 0))!;
+        return planSolanaOpen({ program, taker: w.taker.publicKey, makerPda, maker, seed: takerSeed, xmr: X, source: { offer }, rentExemptMinimum: w.rent0 });
+      }),
+    );
+    const instructions = legs.flatMap((l) => l.instructions);
+    // 18 account keys: 1,244 bytes as a legacy transaction. It does not fit and is never sent.
+    await expect(w.client.prepare(w.taker.publicKey, instructions)).rejects.toMatchObject({ code: 'TransactionTooLarge' });
+
+    // The protocol lookup table: config, the System program, the USDC mint and the Token program.
+    const tableAddress = await w.svm.createLookupTable([program.config.toBase58(), '11111111111111111111111111111111', w.usdc, 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA']);
+    const table = (await w.client.getLookupTable(tableAddress))!;
+    expect(table.state.addresses.map((a) => a.toBase58())).toContain(w.usdc);
+    const usdcBefore = await w.tokenBalance(w.taker.publicKey);
+    const tx = await w.client.prepareV0(w.taker.publicKey, instructions, [table]);
+    expect(tx.message.staticAccountKeys.length).toBe(14);
+    expect(tx.serialize().length).toBe(1156);
+    const signature = await w.client.signAndSend(tx, [w.taker]);
+    await w.client.waitConfirmed(signature, { intervalMs: 20 });
+
+    // Both legs are open, each an ordinary swap with its own nonce, keys and maker.
+    const swaps = await Promise.all(legs.map((l) => w.swap(l.swapPda)));
+    expect(swaps.map((s) => s?.state)).toEqual([SWAP_STATE.ACTIVE, SWAP_STATE.ACTIVE]);
+    expect(swaps.map((s) => s!.maker)).toEqual([w.makerPda, maker2]);
+    expect(swaps.map((s) => s!.amount)).toEqual([150_000_000n, 151_000_000n]);
+    expect(await w.tokenBalance(w.taker.publicKey)).toBe(usdcBefore - 301_000_000n);
+    expect((await w.client.eventsOf(signature)).filter((e) => e.name === 'SwapOpened').length).toBe(2);
+    // A v0 transaction whose simulation fails is never built, exactly as a legacy one.
+    const unsigned = await w.client.prepareV0(w.taker.publicKey, [legs[0]!.instructions[0]!].map(() => program.setReady({ caller: w.taker.publicKey, swap: legs[0]!.swapPda, maker: w.makerPda })), [table]).catch((e) => e);
+    expect(unsigned).toBeInstanceOf(ProgramError);
+  });
+});
+
+describe('identity link history', () => {
+  it('LinkChanged events of the maker are read back from its transactions', async () => {
+    const eth = new Uint8Array(20).fill(0xab);
+    expect(await w.client.linkChanges(w.makerPda)).toEqual([]);
+    await w.send([w.client.program.setEthLink(w.owner.publicKey, eth)], [w.owner]);
+    const t1 = await w.now();
+    await w.send([w.client.program.setEthLink(w.owner.publicKey, new Uint8Array(20))], [w.owner]);
+    const changes = await w.client.linkChanges(w.makerPda);
+    expect(changes).toEqual([{ old: new Uint8Array(20), next: eth, effectiveAt: t1 }, { old: eth, next: new Uint8Array(20), effectiveAt: t1 + 604_800n }]);
+    // In effect at once; the unlink only after the delay. The record and the events agree.
+    expect(linkIntervals(changes, t1 + 10n)).toEqual([{ value: eth, from: t1, to: null }]);
+    expect(pastEthLinks(changes, t1 + 10n)).toEqual([`0x${'ab'.repeat(20)}`]);
+    expect(hex(effectiveEthLink(await w.maker(), t1 + 10n)!)).toBe('ab'.repeat(20));
+    await w.warpTo(t1 + 604_800n);
+    expect(effectiveEthLink(await w.maker(), await w.now())).toBe(null);
+    expect(linkIntervals(changes, await w.now())).toEqual([{ value: eth, from: t1, to: t1 + 604_800n }]);
   });
 });

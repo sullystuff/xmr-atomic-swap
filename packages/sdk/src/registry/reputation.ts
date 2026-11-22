@@ -100,6 +100,71 @@ export class LinkMemory {
   }
 }
 
+// ------------------------------------------------------------------ past links from `LinkChanged` events
+
+/** One `LinkChanged` event (either chain): the pointer in effect when it was sent, the new one, and when the new one takes effect. */
+export interface LinkChange {
+  old: Bytes;
+  next: Bytes;
+  effectiveAt: bigint;
+}
+/** A span during which a pointer was in effect. `to` is `null` while it still is. */
+export interface LinkInterval {
+  value: Bytes;
+  from: bigint;
+  to: bigint | null;
+}
+
+/**
+ * When each pointer value was in effect, from a record's `LinkChanged` events in order.
+ *
+ * Each event names the value in effect when it was sent (`old`), so the history needs no event
+ * times: a pending change took effect iff the next event's `old` is its value (a second change
+ * before the first matured replaces it, and then `old` is unchanged); the last pending change
+ * is in effect once `now >= effectiveAt`. Zero pointers ("no link") produce no interval.
+ */
+export function linkIntervals(changes: readonly LinkChange[], now: bigint): LinkInterval[] {
+  const out: LinkInterval[] = [];
+  let current: LinkInterval | null = null;
+  let pending: LinkChange | null = null;
+  const promote = (c: LinkChange) => {
+    if (current) current.to = c.effectiveAt;
+    current = isZero(c.next) ? null : { value: c.next, from: c.effectiveAt, to: null };
+    if (current) out.push(current);
+  };
+  for (const c of changes) {
+    if (pending) {
+      const inEffect = current as LinkInterval | null;
+      const matured = bytesEqual(c.old, pending.next) && !(inEffect !== null && bytesEqual(inEffect.value, pending.next));
+      if (matured) promote(pending);
+    } else if (!current && !isZero(c.old)) {
+      // History before the first event we were given: `old` was in effect from some earlier time.
+      current = { value: c.old, from: 0n, to: null };
+      out.push(current);
+    }
+    pending = c;
+  }
+  if (pending && now >= pending.effectiveAt) promote(pending);
+  return out;
+}
+
+/**
+ * Whether the two records were ever one identity: some span in which the Solana record pointed
+ * at `ethAddress` while the Ethereum record pointed at `solanaOwner`.
+ */
+export function everMutuallyLinked(solanaChanges: readonly LinkChange[], ethereumChanges: readonly LinkChange[], solanaOwner: string, ethAddress: string, now: { solana: bigint; ethereum: bigint }): boolean {
+  const owner = base58Decode(solanaOwner);
+  const addr = unhex(ethAddress);
+  const s = linkIntervals(solanaChanges, now.solana).filter((i) => bytesEqual(i.value, addr));
+  const e = linkIntervals(ethereumChanges, now.ethereum).filter((i) => bytesEqual(i.value, owner));
+  return s.some((a) => e.some((b) => a.from < (b.to ?? now.ethereum + 1n) && b.from < (a.to ?? now.solana + 1n)));
+}
+
+/** Every Ethereum address a Solana record ever pointed at (in effect), from its events: the candidates for a past identity. */
+export function pastEthLinks(solanaChanges: readonly LinkChange[], now: bigint): string[] {
+  return [...new Set(linkIntervals(solanaChanges, now).map((i) => ethAddressHex(i.value)))];
+}
+
 // ------------------------------------------------------------------ counters and derived figures
 
 /** One chain's record of a maker. */
@@ -192,4 +257,6 @@ export function mergedReputation(
   return { link, merged, historical, reputation: reputationOf(merged && eth ? mergeCounters([sol, eth]) : sol) };
 }
 
-export const ethAddressHex = (a: Bytes): string => `0x${hex(a)}`;
+export function ethAddressHex(a: Bytes): string {
+  return `0x${hex(a)}`;
+}

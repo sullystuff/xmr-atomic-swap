@@ -8,7 +8,7 @@
  * ciphertext and self-verifying blobs only; whatever comes back is verified by the caller.
  */
 import { ENVELOPE_MAX_ONCHAIN, ENVELOPE_MAX_TOR } from '@xmrswap/core-wasm';
-import { type ErrorCode, ERROR_CODES, MAKER_PATH_PATTERN, MAKER_ROUTES, type MakerInfo, RELAY_LIMITS, RELAY_ROUTES, type RelayForwardRequest, type RelayForwardResponse, type RelayStatus, type RepliesResponse } from '@xmrswap/protocol';
+import { type ErrorCode, ERROR_CODES, MAKER_PATH_PATTERN, MAKER_ROUTES, type MakerInfo, RELAY_LIMITS, RELAY_ROUTES, type RelayErrorCode, type RelayForwardRequest, type RelayForwardResponse, type RelayStatus, type RepliesResponse, isRelayError } from '@xmrswap/protocol';
 import { type Bytes, SdkError, fromBase64, toBase64 } from '../util.js';
 
 export type HttpFetch = (url: string, init: { method: string; headers?: Record<string, string>; body?: Bytes | string; signal?: AbortSignal }) => Promise<{ status: number; arrayBuffer(): Promise<ArrayBuffer> }>;
@@ -17,9 +17,12 @@ const defaultFetch: HttpFetch = (url, init) => fetch(url, init as RequestInit);
 
 /** The transport could not be reached at all (relay down, Tor down, RPC down): the caller falls back to the next one. */
 export class TransportUnavailable extends SdkError {
-  constructor(detail: string) {
+  /** Set when the relay itself refused or failed (a `RelayError` body): which of its codes. A maker's own refusal is a `MakerRefused`. */
+  readonly relayError: RelayErrorCode | null;
+  constructor(detail: string, relayError: RelayErrorCode | null = null) {
     super('unavailable', detail);
     this.name = 'TransportUnavailable';
+    this.relayError = relayError;
   }
 }
 /** The maker's endpoint answered with a 4xx and a `{ code }` body. Falling back to another transport will not help. */
@@ -88,7 +91,15 @@ export function relayEndpoint(relayUrl: string, onion: string, fetchFn: HttpFetc
       }
       const raw = new Uint8Array(await res.arrayBuffer());
       // Any relay-level failure (rate limit, unlisted onion, Tor down) is "this route is unavailable".
-      if (res.status !== 200) throw new TransportUnavailable(`relay ${relay} answered ${res.status}`);
+      if (res.status !== 200) {
+        let body: unknown = null;
+        try {
+          body = JSON.parse(new TextDecoder().decode(raw));
+        } catch {
+          // not a relay error body
+        }
+        throw new TransportUnavailable(`relay ${relay} answered ${res.status}${isRelayError(body) ? ` (${body.error})` : ''}`, isRelayError(body) ? body.error : null);
+      }
       let fwd: RelayForwardResponse;
       try {
         fwd = JSON.parse(new TextDecoder().decode(raw)) as RelayForwardResponse;

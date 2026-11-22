@@ -33,8 +33,8 @@ export function fakeRelayFetch(makers: Record<string, Handler>): HttpFetch & { d
     const req = JSON.parse(typeof init.body === 'string' ? init.body : new TextDecoder().decode(init.body)) as RelayForwardRequest;
     forwarded.push(req);
     const maker = makers[req.onion];
-    if (!maker) return respond(403, JSON.stringify({ code: 'not_allowed' }));
-    if (!MAKER_PATH_PATTERN.test(req.path)) return respond(400, JSON.stringify({ code: 'bad_request' }));
+    if (!maker) return respond(403, JSON.stringify({ error: 'onion_not_listed' }));
+    if (!MAKER_PATH_PATTERN.test(req.path)) return respond(400, JSON.stringify({ error: 'bad_path' }));
     const r = await maker(req.method, req.path, req.body_b64 ? fromBase64(req.body_b64) : undefined);
     return respond(200, JSON.stringify({ status: r.status, body_b64: toBase64(bytesOf(r.body)) }));
   }) as HttpFetch & { down: boolean; forwarded: RelayForwardRequest[] };

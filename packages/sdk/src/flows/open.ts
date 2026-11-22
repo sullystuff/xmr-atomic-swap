@@ -19,6 +19,15 @@ import { APPROVAL_IX_INDEX, approvalEd25519Ix } from '../solana/tx.js';
 import { type Bytes, SdkError, unhex } from '../util.js';
 import { ethereumOpenKeys, newSwapNonce, solanaOpenKeys, takerSwapKeys } from './keys.js';
 
+/** The base fee of a Solana transaction, per signature. */
+export const LAMPORTS_PER_SIGNATURE = 5_000n;
+/**
+ * The base fee of an open transaction: one signature (the taker's), or two when it presents an
+ * advance approval, because the Ed25519 precompile's signature is charged too (10,000 lamports).
+ * Priority fees come on top.
+ */
+export const solanaOpenFee = (withApproval: boolean): bigint => LAMPORTS_PER_SIGNATURE * (withApproval ? 2n : 1n);
+
 /** A: the most the taker will pay. B: the least it will receive. `slippageBps` widens the quoted amount. */
 function bound(amount: bigint, direction: number, slippageBps: number): bigint {
   if (slippageBps < 0 || slippageBps > 10_000) throw new SdkError('BadSlippage', 'slippage is 0 to 10,000 basis points');
@@ -63,6 +72,8 @@ export interface SolanaOpenPlan {
   limit: bigint;
   /** Lamports forwarded to the session key: the rent minimum plus the SDK budget. */
   sessionLamports: bigint;
+  /** The base fee the taker's wallet pays for this transaction: 5,000 lamports, or 10,000 with an advance approval. */
+  feeLamports: bigint;
   /** The program instructions, in order; pass them to `SolanaClient.prepare`. A single open is always a legacy transaction. */
   instructions: TransactionInstruction[];
 }
@@ -134,7 +145,7 @@ export function planSolanaOpen(i: SolanaOpenInput): SolanaOpenPlan {
       ? i.program.lock({ ...who, args: { ...common, maxPay: limit, takerView: open.takerView, keyHint } })
       : i.program.take({ ...who, args: { ...common, minReceive: limit } });
   const instructions = i.approval ? [approvalEd25519Ix(i.approval.operatorPub, i.approval.signature, i.approval.message), ix] : [ix];
-  return { direction, swapNonce, swapPda: swap.toBase58(), keys, amount, deposit, depth, limit, sessionLamports, instructions };
+  return { direction, swapNonce, swapPda: swap.toBase58(), keys, amount, deposit, depth, limit, sessionLamports, feeLamports: solanaOpenFee(i.approval !== undefined), instructions };
 }
 
 export interface EthereumOpenInput {

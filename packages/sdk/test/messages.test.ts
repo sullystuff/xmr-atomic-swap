@@ -217,10 +217,11 @@ describe('maker endpoint through the relay and directly', () => {
   it('an unlisted onion, a relay that is down and a malformed forward response are all "unavailable"', async () => {
     const fetchFn = fakeRelayFetch({ [ONION]: makerRoutes() });
     const unlisted = new MakerHttp(relayEndpoint('http://127.0.0.1:8787', `${'x'.repeat(56)}.onion`, fetchFn));
-    await expect(unlisted.info()).rejects.toBeInstanceOf(TransportUnavailable);
+    // The relay's own refusal (a RelayError body) is told apart from a maker's by its code.
+    await expect(unlisted.info()).rejects.toMatchObject({ name: 'TransportUnavailable', code: 'unavailable', relayError: 'onion_not_listed' });
     fetchFn.down = true;
     const http = new MakerHttp(relayEndpoint('http://127.0.0.1:8787', ONION, fetchFn));
-    await expect(http.msg(inbox('tor'))).rejects.toBeInstanceOf(TransportUnavailable);
+    await expect(http.msg(inbox('tor'))).rejects.toMatchObject({ name: 'TransportUnavailable', relayError: null });
     await expect(relayStatus('http://127.0.0.1:8787', fetchFn)).rejects.toBeInstanceOf(TransportUnavailable);
     const garbage = new MakerHttp(relayEndpoint('http://127.0.0.1:8787', ONION, async () => ({ status: 200, arrayBuffer: async () => new TextEncoder().encode('<html>').buffer as ArrayBuffer })));
     await expect(garbage.info()).rejects.toBeInstanceOf(TransportUnavailable);

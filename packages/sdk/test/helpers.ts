@@ -82,7 +82,7 @@ export function callOf(step: VectorStep): Call {
     case 'take':
       return {
         name: step.call,
-        args: { offerMode: a.offer_mode, approval: a.approval, amount: BigInt(a.amount), wA: a.w_a, wN: a.w_n, dC: a.d_c, wC: a.w_c, wF: a.w_f, depth: a.depth, depBps: a.dep_bps },
+        args: { offerMode: a.offer_mode, approval: a.approval, amount: BigInt(a.amount), xmr: BigInt(a.xmr), wA: a.w_a, wN: a.w_n, dC: a.d_c, wC: a.w_c, wF: a.w_f, depth: a.depth, depBps: a.dep_bps },
       };
     case 'approve':
     case 'fund':

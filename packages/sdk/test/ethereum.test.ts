@@ -8,7 +8,7 @@ import { ethSwapId, init, twinCommitments } from '@xmrswap/core-wasm';
 import { type Address, ETH_ERROR_NAMES, ETH_SWAP_EVENT_NAMES, type Hex, IXmrSwapAbi } from '@xmrswap/protocol';
 import { type Abi, decodeFunctionData, parseTransaction, recoverTransactionAddress, toFunctionSelector } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
-import { ContractError, EthereumClient, XmrSwapContract, contractErrorName, ethSessionBudget, secretToUint } from '../src/ethereum/client.js';
+import { ContractError, ETH_SESSION_GAS, ETH_SESSION_GAS_MARGIN_PCT, ETH_SESSION_GAS_PER_CALL, EthereumClient, XmrSwapContract, contractErrorName, ethSessionBudget, secretToUint } from '../src/ethereum/client.js';
 import type { EthSwapStruct } from '../src/machine/view.js';
 import { quoteFromMessage, quoteMessage } from '../src/signing/eip712.js';
 import { priceEthQuote } from '../src/registry/pricing.js';
@@ -148,7 +148,12 @@ describe('calldata builders against the frozen ABI', () => {
     expect(codeOf(() => contract.postMessage(addr(), null, r.bytes(901)))).toBe('MessageTooLarge');
     expect(BigInt((decode(contract.postMessage(addr(), null, r.bytes(4)).data).args as Hex[])[1]!)).toBe(0n);
     expect(codeOf(() => contract.approve(r.bytes(31), b32()))).toBe('BadLength');
-    expect(ethSessionBudget(30_000_000_000n)).toBe(30_000_000_000n * 150_000n * 4n);
+    // Four calls, each sized as the dearest measured session-key call plus 25%.
+    expect(ETH_SESSION_GAS_PER_CALL).toBe(271_000n);
+    expect(ETH_SESSION_GAS_PER_CALL >= (ETH_SESSION_GAS.postNotice * (100n + ETH_SESSION_GAS_MARGIN_PCT)) / 100n).toBe(true);
+    expect(Object.values(ETH_SESSION_GAS).every((g) => g <= ETH_SESSION_GAS.postNotice)).toBe(true);
+    expect(ethSessionBudget(30_000_000_000n)).toBe(30_000_000_000n * 271_000n * 4n);
+    expect(ethSessionBudget(1n, 100n, 2n)).toBe(200n);
   });
 
   it('swapId = keccak256(abi.encode(taker, bytes16 swapNonce))', () => {

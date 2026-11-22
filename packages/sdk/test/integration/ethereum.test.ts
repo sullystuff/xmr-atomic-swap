@@ -5,7 +5,7 @@ import { type DerivedKeys, type EthQuote, type JointAddress, init } from '@xmrsw
 import { type Address, COUNTER, DEPOSIT_STATE, type Hex, SWAP_FLAG, SWAP_STATE } from '@xmrswap/protocol';
 import type { PrivateKeyAccount } from 'viem/accounts';
 import { privateKeyToAccount } from 'viem/accounts';
-import { ContractError, type DecodedEthEvent, ethSessionBudget } from '../../src/ethereum/client.js';
+import { ContractError, type DecodedEthEvent, ETH_SESSION_GAS, ETH_SESSION_GAS_MARGIN_PCT, ETH_SESSION_GAS_PER_CALL, ethSessionBudget } from '../../src/ethereum/client.js';
 import { ethereumCall } from '../../src/flows/execute.js';
 import { buildNotice, checkCounterpartyShare, expectedOpen, jointSpendKey, newSwapNonce, openNotice, secretOpens, swapJointAddress, takerSwapKeys } from '../../src/flows/keys.js';
 import { makerStep } from '../../src/flows/maker.js';
@@ -16,7 +16,7 @@ import { fetchPool, fetchProof, leafArgument, pickLeaf, uploadOwnProof, verifyFu
 import { findDeposits } from '../../src/monero/watch.js';
 import { createRecoveryFile, readRecoveryFile, recoverySeed, resumeSwapKeys, writeRecoveryFile } from '../../src/recovery/file.js';
 import { priceEthQuote } from '../../src/registry/pricing.js';
-import { effectiveSolanaLink } from '../../src/registry/reputation.js';
+import { effectiveSolanaLink, linkIntervals } from '../../src/registry/reputation.js';
 import { ethApprovalProblem, ethQuoteDigest, ethApprovalDigest, ethQuoteProblem, quoteMessage, approvalMessage, signEthApproval, signEthQuote } from '../../src/signing/eip712.js';
 import { hex, hex0x, unhex } from '../../src/util.js';
 import { ETH_NATIVE, type EthWorld, startEthereum } from './eth.js';
@@ -558,5 +558,47 @@ describe('pay or park', () => {
     await w.send(ethereumCall(w.client.contract, s, { name: 'withdraw_owed', who: 'maker' }, { destination: payout })!, w.payout);
     expect(await w.usdcBalance(payout)).toBe(before + pricing.amount - pricing.fee);
     expect((await w.client.owedFor(w.usdc, takerAddr(), makerAddr(), 'latest')).payout).toBe(0n);
+  });
+});
+
+describe('identity link history', () => {
+  it('the pointer set at registration and a later unlink are read back from events', async () => {
+    const owner = unhex(`0x${'07'.repeat(32)}`);
+    await w.send(w.client.contract.setSolanaLink(new Uint8Array(32)), w.owner);
+    await w.finalize();
+    const changes = await w.client.linkChanges(makerAddr());
+    expect(changes.length).toBe(2);
+    expect(changes[0]).toMatchObject({ old: new Uint8Array(32), next: owner });
+    expect(changes[1]).toMatchObject({ old: owner, next: new Uint8Array(32) });
+    // The unlink takes effect only after the delay; until then the pointer is still in effect.
+    const now = await w.now();
+    expect(changes[1]!.effectiveAt > now + 600_000n).toBe(true);
+    expect(linkIntervals(changes, now).map((i) => [hex(i.value), i.to])).toEqual([[hex(owner), null]]);
+    expect(linkIntervals(changes, changes[1]!.effectiveAt).map((i) => [hex(i.value), i.to])).toEqual([[hex(owner), changes[1]!.effectiveAt]]);
+    const m = await w.maker();
+    expect(hex(effectiveSolanaLink({ address: makerAddr(), ...m }, now)!)).toBe(hex(owner));
+    expect(effectiveSolanaLink({ address: makerAddr(), ...m }, changes[1]!.effectiveAt)).toBe(null);
+  });
+});
+
+describe('session budget', () => {
+  it('every call a session key sent stayed within its measured figure plus the margin', () => {
+    const world = new Set([w.owner, w.operator, w.payout, w.taker, w.stranger].map((a) => a.address.toLowerCase()));
+    const bySession = w.gas.filter((g) => !world.has(g.from));
+    const seen = new Map<string, bigint>();
+    for (const g of bySession) seen.set(g.fn, g.gasUsed > (seen.get(g.fn) ?? 0n) ? g.gasUsed : (seen.get(g.fn) ?? 0n));
+    // The scenarios above exercised each kind of session-key call.
+    expect([...seen.keys()].sort()).toEqual(['cancelPending', 'claim', 'postNotice', 'refund', 'setReady']);
+    for (const [fn, used] of seen) {
+      const figure = ETH_SESSION_GAS[fn as keyof typeof ETH_SESSION_GAS];
+      // Not above the figure by more than the margin, and the figure is not stale by more than a third.
+      expect(used <= (figure * (100n + ETH_SESSION_GAS_MARGIN_PCT)) / 100n, `${fn} used ${used}, figure ${figure}`).toBe(true);
+      expect(used * 3n >= figure * 2n, `${fn} used ${used}, figure ${figure}`).toBe(true);
+      expect(used <= ETH_SESSION_GAS_PER_CALL).toBe(true);
+    }
+    // Any call at all by anyone fits one budgeted call slot except the opens, which the wallet pays.
+    const dearest = w.gas.filter((g) => g.fn !== 'lock' && g.fn !== 'take').reduce((m, g) => (g.gasUsed > m ? g.gasUsed : m), 0n);
+    expect(dearest <= ETH_SESSION_GAS_PER_CALL).toBe(true);
+    expect(BUDGET).toBe(5_000_000_000n * ETH_SESSION_GAS_PER_CALL * 4n);
   });
 });

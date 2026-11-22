@@ -6,8 +6,8 @@ import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { type DerivedKeys, dleqProve, dleqVerify, keyLeaf, merkleRoot, twinCommitments } from '@xmrswap/core-wasm';
-import { type Address, type Hex, MAKER_ROUTES } from '@xmrswap/protocol';
-import { encodeFunctionData, parseAbi } from 'viem';
+import { type Address, type Hex, IXmrSwapAbi, MAKER_ROUTES } from '@xmrswap/protocol';
+import { type Abi, decodeFunctionData, encodeFunctionData, parseAbi } from 'viem';
 import { type PrivateKeyAccount, privateKeyToAccount } from 'viem/accounts';
 import { type EthCall, type EthMaker, type EthTransport, EthereumClient } from '../../src/ethereum/client.js';
 import { type CallMaterial, ethereumCall } from '../../src/flows/execute.js';
@@ -81,6 +81,8 @@ export interface EthWorld {
   /** A key pool of `n` fresh shares, served by the endpoint. Returns its root. */
   newPool(n: number): Bytes;
   exec(s: SwapView, d: Decision, signers: { session?: PrivateKeyAccount }, m?: CallMaterial): Promise<Hex>;
+  /** Gas used by every call sent to the contract, by function name and sender. */
+  gas: { fn: string; from: string; gasUsed: bigint }[];
   balance(a: Address): Promise<bigint>;
   usdcBalance(a: Address): Promise<bigint>;
   usdcApprove(from: PrivateKeyAccount, amount: bigint): Promise<void>;
@@ -147,7 +149,7 @@ export async function startEthereum(): Promise<EthWorld> {
 
   const w: EthWorld = {
     url, transport, client, contract, usdc, treasury, deployment: { chainId: 31337n, contract }, owner, operator, operatorKey: hex0x(new Uint8Array(32).fill(12)), payout, taker, stranger,
-    makerSeed, makerEnc, shares, blobs, pools, http: new MakerHttp(endpoint),
+    makerSeed, makerEnc, shares, blobs, pools, http: new MakerHttp(endpoint), gas: [],
     now: () => client.chainTime('latest'),
     async advanceTo(t) {
       if (t <= (await client.chainTime('latest'))) return;
@@ -158,7 +160,8 @@ export async function startEthereum(): Promise<EthWorld> {
     finalize: async () => void (await rpc(url, 'anvil_mine', ['0x41', '0x1'])),
     async send(call, from, opts = {}) {
       const hash = await client.send(call, from, opts);
-      await client.waitMined(hash, { intervalMs: 20 });
+      const receipt = await client.waitMined(hash, { intervalMs: 20 });
+      if (call.to === contract) w.gas.push({ fn: decodeFunctionData({ abi: IXmrSwapAbi as unknown as Abi, data: call.data }).functionName, from: from.address.toLowerCase(), gasUsed: receipt.gasUsed });
       return hash;
     },
     async maker() {
