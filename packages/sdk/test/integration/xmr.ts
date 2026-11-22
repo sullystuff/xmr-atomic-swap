@@ -69,11 +69,26 @@ export async function mine(n: number): Promise<number> {
   return synced();
 }
 
-/** Spendable coinbase and enough outputs on the chain for 16-member rings. */
+/**
+ * The chain height every test starts from.
+ *
+ * A sweep picks 15 decoys the way wallet2 does: output ages drawn from a gamma distribution
+ * centred near two days, mapped onto the chain's RingCT outputs, at most 160 draws in total
+ * (monero-wallet 0.2.0 `select_n`: "hit decoy selection round limit" beyond that). On a regtest
+ * chain a few hundred blocks long most draws point past the start of the chain, and of those
+ * that land, the recent ones are coinbase outputs still inside their 60-block lock. Measured
+ * with dry-run sweeps of one output: 3 of 40 fail at height 180, 0 of 40 at height 600; a model
+ * of the same loop gives 24% at 175, 12% at 190, 2% at 230, and no failure in 400,000 trials
+ * from height 500. It is a property of a thin chain only: mainnet has over a hundred million
+ * RingCT outputs and nearly every draw lands on an unlocked one.
+ */
+export const MIN_CHAIN_HEIGHT = 720;
+
+/** Spendable coinbase, and a chain long enough for decoy selection to be reliable (see `MIN_CHAIN_HEIGHT`). */
 export async function funded(): Promise<void> {
   await walletAddress();
   const h = (await a.info()).height;
-  if (h < 170) await mine(170 - h);
+  if (h < MIN_CHAIN_HEIGHT) await mine(MIN_CHAIN_HEIGHT - h);
   await wallet('refresh');
 }
 
@@ -133,6 +148,7 @@ export const report = (r: VerifyLockResult): LockReport => lockReport(r);
 /** Sweep exactly the verified output of a joint address with the combined key, and mine the sweep. */
 export async function sweep(p: { spendKey: Bytes; viewKey: Bytes; lock: VerifyLockResult; txid: string; destination?: string }): Promise<SweepOutcome> {
   if (p.lock.blockHeight === undefined || p.lock.outputIndex === undefined) throw new Error('sweep needs a verified, mined lock');
+  if ((await chainHeight()) < MIN_CHAIN_HEIGHT) throw new Error(`the regtest chain is shorter than ${MIN_CHAIN_HEIGHT} blocks: call funded() first, or decoy selection is unreliable`);
   // Consensus refuses to spend an output before it is 10 blocks deep.
   const depth = (await chainHeight()) - p.lock.blockHeight;
   if (depth < 10) await mine(10 - depth);
