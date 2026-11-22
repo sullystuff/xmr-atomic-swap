@@ -55,8 +55,13 @@ export interface ChainPort {
   now(): Promise<bigint>;
   listSwaps(taker: string): Promise<SwapView[]>;
   getSwap(ref: string): Promise<SwapView | null>;
-  /** Carry out one call the flow proposed. Session-key calls need no wallet prompt. Resolves once the call is confirmed. */
-  exec(s: SwapView, d: CallDecision, keys: DerivedKeys, m: CallMaterial): Promise<string>;
+  /**
+   * Carry out one call the flow proposed. Session-key calls need no wallet prompt. A call the
+   * session key cannot send (its budget was swept back by a refund or claim, or the call is the
+   * taker's own) throws `WalletNeeded` unless `opts.wallet` is set: the background loop never
+   * opens a wallet prompt by itself; the user clicks first. Resolves once the call is confirmed.
+   */
+  exec(s: SwapView, d: CallDecision, keys: DerivedKeys, m: CallMaterial, opts?: { wallet?: boolean }): Promise<string>;
 }
 
 /** The display reference of a swap: the swap PDA in base58 (Solana) or the 0x swap id (Ethereum). */
@@ -102,7 +107,7 @@ export class SolanaPort implements ChainPort {
     return a !== null && a.lamports >= this.rent0 + 10_000n;
   }
 
-  async exec(s: SwapView, d: CallDecision, keys: DerivedKeys, m: CallMaterial): Promise<string> {
+  async exec(s: SwapView, d: CallDecision, keys: DerivedKeys, m: CallMaterial, opts: { wallet?: boolean } = {}): Promise<string> {
     const maker = await this.client.getMaker(s.maker);
     if (!maker) throw new Error('The maker record of this swap is gone from the registry.');
     if (this.burn === null) this.burn = ((await this.client.getConfig())?.splitMode ?? 0) === 1;
@@ -114,7 +119,7 @@ export class SolanaPort implements ChainPort {
       return this.client.sendAndConfirm([ix], [session], { intervalMs: this.pollMs });
     }
     const w = this.wallet();
-    if (!w) throw new WalletNeeded('solana');
+    if (!w || !opts.wallet) throw new WalletNeeded('solana');
     return this.sendWithWallet([solanaInstruction(this.client.program, s, wallets, w.address, d.call, { ...m, destination: m.destination ?? w.address })]);
   }
 }
@@ -156,7 +161,7 @@ export class EthereumPort implements ChainPort {
     return BigInt(bal) > 0n;
   }
 
-  async exec(s: SwapView, d: CallDecision, keys: DerivedKeys, m: CallMaterial): Promise<string> {
+  async exec(s: SwapView, d: CallDecision, keys: DerivedKeys, m: CallMaterial, opts: { wallet?: boolean } = {}): Promise<string> {
     const call = ethereumCall(this.client.contract, s, d.call, { ...m, destination: m.destination ?? s.taker });
     if (!call) return '';
     const session = privateKeyToAccount(hex0x(keys.sessionSecret));
@@ -166,6 +171,7 @@ export class EthereumPort implements ChainPort {
       await this.client.waitMined(hash, { intervalMs: this.pollMs });
       return hash;
     }
+    if (!opts.wallet) throw new WalletNeeded('ethereum');
     return this.sendWithWallet(call);
   }
 }

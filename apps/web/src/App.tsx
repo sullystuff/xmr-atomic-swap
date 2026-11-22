@@ -43,7 +43,8 @@ function Shell({ app }: { app: AppObject }) {
   const settings = useObs(app.settings);
   const upgrade = useObs(app.upgrade);
   const safety = useSafety();
-  const section = route.path[0] === 'swap' || route.path[0] === 'maker' ? '' : (route.path[0] ?? '');
+  // A swap in progress belongs to Activity; reviewing an offer and a maker's page belong to Offers.
+  const section = route.path[0] === 'swap' ? (route.path[1] === 'new' ? '' : 'activity') : route.path[0] === 'maker' ? '' : (route.path[0] ?? '');
   useEffect(() => {
     if (settings.theme === 'system') document.documentElement.removeAttribute('data-theme');
     else document.documentElement.setAttribute('data-theme', settings.theme);

@@ -24,6 +24,7 @@ if (typeof window !== 'undefined') {
   }
   // jsdom has no SubtleCrypto; Node's is the same Web Crypto API.
   if (!globalThis.crypto?.subtle) Object.defineProperty(globalThis, 'crypto', { value: webcrypto, configurable: true });
+  window.scrollTo = () => undefined;
   if (!URL.createObjectURL) {
     URL.createObjectURL = () => 'blob:test';
     URL.revokeObjectURL = () => undefined;

@@ -402,6 +402,9 @@ function Board({ order }: { order: Order }) {
                           {t.busy ? `${t.busy}… ` : ''}
                           {l.state === 'xmr-seen' && t.lock ? `${Math.min(t.lock.confirmations, l.depth)} of ${l.depth} confirmations. ` : ''}
                           {l.state === 'claimed' && t.sweep.phase === 'waiting' ? `Yours, spendable in ${t.sweep.blocksLeft} blocks. ` : ''}
+                          {l.state === 'claimed' && t.sweep.phase === 'broadcast' ? 'Sweep sent, waiting for a block. ' : ''}
+                          {l.state === 'claimed' && t.sweep.phase === 'failed' ? <span className="text-warn-text">Sweep is being retried; nothing was spent. </span> : null}
+                          {l.state === 'claimed' && t.sweep.phase === 'need-destination' ? 'Needs your XMR address. ' : ''}
                           {l.state === 'refunded' && t.note.autoRefunded ? 'The maker stalled; the tab refunded and the remainder is re-planned. ' : ''}
                           {t.lost ? <span className="text-danger-text">{t.lost} </span> : null}
                           <a href={href('swap', l.ref!)}>Open</a>

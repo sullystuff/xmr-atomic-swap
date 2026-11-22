@@ -368,6 +368,10 @@
     border-radius: 10px;
     background: var(--raised);
   }
+  .notice > * {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
   .notice > svg {
     margin-top: 0.15rem;
   }
@@ -450,6 +454,12 @@
   }
   .banner a {
     color: inherit;
+  }
+  .banner-note {
+    display: block;
+    margin-top: 0.125rem;
+    font-size: 0.8125rem;
+    opacity: 0.9;
   }
 
   /* ---- status pills */
@@ -631,6 +641,12 @@
     font-size: 0.9375rem;
     text-decoration: none;
     white-space: nowrap;
+  }
+  @media (max-width: 30rem) {
+    .nav a {
+      padding: 0.625rem 0.5rem;
+      font-size: 0.875rem;
+    }
   }
   .nav a:hover {
     color: var(--ink);

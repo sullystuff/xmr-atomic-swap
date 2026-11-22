@@ -139,8 +139,7 @@ export async function openEthereum(port: EthereumPort, taker: Address, seed: Uin
     await fetchProof(http, { spendPub: picked.spendPub, keyAddr: picked.key, keyAddr2: picked.key2 }, [keys.spendPub]);
     leaf = leafArgument(pool, picked);
   }
-  const base = BigInt(((await client.transport.request({ method: 'eth_getBlockByNumber', params: ['latest', false] })) as { baseFeePerGas?: string }).baseFeePerGas ?? '0x0');
-  const sessionBudget = ethSessionBudget(base * 2n + 2_000_000_000n);
+  const sessionBudget = await ethereumSessionBudget(client);
   const plan = planEthereumOpen({ contract: client.contract, taker, quote, sig, maker: { encKeyVersion: row.maker.solana.encKeyVersion, encKey: row.maker.solana.encKey }, seed, swapNonce, xmr, slippageBps, sessionBudget, ...(leaf ? { leaf } : {}) });
   const token = hex0x(quote.token) as Address;
   if (row.market === 'usdc_eth') {
@@ -152,6 +151,12 @@ export async function openEthereum(port: EthereumPort, taker: Address, seed: Uin
   const view = await client.getSwap(plan.swapId, 'latest', true);
   if (!view) throw new Error('The lock was sent but the swap cannot be read yet. Open Activity: it will appear there.');
   return view;
+}
+
+/** What the lock forwards to the session key on Ethereum: four calls at twice the base fee plus a tip. What is left is swept back to the taker. */
+export async function ethereumSessionBudget(client: EthereumClient): Promise<bigint> {
+  const base = BigInt(((await client.transport.request({ method: 'eth_getBlockByNumber', params: ['latest', false] })) as { baseFeePerGas?: string }).baseFeePerGas ?? '0x0');
+  return ethSessionBudget(base * 2n + 2_000_000_000n);
 }
 
 /** Ethereum direction B: the maker's proof for the share it funded with (SPEC 6.4). `undefined` = the endpoint cannot be reached right now. */

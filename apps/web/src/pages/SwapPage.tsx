@@ -39,6 +39,24 @@ function Steps({ steps }: { steps: Step[] }) {
 const rank = (state: number): number => ({ [SWAP_STATE.PENDING]: 1, [SWAP_STATE.ACTIVE]: 2, [SWAP_STATE.NOTICED]: 3, [SWAP_STATE.READY]: 4 })[state] ?? 5;
 const st = (reached: boolean, current: boolean): StepState => (reached ? 'done' : current ? 'current' : 'todo');
 
+const REASON_TEXT: Readonly<Record<string, string>> = {
+  'txid-mismatch': 'a node returned a different transaction than the one the maker named',
+  'unlock-time': 'the transaction is time-locked, so the XMR could not be moved',
+  'rct-type': 'the transaction is of a kind that cannot be verified',
+  'commitment-mismatch': 'the amount does not match what the transaction commits to',
+  'no-output': 'the transaction pays nothing to the joint address',
+  'multiple-outputs': 'the transaction pays the joint address more than once',
+  'duplicate-output-key': 'another output uses the same one-time key, so only one of them could ever be spent',
+  'double-spend': 'a node has seen a conflicting spend of the same inputs',
+};
+/** Why the announced lock does not count, in plain words; the node's own wording follows for the record. */
+function lockProblem(t: Tracked): string {
+  const l = t.lock!;
+  const code = l.codes[0] ?? '';
+  if (code === 'amount-too-small') return `it pays ${formatXmrAmount(l.amount, 12)} XMR, but this swap needs ${formatXmrAmount(t.view!.xmr, 12)} XMR (amount-too-small)`;
+  return REASON_TEXT[code] ? `${REASON_TEXT[code]} (${code})` : (l.reasons[0] ?? 'it failed verification');
+}
+
 function LockProgress({ t }: { t: Tracked }) {
   const s = t.view!;
   if (t.noticeOpens === false) return <span>The maker's lock notice does not open. It is treated as no lock: this tab refunds at the cutoff.</span>;
@@ -49,7 +67,7 @@ function LockProgress({ t }: { t: Tracked }) {
     <div className="grid gap-1.5">
       <span>
         {t.lock.state === 'invalid' ? (
-          <strong className="text-danger-text">The lock is not valid: {t.lock.reasons[0]}</strong>
+          <strong className="text-danger-text">The lock is not valid: {lockProblem(t)}</strong>
         ) : t.lock.state === 'not-found' ? (
           'Your nodes have not seen the lock transaction yet.'
         ) : t.lock.state === 'pending' ? (
@@ -60,7 +78,7 @@ function LockProgress({ t }: { t: Tracked }) {
           </>
         )}
       </span>
-      <progress className="meter" max={s.depth} value={conf} aria-label={`${conf} of ${s.depth} confirmations`} />
+      {t.lock.state === 'invalid' ? <span>This tab refunds at the cutoff unless you refund sooner.</span> : <progress className="meter" max={s.depth} value={conf} aria-label={`${conf} of ${s.depth} confirmations`} />}
       {t.lock.reasons.length > 0 && t.lock.state !== 'invalid' ? <span className="text-sm">Not counted as confirmed: {t.lock.reasons[0]}</span> : null}
     </div>
   );
@@ -318,9 +336,16 @@ export function SwapPage({ swapRef }: { swapRef: string }) {
           {t.error} The tab retries in a few seconds. Keep it open.
         </Notice>
       ) : null}
-      {t.needsWallet ? (
-        <Notice kind="warn" title="Your wallet is needed for the next step">
-          Connect the wallet that opened this swap. This step cannot be signed by the session key.
+      {t.needsWallet && t.decision?.do === 'call' ? (
+        <Notice kind="info" title={t.decision.call.name === 'release_deposit' || t.decision.call.name === 'split_deposit' ? 'Your deposit can be collected now' : 'Your wallet is needed for the next step'}>
+          <p>
+            {t.decision.call.name === 'release_deposit' || t.decision.call.name === 'split_deposit'
+              ? 'Returning it takes one small transaction. The session key\'s budget went back to you with the refund, so your wallet pays the fee. Anyone may send it, and it always pays your address; there is no deadline.'
+              : 'This step cannot be signed by the session key. Connect the wallet that opened this swap.'}
+          </p>
+          <button type="button" className="btn mt-3" onClick={() => void app.engine.signWithWallet(t.ref)}>
+            Sign with my wallet
+          </button>
         </Notice>
       ) : null}
 

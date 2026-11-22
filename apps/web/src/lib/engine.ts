@@ -182,6 +182,8 @@ export class Engine {
   private again = false;
   private sweepMisses = new Map<string, number>();
   private readonly nowMs: () => number;
+  /** Swaps whose next wallet-signed call the user asked for. */
+  private readonly walletOk = new Set<string>();
 
   constructor(private readonly deps: EngineDeps) {
     this.nowMs = deps.nowMs ?? (() => Date.now());
@@ -451,7 +453,8 @@ export class Engine {
         t.busy = BUSY_TEXT[d.call.name] ?? 'Sending a transaction';
         this.emit();
         try {
-          await port.exec(s, d, keys, m);
+          await port.exec(s, d, keys, m, { wallet: this.walletOk.has(t.ref) });
+          this.walletOk.delete(t.ref);
         } catch (e) {
           t.busy = null;
           if (e instanceof WalletNeeded) {
@@ -541,14 +544,16 @@ export class Engine {
       }
       return;
     }
-    if (!t.note.destination) {
-      t.sweep = { phase: 'need-destination' };
-      return;
-    }
+    // Verify first, destination or not: whether the XMR is really there decides what the page tells the user.
     const lock = await this.verify(t, MONERO_LOCK_WINDOW);
     if (!lock || lock.blockHeight === undefined || lock.outputIndex === undefined) {
       const attempts = t.sweep.phase === 'failed' ? t.sweep.attempts : 0;
       t.sweep = lock && (lock.state === 'pending' || lock.state === 'not-found') ? { phase: 'waiting', blocksLeft: MONERO_LOCK_WINDOW } : { phase: 'failed', error: t.lockError ?? lock?.reasons[0] ?? 'The lock could not be verified on every node.', attempts };
+      return;
+    }
+    const destination = t.note.destination;
+    if (!destination) {
+      t.sweep = { phase: 'need-destination' };
       return;
     }
     if (lock.confirmations < MONERO_LOCK_WINDOW) {
@@ -571,7 +576,7 @@ export class Engine {
         lockHeight: lock.blockHeight,
         lockTxid: unhex(t.lockTxid),
         outputIndex: BigInt(lock.outputIndex),
-        destination: t.note.destination,
+        destination,
         maxFee: this.deps.sweepMaxFee?.() ?? sweepMaxFee(lock.amount),
       });
       this.patchNote(t, { sweepTxid: out.txid, sweepAmount: out.amount.toString(), sweepFee: out.fee.toString() });
@@ -581,6 +586,12 @@ export class Engine {
     } finally {
       t.busy = null;
     }
+  }
+
+  /** The user asked for the pending wallet-signed step of a swap: the next pass may open the wallet prompt once. */
+  signWithWallet(ref: string): Promise<void> {
+    this.walletOk.add(ref);
+    return this.poll();
   }
 
   /** Retry a failed sweep now (the engine also retries by itself on every pass). */

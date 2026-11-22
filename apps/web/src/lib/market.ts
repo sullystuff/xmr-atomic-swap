@@ -6,7 +6,7 @@
  */
 import type { EthQuote } from '@xmrswap/core-wasm';
 import { type Address, type ChainName, ETH_NATIVE, MARKET_CHAIN, type Market, type Offer, PICONERO_PER_XMR, takerDepthFor } from '@xmrswap/protocol';
-import { type EthereumClient, type LinkMemory, type MakerProfile, type Pricing, type RouterOffer, type SolanaClient, hex, hex0x, listMakerProfiles, listOffers, priceEthQuote, priceOffer, tierValue, verifiedBoardQuotes } from '@xmrswap/sdk';
+import { type EthereumClient, type LinkMemory, type MakerProfile, type Pricing, type RouterOffer, type SolanaClient, hex, hex0x, listMakerProfiles, listOffers, priceEthQuote, priceOffer, rememberPastLinks, tierValue, verifiedBoardQuotes } from '@xmrswap/sdk';
 import { ASSET_LABEL, bpsPercent, formatAsset, formatDuration, formatTime } from './format.js';
 import type { Settings } from './settings.js';
 
@@ -140,7 +140,18 @@ export async function readRegistry(solana: SolanaClient, ethereum: EthereumClien
       eth = null;
     }
   }
-  const makers = await listMakerProfiles(solana, eth, { solana: nowSol, ethereum: nowEth ?? nowSol }, memory);
+  const clock = { solana: nowSol, ethereum: nowEth ?? nowSol };
+  if (eth && memory) {
+    // A maker cannot shed a bad record by unlinking: fill the link memory from chain history first.
+    for (const m of await solana.listMakers()) {
+      try {
+        await rememberPastLinks(solana, eth, m.pubkey, m.account, memory, clock);
+      } catch {
+        // History that cannot be read now is read on the next refresh; current links still merge.
+      }
+    }
+  }
+  const makers = await listMakerProfiles(solana, eth, clock, memory);
   const rows: OfferRow[] = [];
   for (const asset of [0, 1]) for (const direction of [0, 1]) for (const o of await listOffers(solana, makers, { asset, direction }, nowSol)) rows.push(solanaRow(o.pubkey, o.offer, o.maker, o.problem));
   const discarded: RegistrySnapshot['discarded'] = [];
@@ -308,7 +319,7 @@ export function offerWarnings(i: WarningInput): OfferWarning[] {
     });
   }
   if (i.row.market === 'usdc_sol' || i.row.market === 'usdc_eth')
-    out.push({ id: 'usdc-freeze', title: 'USDC can be frozen by its issuer', text: 'The issuer can freeze USDC mid-swap; a freeze can strand funds. Nobody in this swap can undo a freeze, so USDC swaps carry a risk of loss that SOL and ETH swaps do not.' });
+    out.push({ id: 'usdc-freeze', title: 'USDC can be frozen by its issuer', text: 'The issuer can freeze USDC mid-swap; a freeze can strand funds. Nobody in this swap can undo a freeze: you could lose what you locked, a risk SOL and ETH swaps do not carry.' });
   if (i.upgrade.frozen === false)
     out.push({
       id: 'upgradable',

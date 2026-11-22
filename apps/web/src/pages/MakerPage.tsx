@@ -1,7 +1,7 @@
 /** A maker's profile, linked identity, contact channels and the inbox thread (SPEC 8.2 "Maker"). */
 import { CONTACT_KIND, COUNTER_NAMES } from '@xmrswap/protocol';
 import { useEffect, useState } from 'react';
-import type { Thread } from '../lib/inbox.js';
+import { type Thread, explainSendError } from '../lib/inbox.js';
 import { formatDuration, formatPercent } from '../lib/format.js';
 import { href, useApp, useEngine, useObs, useVault } from '../ui/hooks.js';
 import { Copyable, Empty, Field, Notice, SkeletonRows } from '../ui/kit.js';
@@ -75,7 +75,7 @@ export function MakerPage({ pda }: { pda: string }) {
       setText('');
       setRelease(false);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(explainSendError(e));
     } finally {
       setBusy(false);
     }
@@ -121,7 +121,7 @@ export function MakerPage({ pda }: { pda: string }) {
               ) : link.status === 'one-sided' ? (
                 <span>A link is claimed on one chain only. It is ignored: nobody can attach themselves to another maker's record.</span>
               ) : maker.identity.historical ? (
-                'Unlinked, but its earlier Ethereum history stays attached below.'
+                'The link to its Ethereum identity was removed. The history from while they were linked stays attached and is counted below: a maker cannot shed a record by unlinking.'
               ) : (
                 'None'
               )}

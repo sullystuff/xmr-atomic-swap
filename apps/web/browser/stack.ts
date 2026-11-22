@@ -43,7 +43,8 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 export const repoRoot = path.resolve(here, '../../..');
 const SO = process.env.XMR_SWAP_SO ?? path.join(repoRoot, 'solana/program/target/deploy/xmr_swap.so');
 const DIST = path.resolve(here, '../dist');
-export const T0 = 1_800_000_000;
+/** Chain time starts at the wall clock, so the page's clock-skew warning only appears once a test has warped far ahead. */
+export const T0 = Math.floor(Date.now() / 1000);
 export const XMR = 1_000_000_000_000n;
 export const SOL = 1_000_000_000n;
 const seed = (n: number) => new Uint8Array(32).fill(n);

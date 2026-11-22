@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { COUNTER, SWAP_STATE } from '@xmrswap/protocol';
 import { deadlinesOf } from '@xmrswap/sdk';
 import type { Browser, Page } from 'playwright-core';
-import { connectWallet, injectWallet, launch, saveRecoveryFile, watchErrors } from './driver.js';
+import { connectWallet, injectWallet, launch, saveRecoveryFile, shots, watchErrors } from './driver.js';
 import { SOL, type Stack, XMR, startStack } from './stack.js';
 import * as xmr from './xmr.js';
 
@@ -44,6 +44,7 @@ describe('buy XMR with SOL in the browser (H-A, U-1)', () => {
     expect(await offer.innerText()).toMatch(/Auto-accept/);
     expect(await offer.innerText()).toMatch(/Claim delay\s+1 h/);
     await connectWallet(page);
+    await shots(page, 'offers');
     await offer.getByRole('link', { name: 'Buy XMR' }).click();
 
     // ---- review
@@ -63,6 +64,7 @@ describe('buy XMR with SOL in the browser (H-A, U-1)', () => {
     const recoveryFile = await saveRecoveryFile(page);
     expect(JSON.parse(recoveryFile)).toMatchObject({ format: 'xmrswap-recovery/1', program_id: w.client.programId });
     await expect.poll(() => lock.isDisabled()).toBe(false);
+    await shots(page, 'review');
 
     // ---- gate 2: the full-screen confirmation; nothing reaches the wallet before the box is ticked
     await lock.click();
@@ -106,6 +108,7 @@ describe('buy XMR with SOL in the browser (H-A, U-1)', () => {
     expect(await safe.innerText()).toMatch(/If the maker does not complete, come back before .+ to refund\./);
     expect(await banner.count()).toBe(0);
     await expect.poll(() => page.title()).toBe('Safe to close · XMR atomic swaps');
+    await shots(page, 'safe-to-close');
 
     // ---- the maker claims; the XMR is ours but not spendable before 10 blocks
     expect(await w.stepMakers()).toEqual(['1: claimed']);
@@ -129,6 +132,12 @@ describe('buy XMR with SOL in the browser (H-A, U-1)', () => {
     expect([m.counters[COUNTER.locks], m.counters[COUNTER.readies], m.counters[COUNTER.completed]]).toEqual([1, 1, 1]);
     await page.getByRole('link', { name: /^Activity/ }).click();
     await expect.poll(() => page.getByTestId('activity-swap').getAttribute('data-leg')).toBe('swept');
+    await page.getByRole('link', { name: 'Status', exact: true }).click();
+    await page.getByTestId('check-monero').waitFor();
+    expect(await page.getByTestId('check-monero').getAttribute('data-state')).toBe('ok');
+    expect(await page.getByTestId('check-solana').getAttribute('data-state')).toBe('ok');
+    expect(await page.getByTestId('check-upgrade-solana').innerText()).toMatch(/still upgradable/);
+    await shots(page, 'status');
     expect(errors).toEqual([]);
     await context.close();
   });

@@ -1,7 +1,7 @@
 /** One swap, before the lock: review, the offer's warnings, the recovery file, then the full-screen confirmation (SPEC 8.2 "Swap"). */
 import type { Pricing } from '@xmrswap/sdk';
 import { useEffect, useMemo, useState } from 'react';
-import { ASSET_LABEL, bpsPercent, formatAsset, formatDuration, formatPrice, formatTime, formatXmrAmount, looksLikeXmrAddress, parseXmr } from '../lib/format.js';
+import { ASSET_LABEL, bpsPercent, formatAsset, formatDuration, formatPrice, formatTime, formatUnits, formatXmrAmount, looksLikeXmrAddress, parseXmr } from '../lib/format.js';
 import { lockBlockers } from '../lib/gates.js';
 import { expectedSecs, isUsdc, offerWarnings, referenceFor, vsReferenceBps, worstCaseClaimOpen } from '../lib/market.js';
 import { BackupStep } from '../ui/Backup.js';
@@ -25,6 +25,14 @@ export function NewSwapPage({ offerId }: { offerId: string }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [approvalOk, setApprovalOk] = useState<boolean | null>(null);
+  const [funding, setFunding] = useState<{ budget: bigint; fee: bigint | null } | null>(null);
+  useEffect(() => {
+    let live = true;
+    if (row) void app.sessionFunding(row.chain, row.mode === 2).then((f) => live && setFunding(f));
+    return () => {
+      live = false;
+    };
+  }, [app, row?.chain, row?.mode]);
 
   const xmr = parseXmr(xmrText);
   const priced = useMemo((): { pricing: Pricing | null; error: string | null } => {
@@ -172,6 +180,17 @@ export function NewSwapPage({ offerId }: { offerId: string }) {
               <dd>{pricing ? (pricing.deposit === 0n ? 'none' : `${formatAsset(pricing.deposit, row.market)} ${asset} (${bpsPercent(row.depBps)})${buying ? ', part of what you lock' : ', posted now'}`) : bpsPercent(row.depBps)}</dd>
               <dt>Maker can claim without you</dt>
               <dd>{formatDuration(row.claimDelay)} after its lock notice</dd>
+              <dt>Session key funding</dt>
+              <dd>
+                {funding ? (
+                  <>
+                    <span className="num">{formatUnits(funding.budget, row.chain === 'solana' ? 9 : 18, 6)}</span> {row.chain === 'solana' ? 'SOL' : 'ETH'} sent with the lock so this page can set ready and refund without your wallet. What it does not spend is swept back to you.
+                    {funding.fee !== null ? ` Network fee of the lock: ${formatUnits(funding.fee, 9, 6)} SOL.` : ''}
+                  </>
+                ) : (
+                  'A small amount sent with the lock so this page can act without your wallet; what is left is swept back.'
+                )}
+              </dd>
               {isUsdc(row.market) ? (
                 <>
                   <dt>Asset risk</dt>

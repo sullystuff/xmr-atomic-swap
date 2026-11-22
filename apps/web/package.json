@@ -12,7 +12,7 @@
     "preview": "vite preview",
     "test": "node scripts/ensure-core.mjs && tsc -p tsconfig.json --noEmit && vitest run",
     "test:browser": "node scripts/ensure-core.mjs && flock /tmp/xmrswap-integration.lock vitest run --config vitest.browser.config.ts",
-    "screenshots": "node scripts/ensure-core.mjs && vite build && tsx scripts/screenshots.ts",
+    "screenshots": "SCREENSHOTS=1 pnpm run test:browser",
     "stack": "flock /tmp/xmrswap-integration.lock tsx scripts/dev-stack.ts"
   },
   "dependencies": {

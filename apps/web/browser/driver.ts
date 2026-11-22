@@ -154,3 +154,44 @@ export async function saveRecoveryFile(page: Page): Promise<string> {
   await page.locator('[data-testid="backup"][data-state="saved"]').waitFor();
   return text;
 }
+
+const SHOT_DIR = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../screenshots');
+/**
+ * With `SCREENSHOTS=1`: save the current screen at desktop and phone width, light and dark,
+ * under apps/web/screenshots/. A no-op otherwise, so the acceptance run leaves the tree clean.
+ */
+export async function shots(page: Page, name: string): Promise<void> {
+  if (!process.env.SCREENSHOTS) return;
+  const before = page.viewportSize();
+  for (const [device, size] of [['desktop', { width: 1280, height: 800 }], ['phone', { width: 390, height: 844 }]] as const) {
+    await page.setViewportSize(size);
+    for (const theme of ['dark', 'light'] as const) {
+      await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme);
+      await page.waitForTimeout(150);
+      await page.screenshot({ path: path.join(SHOT_DIR, `${name}-${device}-${theme}.png`), fullPage: false });
+    }
+  }
+  await page.evaluate(() => document.documentElement.removeAttribute('data-theme'));
+  if (before) await page.setViewportSize(before);
+}
+
+/** From the offers page to a locked swap: the whole gate sequence. Returns the swap's reference and the recovery file. */
+export async function lockSwap(page: Page, url: string, o: { xmr: string; destination: string; offerIndex?: number; shot?: string }): Promise<{ ref: string; recoveryFile: string }> {
+  await page.goto(url);
+  await connectWallet(page);
+  await page.getByTestId('offer').nth(o.offerIndex ?? 0).getByRole('link', { name: 'Buy XMR' }).click();
+  await page.getByLabel('XMR to buy').fill(o.xmr);
+  await page.getByLabel('Your XMR address').fill(o.destination);
+  const recoveryFile = await saveRecoveryFile(page);
+  await page.getByTestId('lock-button').click();
+  const confirm = page.getByTestId('confirm-lock');
+  await confirm.getByRole('checkbox').check();
+  if (o.shot) {
+    await page.locator('dialog.fullscreen').evaluate((d) => d.scrollTo(0, 0));
+    await shots(page, o.shot);
+  }
+  await confirm.getByRole('button', { name: /^Lock / }).click();
+  await page.getByTestId('swap-page').waitFor();
+  const ref = decodeURIComponent(new URL(page.url()).hash.split('/').pop()!);
+  return { ref, recoveryFile };
+}

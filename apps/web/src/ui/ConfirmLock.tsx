@@ -37,7 +37,7 @@ export function ConfirmLock(p: ConfirmLockProps) {
   }, [p.open]);
   return (
     <FullscreenDialog open={p.open} onClose={p.onClose} labelledBy={h}>
-      <div className="mx-auto grid max-w-3xl gap-8 px-4 py-8 sm:py-14" data-testid="confirm-lock">
+      <div className="mx-auto grid max-w-3xl grid-cols-[minmax(0,1fr)] gap-8 px-4 py-8 sm:py-14" data-testid="confirm-lock">
         <div className="grid gap-4">
           <p className="muted">Before you lock {p.summary}</p>
           <h1 id={h} className="confirm-lead">

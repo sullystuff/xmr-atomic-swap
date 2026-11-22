@@ -6,10 +6,7 @@
  */
 import { Connection } from '@solana/web3.js';
 import type { Address, ChainName, Market } from '@xmrswap/protocol';
-import {
-  type ApprovalResponseSolana,
-  type Message,
-} from '@xmrswap/protocol';
+import { type ApprovalResponseSolana, type Message, SESSION_BUDGET_LAMPORTS } from '@xmrswap/protocol';
 import {
   EthereumClient,
   LinkMemory,
@@ -37,7 +34,7 @@ import { Engine, type EngineState, type SwapNote, type Tracked } from './engine.
 import { Guard, type GuardEnv } from './guard.js';
 import { Inbox, type ReplyKey, type Thread } from './inbox.js';
 import { type OfferRow, type RegistrySnapshot, type UpgradeStatus, marketOf, readRegistry } from './market.js';
-import { OpenRefused, checkFundedShare, ethereumUpgradeStatus, makerHttp, openEthereum, openSolanaWave, solanaUpgradeStatus } from './open.js';
+import { OpenRefused, checkFundedShare, ethereumSessionBudget, ethereumUpgradeStatus, makerHttp, openEthereum, openSolanaWave, solanaUpgradeStatus } from './open.js';
 import { type Order, type OrderLeg, nextWave, stalledMakers } from './orders.js';
 import { type ChainPort, EthereumPort, type EthereumWallet, type MoneroPort, SolanaPort, type SolanaWallet, httpEthTransport, moneroPort, swapRefOf } from './ports.js';
 import { type Safety, safetyOf } from './safety.js';
@@ -150,6 +147,7 @@ export class App {
     this.unsub.push(this.engine.subscribe(() => this.onEngine()));
     this.unsub.push(
       this.vault.subscribe(() => {
+        this.noteWallets();
         void this.loadOrders();
         void this.engine.poll();
       }),
@@ -200,8 +198,8 @@ export class App {
       this.solPort = null;
       const made = this.solanaClient;
       // USDC instructions need the mint the program was initialised with.
-      void made
-        .getConfig()
+      void Promise.resolve()
+        .then(() => made.getConfig())
         .then((c) => {
           if (c && this.solanaClient === made) {
             this.solanaClient = made.withUsdcMint(c.usdcMint);
@@ -268,13 +266,24 @@ export class App {
       return;
     }
     this.wallets.set({ ...cur, [chain]: w });
+    this.noteWallets();
     void this.engine.poll();
+  }
+
+  /**
+   * Record the connected wallets in the recovery file's wallet list, so a file downloaded now
+   * tells a restored browser which addresses to look up before any wallet is connected.
+   */
+  private noteWallets(): void {
+    const w = this.wallets.get();
+    if (w.solana) this.vault.noteWallet('solana', w.solana.address);
+    if (w.ethereum) this.vault.noteWallet('ethereum', w.ethereum.address);
   }
 
   // ------------------------------------------------------------------ registry and upgrade status
 
   async refreshRegistry(): Promise<void> {
-    const sol = this.solana();
+    const sol = this.deps.readRegistry ? null : this.solana();
     if (!this.deps.readRegistry && !sol) {
       this.registry.set({ snapshot: null, loading: false, error: null, at: null });
       return;
@@ -342,6 +351,25 @@ export class App {
     if (!view) throw new OpenRefused(r.errors[0] ?? 'The swap did not open. Nothing was locked.');
     this.adopt(view, { market: a.row.market, destination: a.destination });
     return swapRefOf(view);
+  }
+
+  /**
+   * What the lock sends along to fund the session key, and the network fee of the lock itself, in
+   * the chain's native unit. Shown before locking; whatever the session key does not spend is
+   * swept back to the taker.
+   */
+  async sessionFunding(chain: ChainName, approval = false): Promise<{ budget: bigint; fee: bigint | null } | null> {
+    try {
+      if (chain === 'solana') {
+        const sol = this.solana();
+        if (!sol) return null;
+        return { budget: (await sol.transport.getMinimumBalanceForRentExemption(0)) + SESSION_BUDGET_LAMPORTS, fee: approval ? 10_000n : 5_000n };
+      }
+      const eth = this.ethereum();
+      return eth ? { budget: await ethereumSessionBudget(eth), fee: null } : null;
+    } catch {
+      return null;
+    }
   }
 
   private adopt(view: SwapView, note: SwapNote): void {

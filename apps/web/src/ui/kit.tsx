@@ -60,7 +60,7 @@ export function Field({ label, hint, error, children }: { label: string; hint?: 
 export function Copyable({ value, label, full = false }: { value: string; label: string; full?: boolean }) {
   const [copied, setCopied] = useState(false);
   return (
-    <span className="inline-flex items-center gap-1.5 min-w-0 max-w-full align-bottom">
+    <span className="inline-flex max-w-full min-w-0 items-center gap-1 align-middle">
       <code className={full ? 'break-all' : 'truncate'} title={value}>
         {full ? value : shorten(value, 8, 6)}
       </code>

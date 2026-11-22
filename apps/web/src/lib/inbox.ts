@@ -9,7 +9,7 @@
  */
 import { envelopeHeader } from '@xmrswap/core-wasm';
 import type { Maker, Message } from '@xmrswap/protocol';
-import { type MakerHttp, type MessageTransport, type SendResult, type SolanaClient, contactKeys, envelopeHash, hex, keyBytes, openFromMaker, sealToMaker, sendWithFallback, solanaMessageTransport, torMessageTransport } from '@xmrswap/sdk';
+import { type MakerHttp, MakerRefused, type MessageTransport, TransportUnavailable, type SendResult, type SolanaClient, contactKeys, envelopeHash, hex, keyBytes, openFromMaker, sealToMaker, sendWithFallback, solanaMessageTransport, torMessageTransport } from '@xmrswap/sdk';
 import type { SealedStore } from './sealed.js';
 
 export interface ThreadItem {
@@ -56,6 +56,26 @@ export interface SendInput {
 }
 
 const threadName = (maker: string): string => `inbox.${maker}`;
+
+/** Why a message did not go out, telling the relay's refusal apart from the maker's own (SPEC 6.5). */
+export function explainSendError(e: unknown): string {
+  if (e instanceof MakerRefused) {
+    const why: Record<string, string> = {
+      stale_key: 'the maker rotated its key a moment ago; send again',
+      rate_limited: 'the maker is rate-limiting messages; wait a minute',
+      not_allowed: 'this maker only accepts messages from takers that have a swap with it',
+      too_large: 'the message is too long for this channel',
+      bad_request: 'the maker could not read the message',
+      unavailable: 'the maker\'s inbox is not available right now',
+    };
+    return `The maker refused the message: ${why[e.code] ?? e.code}. Another channel would reach the same inbox, so it was not retried on-chain.`;
+  }
+  if (e instanceof TransportUnavailable) {
+    if (e.relayError) return `The relay refused to forward the message (${e.relayError}), and there was no on-chain channel to fall back to. Connect your Solana wallet to post it on-chain instead.`;
+    return `No channel reached the maker: ${e.message}. Connect your Solana wallet to post the message on-chain.`;
+  }
+  return e instanceof Error ? e.message : String(e);
+}
 
 export class Inbox {
   constructor(private readonly store: SealedStore) {}

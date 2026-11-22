@@ -29,7 +29,7 @@ import type { Maker, Offer } from '@xmrswap/protocol';
 import type { GuardEnv } from '../src/lib/guard.js';
 import { type OfferRow, solanaRow } from '../src/lib/market.js';
 import type { CallDecision, ChainPort, MoneroPort, TxStatus } from '../src/lib/ports.js';
-import { swapRefOf } from '../src/lib/ports.js';
+import { WalletNeeded, swapRefOf } from '../src/lib/ports.js';
 
 export const XMR = 1_000_000_000_000n;
 export const SOL = 1_000_000_000n;
@@ -98,10 +98,11 @@ export class ModelChain implements ChainPort {
     const direction = o.direction ?? 0;
     const xmr = o.xmr ?? XMR;
     const price = o.price ?? 150n * SOL / 100n;
-    const amount = (xmr * price) / XMR;
+    // A: the taker pays, rounded up. B: the maker escrows, rounded down (SPEC 3.1).
+    const amount = direction === 0 ? (xmr * price + XMR - 1n) / XMR : (xmr * price) / XMR;
     const nonce = o.nonce ?? new Uint8Array(16).fill(++this.counter);
     const keys = takerSwapKeys(o.seed ?? TAKER_SEED, this.chain, nonce);
-    const args = { offerMode: o.mode ?? 0, approval: false, amount, wA: o.wA ?? 60, wN: 600, dC: o.dC ?? 3600, wC: 1800, wF: 604_800, depth: o.depth ?? 2, depBps: o.depBps ?? 100 };
+    const args = { xmr, offerMode: o.mode ?? 0, approval: false, amount, wA: o.wA ?? 60, wN: 600, dC: o.dC ?? 3600, wC: 1800, wF: 604_800, depth: o.depth ?? 2, depBps: o.depBps ?? 100 };
     const fx = apply(this.chain, NO_SWAP, { name: direction === 0 ? 'lock' : 'take', args }, 'taker', this.now_);
     const swapRef = new Uint8Array(32).fill(200 + this.counter);
     const share = fx.swap.state === SWAP_STATE.ACTIVE ? this.newShare() : null;
@@ -179,8 +180,11 @@ export class ModelChain implements ChainPort {
     withhold: (ref: string) => this.transition(ref, { name: 'withhold', evidence: 'opens' }, 'operator'),
   };
 
-  async exec(s: SwapView, d: CallDecision, keys: DerivedKeys, m: CallMaterial): Promise<string> {
+  /** The session key's budget is gone (swept back by a refund or claim): `anyone` calls then need the wallet. */
+  sessionEmpty = false;
+  async exec(s: SwapView, d: CallDecision, keys: DerivedKeys, m: CallMaterial, opts: { wallet?: boolean } = {}): Promise<string> {
     this.check();
+    if ((d.caller === 'taker' || (d.caller === 'anyone' && this.sessionEmpty)) && !opts.wallet) throw new WalletNeeded(this.chain);
     if (this.failNext) {
       const e = this.failNext;
       this.failNext = null;

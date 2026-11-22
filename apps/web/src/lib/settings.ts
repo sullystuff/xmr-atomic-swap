@@ -4,7 +4,7 @@
  * the deployment's `config.json` (served next to the page; the self-hosting bundle writes it).
  * The program id and the contract address are pinned by the release and shown for checking.
  */
-import { DEV_PROGRAM_ID, type MoneroNetwork } from '@xmrswap/protocol';
+import { CONTRACT_ADDRESS, CONTRACT_CHAIN_ID, type MoneroNetwork, PROGRAM_ID } from '@xmrswap/protocol';
 
 export type ConnectionMode = 'hosted' | 'self-hosted' | 'tor-direct' | 'onchain';
 export type ThemeChoice = 'system' | 'light' | 'dark';
@@ -39,14 +39,15 @@ export interface Settings {
 export const DEFAULT_SETTINGS: Settings = {
   solanaRpc: '',
   ethereumRpc: '',
-  ethereumChainId: 1,
+  ethereumChainId: CONTRACT_CHAIN_ID ?? 1,
   moneroNodes: [],
   ownNode: false,
   moneroNetwork: 'mainnet',
   relayUrl: '',
   mode: 'hosted',
-  programId: DEV_PROGRAM_ID,
-  contract: '',
+  // The release's pinned deployment (`@xmrswap/protocol`); the contract slot is empty until the owner deploys.
+  programId: PROGRAM_ID,
+  contract: CONTRACT_ADDRESS ?? '',
   minDepth: 0,
   refXmrUsd: '',
   refSolUsd: '',

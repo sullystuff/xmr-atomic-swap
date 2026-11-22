@@ -26,9 +26,9 @@ export function RiskBanner() {
           {left === null ? '--:--' : formatClock(left)}
         </span>
         <span className="banner-text">
-          {stake} {safety.atRisk.length === 1 ? 'is' : 'are'} locked and this tab is the only thing that can refund {safety.atRisk.length === 1 ? 'it' : 'them'}. If you close it, let the computer sleep or lose your connection before the refund deadline, you can lose your funds.{' '}
-          {guard.wakeLock === 'held' ? 'The screen is being kept on.' : 'This browser cannot keep the screen on: turn off sleep yourself.'}{' '}
+          {stake} {sameAsset ? 'is' : 'are'} locked{safety.atRisk.length > 1 ? ` in ${safety.atRisk.length} swaps` : ''}, and only this tab can refund {safety.atRisk.length === 1 ? 'it' : 'them'}. If you close it, let the computer sleep or lose your connection before the refund deadline, you can lose your funds.{' '}
           {safety.atRisk.length === 1 ? <a href={href('swap', first.ref)}>Show the swap</a> : <a href={href('activity')}>Show the swaps</a>}
+          <span className="banner-note">{guard.wakeLock === 'held' ? 'The screen is being kept on.' : 'This browser cannot keep the screen on: turn off sleep yourself.'}</span>
         </span>
       </div>
     </div>

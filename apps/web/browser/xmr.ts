@@ -59,11 +59,15 @@ export async function mine(n: number): Promise<number> {
   return synced();
 }
 
-/** Spendable coinbase and enough outputs on the chain for 16-member rings. */
+/**
+ * Spendable coinbase and a chain long enough for decoy selection: on a short regtest chain the
+ * sweep's decoy selection fails (a thin-chain effect, not expected on mainnet), so the chain is
+ * mined to 720 blocks before any sweep, as the SDK's integration tests do.
+ */
 export async function funded(): Promise<void> {
   await walletAddress();
   const h = (await info(NODE_A)).height;
-  if (h < 170) await mine(170 - h);
+  if (h < 720) await mine(720 - h);
   await wallet('refresh');
 }
 

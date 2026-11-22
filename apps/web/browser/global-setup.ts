@@ -30,7 +30,8 @@ export default async function setup(): Promise<() => Promise<void>> {
   if (!existsSync(svm)) retry('svm-rpc build', () => run('cargo', ['build', '--locked'], path.join(repo, 'tools/svm-rpc')));
   if (!existsSync(path.join(repo, 'solana/program/target/deploy/xmr_swap.so'))) retry('program build', () => run('cargo', ['build-sbf'], path.join(repo, 'solana/program')));
   // The browser tests run against the production build of the UI.
-  run('pnpm', ['exec', 'vite', 'build'], path.resolve(here, '..'));
+  // (vitest sets NODE_ENV=test; the build must not inherit it, or React's development build is bundled.)
+  run('pnpm', ['exec', 'vite', 'build'], path.resolve(here, '..'), { ...process.env, NODE_ENV: 'production' });
 
   const regtest = path.join(repo, 'tests/monero-regtest');
   const env = { ...process.env, XMR_BIN: process.env.XMR_BIN ?? path.join(process.env.HOME ?? '', 'monero') };
