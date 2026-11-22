@@ -10,7 +10,7 @@ import { NODE_A, NODE_B, type NodeProxy, REGTEST_MAX_FEE, WALLET_RPC_MAKER, Wall
 import { type Proc, stopAll } from './procs.js';
 import { type FakeTor, type RelayProc, makeRelay, startFakeTor, testOnion } from './relay.js';
 import { type UiServer, closeBrowser, serveWeb } from './ui.js';
-import { fill, freePort, hexOf, stateRoot } from './util.js';
+import { fill, freePort, hexOf, stateRoot, waitFor } from './util.js';
 
 /** The taker's own Monero wallet lives in its own wallet-rpc so it stays open while the makers' wallets are in use. */
 export const WALLET_RPC_TAKER_PORT = 48093;
@@ -104,6 +104,16 @@ export async function startWorld(o: WorldOpts = {}): Promise<World> {
     tor.map.set(m.o.onion, m.endpointPort);
     await m.register();
   }
+  // A world is ready when every maker has a live offer on-chain (its inventory is synced and its first refresh has landed).
+  for (const m of makers)
+    await waitFor(`maker ${m.o.n}'s first live offer`, async () => {
+      const now = await sol.now();
+      for (const asset of [0, 1]) for (const direction of [0, 1]) {
+        const o = await sol.client.getOffer(m.makerPda, asset, direction);
+        if (o && o.enabled === 1 && now < o.updatedAt + BigInt(o.validSecs)) return true;
+      }
+      return false;
+    }, { timeoutMs: 300_000, intervalMs: 1000, context: async () => (await m.status()).alerts.map((a) => a.message) });
   const relay = await makeRelay({ solanaRpc: sol.url, programId: sol.client.programId, torPort: tor.port, moneroNodes: [NODE_A, NODE_B], allowedOrigins: [uiOrigin] });
   await relay.start();
   const ui = await serveWeb(uiPort, {

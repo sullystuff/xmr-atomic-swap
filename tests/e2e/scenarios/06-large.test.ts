@@ -52,6 +52,7 @@ describe('L-1: a large swap across three real makers', () => {
         return false;
       }, { timeoutMs: 120_000, intervalMs: 2000, context: () => page.locator('main').innerText() });
 
+    await waitFor('every maker quoting', async () => (await live(m1)) && (await live(m2)) && (await live(m3)), { timeoutMs: 300_000, intervalMs: 1000 });
     await page.goto(`${w.ui.url}/#/large`);
     await connect(page, 'solana');
     await page.getByLabel('Total to spend (SOL)').fill('1.2');
