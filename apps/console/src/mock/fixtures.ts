@@ -2,6 +2,7 @@
  * Seed data for the mock daemon. Every address, key and hash here is synthetic filler built
  * from a label; none is a real key and none exists on any network.
  */
+import { base58Encode } from '@xmrswap/protocol';
 import type {
   AdvanceApprovalRecord,
   Alert,
@@ -27,12 +28,13 @@ function prng(label: string): () => number {
     return (h >>> 0) / 4294967296;
   };
 }
-/** A Solana-shaped placeholder address (44 base58 characters). */
+/** A Solana-shaped placeholder address: 32 filler bytes in base58. */
 export function fakeSol(label: string): string {
   const r = prng(`sol:${label}`);
-  let s = '';
-  for (let i = 0; i < 44; i++) s += B58[Math.floor(r() * B58.length)];
-  return s;
+  const bytes = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) bytes[i] = Math.floor(r() * 256);
+  bytes[0] = 16 + (bytes[0] as number) % 200; // never a leading zero byte, so always 43 or 44 characters
+  return base58Encode(bytes);
 }
 export function fakeHex(label: string, bytes: number): string {
   const r = prng(`hex:${label}`);
@@ -798,7 +800,7 @@ export function seedRefills(now: number): RefillView[] {
 export function seedAlerts(now: number): Alert[] {
   return [
     {
-      id: 'alert-9',
+      id: '9',
       at: now - 21 * 60,
       level: 'critical',
       kind: 'needs_review',
@@ -806,9 +808,9 @@ export function seedAlerts(now: number): Alert[] {
       swap_ref: REF.review,
       acknowledged: false,
     },
-    { id: 'alert-8', at: now - 4 * 60, level: 'warning', kind: 'refill_level', message: 'XMR is below its low level: 132 of 150 XMR. A refill is waiting for approval.', acknowledged: false },
-    { id: 'alert-7', at: now - 3 * 3_600, level: 'warning', kind: 'venue_held', message: 'FixedFloat holds refill-29 in its emergency state. It still counts against the in-transit cap.', acknowledged: false },
-    { id: 'alert-6', at: now - 30 * 3_600, level: 'info', kind: 'key_rotated', message: 'Encryption key rotated to version 7.', acknowledged: true },
+    { id: '8', at: now - 4 * 60, level: 'warning', kind: 'refill_level', message: 'XMR is below its low level: 132 of 150 XMR. A refill is waiting for approval.', acknowledged: false },
+    { id: '7', at: now - 3 * 3_600, level: 'warning', kind: 'venue_held', message: 'FixedFloat holds refill-29 in its emergency state. It still counts against the in-transit cap.', acknowledged: false },
+    { id: '6', at: now - 30 * 3_600, level: 'info', kind: 'key_rotated', message: 'Encryption key rotated to version 7.', acknowledged: true },
   ];
 }
 

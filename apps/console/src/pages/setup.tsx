@@ -1,9 +1,10 @@
 /** Registration (both chains and the identity link), Keys and Status. */
 import { useEffect, useId, useState } from 'react';
-import { CHAIN_CONSTS, CONTACT_KIND, type ChainName } from '@xmrswap/protocol';
+import { CHAIN_CONSTS, CONTACT_KIND, MAX_CONTACTS, MAX_CONTACT_LEN, base58Encode, fromHex, type ChainName } from '@xmrswap/protocol';
+import type { ChainPause, LinkEntry } from '../api/extensions.js';
 import type { EncKeyView, LinkStatus, RegistrationAction, RegistrationResponse, RegistrationTxResponse, TxResult } from '@xmrswap/protocol/daemon-api';
 import { describeError } from '../api/client.js';
-import { useAction, useClient, useLive, useNow, useQuery } from '../api/hooks.js';
+import { useAction, useClient, useLive, useNow, useQuery, useToasts } from '../api/hooks.js';
 import { patchConfig } from '../lib/config/patch.js';
 import { chainLabel } from '../lib/config/schema.js';
 import { setPath } from '../lib/config/toml.js';
@@ -261,6 +262,7 @@ export function RegistrationPage() {
   const { status } = useLive();
   const [removing, setRemoving] = useState<RegistrationAction | null>(null);
   const [removed, setRemoved] = useState<TxResult | null>(null);
+  const [historyKey, setHistoryKey] = useState(0);
   return (
     <>
       <PageHead title="Registration">
@@ -269,7 +271,10 @@ export function RegistrationPage() {
       <Async query={reg} what="the registration">
         {(r) => {
           const ls = linkState(r);
-          const done = (): void => reg.reload();
+          const done = (): void => {
+            reg.reload();
+            setHistoryKey((k) => k + 1);
+          };
           return (
             <div className="stack">
               <Notice tone="info" title="The owner key never touches this console or the daemon.">
@@ -413,6 +418,7 @@ export function RegistrationPage() {
                     ) : null}
                   </div>
                 </div>
+                <LinkHistory reloadKey={historyKey} />
                 {removing ? (
                   <OwnerTransaction
                     key={removing.chain}
@@ -428,7 +434,7 @@ export function RegistrationPage() {
                 {removed ? <TxNotice tx={removed} /> : null}
               </Card>
 
-              <OwnerPause ownerPaused={status?.paused.owner ?? null} registered={{ solana: r.solana.registered, ethereum: r.ethereum.registered }} onDone={done} />
+              <OwnerPause ownerPaused={status?.paused.owner ?? null} perChain={status?.paused.chains} registered={{ solana: r.solana.registered, ethereum: r.ethereum.registered }} onDone={done} />
 
               <Card title="Contact channels" note="Published in the Solana record by the daemon’s operator key.">
                 <dl className="kv">
@@ -460,8 +466,9 @@ export function RegistrationPage() {
                   </dd>
                 </dl>
                 <p className="muted" style={{ marginTop: 8 }}>
-                  Takers see these labelled as provided by you and not verified. The onion address follows the Tor settings under Configuration; the other channels cannot be edited from this console in this version.
+                  Takers see these labelled as provided by you and not verified.
                 </p>
+                <PublishedEditor reg={r} torEnabled={status?.tor.enabled ?? false} onDone={done} />
               </Card>
             </div>
           );
@@ -471,12 +478,249 @@ export function RegistrationPage() {
   );
 }
 
-function OwnerPause({ ownerPaused, registered, onDone }: { ownerPaused: boolean | null; registered: Record<ChainName, boolean>; onDone: () => void }) {
+/** A link target as the chain stores it (0x-hex bytes), shown the way the maker knows it. */
+export function linkTarget(hex: string): string | null {
+  const body = hex.replace(/^0x/, '');
+  if (body === '' || /^0+$/.test(body)) return null;
+  if (body.length === 40) return `0x${body}`;
+  if (body.length === 64) {
+    try {
+      return base58Encode(fromHex(body));
+    } catch {
+      return `0x${body}`;
+    }
+  }
+  return `0x${body}`;
+}
+
+/** The identity link's trace: every recorded change on both chains. */
+function LinkHistory({ reloadKey }: { reloadKey: number }) {
+  const client = useClient();
+  const now = useNow();
+  const [state, setState] = useState<{ entries?: LinkEntry[]; error?: unknown }>({});
+  const [nonce, setNonce] = useState(0);
+  useEffect(() => {
+    let live = true;
+    client.linkHistory().then(
+      (r) => live && setState({ entries: r.entries }),
+      (error: unknown) => live && setState({ error }),
+    );
+    return () => {
+      live = false;
+    };
+  }, [client, reloadKey, nonce]);
+  return (
+    <div style={{ marginTop: 12 }}>
+      <h3 className="subhead">Link history</h3>
+      {state.error ? (
+        <Notice tone="bad" title="Could not load the link history.">
+          {describeError(state.error)}{' '}
+          <Button small onClick={() => setNonce((n) => n + 1)}>
+            Try again
+          </Button>
+        </Notice>
+      ) : state.entries === undefined ? (
+        <p className="muted" role="status">
+          Reading the recorded link changes…
+        </p>
+      ) : state.entries.length === 0 ? (
+        <p className="muted">No link change has been recorded on either chain.</p>
+      ) : (
+        <div className="table-wrap">
+          <table className="tbl" aria-label="Link history">
+            <thead>
+              <tr>
+                <th scope="col">Record</th>
+                <th scope="col">From</th>
+                <th scope="col">To</th>
+                <th scope="col">In effect</th>
+              </tr>
+            </thead>
+            <tbody>
+              {state.entries.map((e, i) => {
+                const from = linkTarget(e.old);
+                const to = linkTarget(e.new);
+                return (
+                  <tr key={`${e.chain}-${e.effective_at}-${i}`}>
+                    <th scope="row">{chainLabel(e.chain)}</th>
+                    <td>{from ? <code style={{ overflowWrap: 'anywhere' }}>{from}</code> : <span className="muted">no link</span>}</td>
+                    <td>{to ? <code style={{ overflowWrap: 'anywhere' }}>{to}</code> : <span className="muted">link removed</span>}</td>
+                    <td>
+                      {e.effective_at > now ? <Badge tone="warn">Pending</Badge> : null} <span className="mono">{fmtTime(e.effective_at)}</span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p className="muted" style={{ marginTop: 4 }}>
+        Read from the chains’ own records. This trace is public and cannot be removed.
+      </p>
+    </div>
+  );
+}
+
+const CONTACT_KINDS: { value: number; label: string }[] = [
+  { value: CONTACT_KIND.WEBSITE, label: 'Website' },
+  { value: CONTACT_KIND.EMAIL, label: 'Email' },
+  { value: CONTACT_KIND.MATRIX, label: 'Matrix' },
+  { value: CONTACT_KIND.DISCORD, label: 'Discord' },
+  { value: CONTACT_KIND.TELEGRAM, label: 'Telegram' },
+  { value: CONTACT_KIND.BLOB_ENDPOINT, label: 'Blob endpoint' },
+  { value: CONTACT_KIND.OTHER, label: 'Other' },
+];
+const ONION = /^[a-z2-7]{56}\.onion$/;
+const bytes = (v: string): number => new TextEncoder().encode(v).length;
+
+/** Edit what the operator key publishes: contact channels and the onion address. */
+function PublishedEditor({ reg, torEnabled, onDone }: { reg: RegistrationResponse; torEnabled: boolean; onDone: () => void }) {
+  const client = useClient();
+  const { notify } = useToasts();
+  const id = useId();
+  const [contacts, setContacts] = useState(() => reg.solana.contacts.map((c) => ({ ...c })));
+  const [onion, setOnion] = useState(reg.solana.onion ?? '');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<{ tx: TxResult | null } | null>(null);
+  const savedContacts = JSON.stringify(reg.solana.contacts);
+  const dirty = JSON.stringify(contacts) !== savedContacts || onion.trim() !== (reg.solana.onion ?? '');
+  const problems: string[] = [];
+  contacts.forEach((c, i) => {
+    if (c.value.trim() === '') problems.push(`Channel ${i + 1} is empty.`);
+    else if (bytes(c.value) > MAX_CONTACT_LEN) problems.push(`Channel ${i + 1} is ${bytes(c.value)} bytes; the registry holds at most ${MAX_CONTACT_LEN}.`);
+  });
+  const o = onion.trim();
+  if (o !== '' && !ONION.test(o)) problems.push('The onion address must be a v3 address: 56 characters, then .onion.');
+  const losesBlob = reg.blob_endpoint && o === '' && !contacts.some((c) => c.kind === CONTACT_KIND.BLOB_ENDPOINT);
+
+  const save = async (): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    setResult(null);
+    try {
+      const res = await client.publishRegistration({
+        ...(JSON.stringify(contacts) !== savedContacts ? { contacts: contacts.map((c) => ({ kind: c.kind, value: c.value.trim() })) } : {}),
+        ...(o !== (reg.solana.onion ?? '') ? { onion: o === '' ? null : o } : {}),
+      });
+      setResult({ tx: res.tx });
+      notify('ok', res.tx ? 'Published with the operator key.' : 'Nothing to publish: the registry already shows this.');
+      onDone();
+    } catch (e) {
+      setError(describeError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form
+      className="stack"
+      aria-label="Edit contact channels"
+      style={{ marginTop: 12 }}
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (problems.length === 0) void save();
+      }}
+    >
+      <h3 className="subhead">Edit what is published</h3>
+      <div className="field">
+        <label htmlFor={`${id}-onion`}>Onion address</label>
+        <input id={`${id}-onion`} type="text" className="w-wide" spellCheck={false} autoComplete="off" value={onion} placeholder="none" aria-describedby={`${id}-onion-h`} onChange={(e) => setOnion(e.target.value)} />
+        <p className="help" id={`${id}-onion-h`}>
+          Leave empty to follow the Tor service’s own hostname file{torEnabled ? '' : ' (the Tor service is off, so no address is published)'}. Takers prefer Tor when an address is listed and fall back to on-chain messaging.
+        </p>
+      </div>
+      <div role="group" aria-label="Contact channels">
+        {contacts.length === 0 ? <p className="muted">No other channels.</p> : null}
+        <ul className="chips">
+          {contacts.map((c, i) => (
+            <li key={i}>
+              <select aria-label={`Channel ${i + 1} kind`} value={c.kind} onChange={(e) => setContacts((list) => list.map((x, k) => (k === i ? { ...x, kind: Number(e.target.value) } : x)))}>
+                {CONTACT_KINDS.some((k) => k.value === c.kind) ? null : <option value={c.kind}>Kind {c.kind}</option>}
+                {CONTACT_KINDS.map((k) => (
+                  <option key={k.value} value={k.value}>
+                    {k.label}
+                  </option>
+                ))}
+              </select>
+              <input type="text" aria-label={`Channel ${i + 1} value`} style={{ flex: 1, minWidth: 180 }} spellCheck={false} value={c.value} aria-invalid={c.value.trim() === '' || bytes(c.value) > MAX_CONTACT_LEN ? true : undefined} onChange={(e) => setContacts((list) => list.map((x, k) => (k === i ? { ...x, value: e.target.value } : x)))} />
+              <Button small variant="ghost" aria-label={`Remove channel ${i + 1}`} onClick={() => setContacts((list) => list.filter((_, k) => k !== i))}>
+                Remove
+              </Button>
+            </li>
+          ))}
+        </ul>
+        <div style={{ marginTop: 4 }}>
+          <Button small disabled={contacts.length >= MAX_CONTACTS} onClick={() => setContacts((list) => [...list, { kind: CONTACT_KIND.WEBSITE, value: '' }])}>
+            Add a channel
+          </Button>
+          <span className="muted"> at most {MAX_CONTACTS}, each up to {MAX_CONTACT_LEN} bytes</span>
+        </div>
+      </div>
+      {problems.map((p) => (
+        <p key={p} className="msg error" role="alert">
+          <b>Error:</b> {p}
+        </p>
+      ))}
+      {losesBlob ? (
+        <p className="msg warning">
+          <b>Warning:</b> this leaves no blob endpoint (an onion address or a blob-endpoint channel). Ethereum markets need one and will be kept off.
+        </p>
+      ) : null}
+      {error ? (
+        <Notice tone="bad" title="Not published.">
+          {error}
+        </Notice>
+      ) : null}
+      {result ? (
+        <Notice tone="ok" title={result.tx ? 'Sent to the registry.' : 'Already up to date.'}>
+          {result.tx ? (
+            <>
+              One transaction signed by the operator key: <Id value={result.tx.id} head={10} tail={8} />
+            </>
+          ) : (
+            'The registry already shows these channels.'
+          )}
+        </Notice>
+      ) : null}
+      <div className="row">
+        <button type="submit" className="btn primary" disabled={!dirty || problems.length > 0 || busy}>
+          Publish with the operator key
+        </button>
+        <Button
+          disabled={!dirty || busy}
+          onClick={() => {
+            setContacts(reg.solana.contacts.map((c) => ({ ...c })));
+            setOnion(reg.solana.onion ?? '');
+          }}
+        >
+          Discard
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+function OwnerPause({ ownerPaused, perChain, registered, onDone }: { ownerPaused: boolean | null; perChain: ChainPause[] | undefined; registered: Record<ChainName, boolean>; onDone: () => void }) {
   const [action, setAction] = useState<RegistrationAction | null>(null);
   const [result, setResult] = useState<TxResult | null>(null);
   const chains: ChainName[] = ['solana', 'ethereum'];
   return (
     <Card title="Owner pause" note="A pause set with the owner key. It holds even if the operator key is lost or stolen; the daemon’s own pause switch is in the top bar." actions={ownerPaused === null ? undefined : ownerPaused ? <Badge tone="warn">Paused by the owner key</Badge> : <Badge>Not paused by the owner key</Badge>}>
+      {perChain ? (
+        <dl className="kv" style={{ marginBottom: 10 }} data-testid="owner-pause-chains">
+          {perChain.map((p) => (
+            <div key={p.chain} style={{ display: 'contents' }}>
+              <dt>{chainLabel(p.chain)}</dt>
+              <dd>
+                {p.owner ? <Badge tone="warn">Paused by the owner key</Badge> : <Badge>Owner key: not paused</Badge>} {p.operator ? <Badge tone="warn">Paused by the operator key</Badge> : null}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
       <div className="row">
         {chains.map((chain) => (
           <span key={chain} className="row">

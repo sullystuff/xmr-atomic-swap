@@ -5,10 +5,8 @@ daemon (`src/mock/`, `server/`) standing in for WP8. Nothing outside `apps/conso
 
 ## Deviations from the specification
 
-1. **WebSocket authentication.** A browser cannot set an `Authorization` header on a WebSocket and
-   the frozen types do not say how `WS /api/ws` is authenticated. The console sends the bearer
-   token as `?token=` on the socket URL; the mock accepts that or the header. The daemon must
-   accept one browser-usable form (query parameter or subprotocol).
+1. **WebSocket authentication.** The console sends the bearer token as `?token=` on the socket
+   URL, which the real daemon accepts (its A1).
 2. **Tailwind.** Tailwind 4 is loaded (`@import 'tailwindcss'`, SPEC 8) but the console's own
    component classes in `src/styles.css` carry the design; few utilities are used.
 3. **Light theme.** SPEC 8 names orange on near-black; the work order also asks for light. Dark is
@@ -42,22 +40,48 @@ daemon (`src/mock/`, `server/`) standing in for WP8. Nothing outside `apps/conso
   `rebalance.routing.schedule` as free text, `liquidity.targets` as a table per asset.
 - **Dry run** exists twice in 7.2 (`[daemon].mode` and `[guardrails].dry_run`); the console shows
   both and treats either as dry run.
-- The mock refuses chain-sending actions in dry run with `409 dry_run`, answers an invalid PUT
-  with `422 invalid_config`, a stale `base_revision` with `409 revision_conflict`. These codes are
-  the mock's choice; the real daemon's are not specified.
+- **Unknown keys are errors**, as in the daemon's strict schema; the keys it added
+  (`console_dir`, `cors_origins`, `maker_owner`, `subscriptions`, `from_block`, `sweep_max_fee`,
+  `eth_pool_size`, `ladder_headroom_pct`, `[registration].contacts`) are in the form.
 
-## Requests against WP1 / WP8 (not in the frozen API)
+## Brought in line with the real daemon (packages/daemon/DEVIATIONS.md, A1 to A10)
 
-- A route to edit **contact channels and the onion address** (`set_contacts`, `set_onion`); the
-  console can only display them.
-- **Link history** (`LinkChanged` events) so the identity-link trace can list past changes; today
-  only `current`, `pending` and `pending_effective_at` are available.
-- **Acknowledge** routes for alerts and for failed or held refills (`Rebalancer.acknowledge`,
-  `resolveHeld`), and a way to redeem held wXMR.
-- A **SOL/USD price** field: the dollar figure for a draft is derived from the last estimate's
-  `daily_usd ÷ daily_lamports`.
-- Per-chain **owner-pause state** (status has one `paused.owner` flag for both chains).
-- `ApiError` carries one `detail` string; a structured list of `ConfigIssue` on a refused PUT or
-  import would let the console place every daemon-side error on its field.
-- CORS headers (or serving the built console from the daemon's own origin) when the console is
-  not same-origin; `pnpm dev:daemon` proxies `/api` instead.
+The client and the mock follow the daemon: `?token=` sockets; its error codes, with `issues` on a
+refused configuration placed on their fields; `PUT /api/registration/published`,
+`GET /api/registration/links`, `POST /api/alerts/:id/ack`, `POST /api/rebalance/ack/:id`;
+`status.paused.chains`; `sol_usd` and `compute_units_per_update` in the cost estimate; SHA-256
+revisions; actions offered by the daemon's own state rule. Every operator action shows its
+outcome where it was given (carried out, pending with the instruction shown on the swap, refused
+with the reason and what happens instead) and is disabled when the known state says it would be
+refused. The daemon's `test/api-contract.test.ts` passes against this client.
+
+The mock's seams for outcomes (`chainSays`, `holdTransaction`, `landTransaction`) are test
+devices; the real refusals come from the SDK flows.
+
+## Requests to the daemon
+
+Behaviour that looks wrong or leaves the console unable to do what DESIGN asks. None is worked
+around silently.
+
+1. **Upgrade status is always `null`** (its M4). DESIGN requires the UI to state whether the
+   contracts are still upgradable; against the real daemon the console can only say "unknown,
+   treat as upgradable". Please read the Solana upgrade authority and the proxy admin.
+2. **`PUT /api/registration/published` in dry run** stores the wanted contacts and onion address
+   and then answers `409 dry_run`. The console reports "Not published", yet the edit is kept and
+   goes out when the daemon turns live. Refuse before storing, or answer 200 with "saved, not sent".
+3. **`tor.published` is always `false` and `tor.reachable` always `null`**, so the Status page
+   shows a listed onion address as "Not published".
+4. **A failed refill has no "acknowledged" flag** in `RefillView`: after `POST /api/rebalance/ack`
+   the console cannot tell and keeps offering Acknowledge (the in-transit total does drop).
+5. **Swap summaries carry neither `mode` nor `instruction`** (list and WebSocket). In lists the
+   console therefore cannot pre-disable a reject of a Solana take outside window mode, nor hold
+   other actions while an instruction is pending; both work on the swap's own page.
+6. **Refusal reasons differ between documents**: the work order lists `cannot-exit-after-funding`;
+   the daemon lists `not-available-in-state` and `dry-run` instead. The console has words for all
+   ten and shows the daemon's `detail` for any other.
+7. **Link history is raw bytes** (`0x` hex for Solana keys too) with no marker for an entry that
+   was superseded before it took effect; the console converts 32-byte values to base58.
+8. `POST /api/config/validate` carries no `sol_usd`; the draft estimate uses the price from
+   `GET /api/fees` or `GET /api/offers`.
+9. Still missing: a route to redeem held wXMR, and `withdraw_owed` for a parked payout (its M2
+   says this is left to the console, but no unsigned-transaction action exists for it).

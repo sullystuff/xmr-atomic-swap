@@ -1,7 +1,8 @@
 /** React bindings for the daemon client: the client and clock contexts, live state, queries and actions. */
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { ChainName } from '@xmrswap/protocol';
-import type { InboxItem, StatusResponse, SwapSummary, WsChannel } from '@xmrswap/protocol/daemon-api';
+import type { InboxItem, SwapSummary, WsChannel } from '@xmrswap/protocol/daemon-api';
+import type { ExtendedResponses, StatusX as StatusResponse } from './extensions.js';
 import { ApiFailure, describeError, type CallArgs, type Connection, type DaemonClient, type HttpRoute } from './client.js';
 import type { ApiRoutes } from '@xmrswap/protocol/daemon-api';
 
@@ -164,10 +165,12 @@ export interface Query<T> {
 }
 
 /** Read a route. Re-reads when its arguments change, when the daemon pushes on one of `channels`, and on `reload()`. */
-export function useQuery<N extends HttpRoute>(name: N, args?: CallArgs<N>, channels: readonly WsChannel[] = []): Query<ApiRoutes[N]['response']> {
+type Answer<N extends HttpRoute> = N extends keyof ExtendedResponses ? ExtendedResponses[N] : ApiRoutes[N]['response'];
+
+export function useQuery<N extends HttpRoute>(name: N, args?: CallArgs<N>, channels: readonly WsChannel[] = []): Query<Answer<N>> {
   const client = useClient();
   const { ticks } = useLive();
-  const [state, setState] = useState<{ data: ApiRoutes[N]['response'] | undefined; error: unknown; loading: boolean }>({ data: undefined, error: null, loading: true });
+  const [state, setState] = useState<{ data: Answer<N> | undefined; error: unknown; loading: boolean }>({ data: undefined, error: null, loading: true });
   const [nonce, setNonce] = useState(0);
   const key = JSON.stringify(args ?? null);
   const tick = channels.reduce((n, c) => n + ticks[c], 0);

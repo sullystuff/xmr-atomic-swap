@@ -82,8 +82,6 @@ export interface SectionDef {
   path: string;
   title: string;
   fields: readonly FieldDef[];
-  /** Unknown keys in this table are errors, not warnings. */
-  strict?: boolean;
   /** Names of child tables that are valid here (so they are not reported as unknown keys). */
   children?: readonly string[];
 }
@@ -313,6 +311,7 @@ export const OFFERS: SectionDef = {
     { key: 'price_move_trigger_pct', label: 'Update only when the price moves by', type: num({ min: 0, exclusiveMin: true }), unit: '%', defText: 'off: update every interval' },
     { key: 'min_refresh_interval_seconds', label: 'Minimum refresh interval', type: int({ min: 1 }), unit: 's', defText: 'the update interval', help: 'The fastest a move-triggered update may repeat.' },
     { key: 'key_pool_low_water', label: 'Refill key pool below', type: int({ min: 0, max: 16 }), def: 4, unit: 'slots' },
+    { key: 'eth_pool_size', label: 'Ethereum key-pool size', type: int({ min: 2, max: 256 }), def: 64, unit: 'leaves' },
   ],
 };
 
@@ -337,6 +336,7 @@ export const LIQUIDITY: SectionDef = {
     { key: 'max_in_flight_xmr', label: 'Largest total in flight', type: num({ min: 0 }), unit: 'XMR', defText: 'unlimited' },
     { key: 'max_per_taker_xmr', label: 'Largest amount per taker', type: num({ min: 0 }), unit: 'XMR', defText: 'unlimited' },
     { key: 'allocation', label: 'XMR allocation', type: { t: 'custom' }, def: 'shared', help: 'One shared pool, or a fixed allocation per market.' },
+    { key: 'ladder_headroom_pct', label: 'Ladder headroom', type: num({ min: 0 }), def: 1.0, unit: '%', help: 'How much larger than its offer size a ladder output is cut, so one output covers the amount plus the fee.' },
     { key: 'paying_caps', label: 'Paying-balance caps', type: { t: 'record', keys: assetColumns(assetUnit, PAYING_ASSETS) }, defText: 'unlimited', help: 'Most of each balance committed to buy-XMR offers.' },
     { key: 'targets', label: 'Target inventory', type: { t: 'record', keys: assetColumns(assetUnit) }, defText: 'none', help: 'Target per asset; inventory skew is measured against it.' },
   ],
@@ -384,7 +384,6 @@ export const GUARDRAILS: SectionDef = {
 export const REBALANCE: SectionDef = {
   path: 'rebalance',
   title: 'Rebalancing',
-  strict: true,
   children: ['levels', 'routing', 'allowlist', 'cross_chain', 'venues'],
   fields: [
     { key: 'mode', label: 'Mode', type: { t: 'select', options: MODE_OPTIONS }, def: 'alert' },
@@ -396,13 +395,11 @@ export const REBALANCE: SectionDef = {
 export const levelSection = (asset: AssetId): SectionDef => ({
   path: `rebalance.levels.${asset}`,
   title: asset,
-  strict: true,
   fields: (['low', 'target', 'high'] as const).map((k) => ({ key: k, label: k, type: num({ min: 0 }), unit: assetUnit(asset) })),
 });
 export const ROUTING: SectionDef = {
   path: 'rebalance.routing',
   title: 'Venue choice',
-  strict: true,
   fields: [
     { key: 'choose', label: 'Choose by', type: sel({ value: 'priority', label: 'Fixed priority order' }, { value: 'best_quote', label: 'Best net quote' }), def: 'priority' },
     { key: 'priority', label: 'Priority order', type: { t: 'list', options: venueOptions }, def: [] },
@@ -417,7 +414,6 @@ export const ROUTING: SectionDef = {
 export const ALLOWLIST: SectionDef = {
   path: 'rebalance.allowlist',
   title: 'Address allow-list',
-  strict: true,
   fields: (['xmr', 'sol', 'eth'] as const).map((k) => ({
     key: k,
     label: `${k.toUpperCase()} addresses`,
@@ -428,7 +424,6 @@ export const ALLOWLIST: SectionDef = {
 export const CROSS_CHAIN: SectionDef = {
   path: 'rebalance.cross_chain',
   title: 'Cross-chain USDC moves',
-  strict: true,
   fields: [
     { key: 'enabled', label: 'Enabled', type: { t: 'bool' }, def: false, help: 'Shift USDC between the Solana and Ethereum sides when their levels call for it.' },
     { key: 'venue', label: 'Venue', type: { t: 'select', options: [{ value: '', label: 'None' }, ...venueOptions.filter((v) => v.value !== 'wxmr_bridge')] } },
@@ -454,8 +449,7 @@ export function venueSection(venue: VenueId): SectionDef {
     return {
       path,
       title,
-      strict: true,
-      fields: [
+          fields: [
         ...VENUE_COMMON,
         { key: 'max_piece_pct_of_pool', label: 'Piece size', type: num({ min: 0, max: 100 }), unit: '% of pool depth' },
         { key: 'max_wxmr_held', label: 'Most wXMR held at once', type: num({ min: 0 }), unit: 'wXMR' },
@@ -470,8 +464,7 @@ export function venueSection(venue: VenueId): SectionDef {
     return {
       path,
       title,
-      strict: true,
-      children: ['withdraw_keys'],
+          children: ['withdraw_keys'],
       fields: [
         ...VENUE_COMMON,
         { key: 'name', label: 'Exchange', type: { t: 'text' }, help: 'The only driver in this version is "kraken".' },
@@ -482,7 +475,7 @@ export function venueSection(venue: VenueId): SectionDef {
       ],
     };
   }
-  return { path, title, strict: true, fields: [...VENUE_COMMON, rateField, apiKey, apiSecret] };
+  return { path, title, fields: [...VENUE_COMMON, rateField, apiKey, apiSecret] };
 }
 
 export const DAEMON: SectionDef = {
@@ -498,15 +491,19 @@ export const DAEMON: SectionDef = {
     },
     { key: 'data_dir', label: 'Data directory', type: { t: 'text' }, def: './data' },
     { key: 'api_bind', label: 'Local API address', type: { t: 'text' }, def: '127.0.0.1:7071', help: 'Loopback only. Changing it disconnects this console until you reconnect.' },
-    { key: 'keystore_passphrase_env', label: 'Keystore passphrase variable', type: { t: 'env' } },
+    { key: 'keystore_passphrase_env', label: 'Keystore passphrase variable', type: { t: 'env' }, def: 'XMRSWAP_KEYSTORE_PASSPHRASE' },
+    { key: 'console_dir', label: 'Console directory', type: { t: 'text' }, defText: 'not served', help: 'The built console’s files, served by the daemon from the API’s own origin.' },
+    { key: 'cors_origins', label: 'Other origins allowed to call the API', type: { t: 'list' }, def: [], help: 'Empty = same origin only.' },
   ],
 };
 export const SOLANA: SectionDef = {
   path: 'solana',
   title: 'Solana',
   fields: [
-    { key: 'rpc_url_env', label: 'RPC URL variable', type: { t: 'env' } },
+    { key: 'rpc_url_env', label: 'RPC URL variable', type: { t: 'env' }, def: 'SOLANA_RPC_URL' },
     { key: 'ws_url_env', label: 'WebSocket URL variable', type: { t: 'env' } },
+    { key: 'maker_owner', label: 'Maker owner key (public)', type: { t: 'text' }, help: 'Your cold owner key. The maker account is derived from it.' },
+    { key: 'subscriptions', label: 'Use WebSocket subscriptions', type: { t: 'bool' }, def: true },
     { key: 'fallback_rpc_url_envs', label: 'Fallback RPC variables', type: { t: 'list', env: true }, def: [] },
     { key: 'program_id', label: 'Program id', type: { t: 'text' }, defText: 'the pinned program' },
     { key: 'expected_genesis', label: 'Expected genesis hash', type: { t: 'text' } },
@@ -517,9 +514,11 @@ export const ETHEREUM: SectionDef = {
   path: 'ethereum',
   title: 'Ethereum',
   fields: [
-    { key: 'rpc_url_env', label: 'RPC URL variable', type: { t: 'env' } },
+    { key: 'rpc_url_env', label: 'RPC URL variable', type: { t: 'env' }, def: 'ETHEREUM_RPC_URL' },
     { key: 'fallback_rpc_url_envs', label: 'Fallback RPC variables', type: { t: 'list', env: true }, def: [] },
     { key: 'contract', label: 'Contract address', type: { t: 'text' } },
+    { key: 'maker_owner', label: 'Maker owner address', type: { t: 'text' }, help: 'Your registered (owner) address.' },
+    { key: 'from_block', label: 'First block to read events from', type: int({ min: 0 }), def: 0, help: 'The deployment block.' },
     { key: 'chain_id', label: 'Chain id', type: int({ min: 1 }) },
     { key: 'finality', label: 'Act on blocks that are', type: sel({ value: 'finalized', label: 'Finalized' }, { value: 'safe', label: 'Safe' }), def: 'finalized' },
     { key: 'private_tx_url_env', label: 'Private transaction URL variable', type: { t: 'env' } },
@@ -533,7 +532,8 @@ export const MONERO: SectionDef = {
     { key: 'network', label: 'Network', type: sel('mainnet', 'stagenet', 'testnet', 'regtest'), def: 'mainnet' },
     { key: 'node_url_envs', label: 'Node URL variables', type: { t: 'list', env: true }, help: 'Two or more nodes, or one that is your own.' },
     { key: 'own_node', label: 'The single node is my own', type: { t: 'bool' }, def: false },
-    { key: 'wallet_rpc_url_env', label: 'Wallet RPC URL variable', type: { t: 'env' } },
+    { key: 'wallet_rpc_url_env', label: 'Wallet RPC URL variable', type: { t: 'env' }, def: 'MONERO_WALLET_RPC_URL' },
+    { key: 'sweep_max_fee', label: 'Sweep fee cap override', type: int({ min: 1 }), unit: 'piconero', defText: 'the protocol cap' },
     { key: 'wallet_rpc_user_env', label: 'Wallet RPC user variable', type: { t: 'env' } },
     { key: 'wallet_rpc_password_env', label: 'Wallet RPC password variable', type: { t: 'env' } },
   ],
@@ -543,7 +543,7 @@ export const ROTATION: SectionDef = {
   title: 'Key rotation',
   fields: [
     { key: 'interval_hours', label: 'Rotate every', type: num({ min: 0 }), def: 0, unit: 'hours', help: '0 = only on demand.' },
-    { key: 'grace_hours', label: 'Keep a retired key for', type: num({ min: 0 }), def: 24, unit: 'hours', help: 'A retired key is kept until this has passed and every swap opened under it has closed.' },
+    { key: 'grace_hours', label: 'Keep a retired key for', type: num({ min: 0, exclusiveMin: true }), def: 24, unit: 'hours', help: 'A retired key is kept until this has passed and every swap opened under it has closed.' },
   ],
 };
 export const TOR: SectionDef = {
@@ -599,7 +599,29 @@ export const ALERTS: SectionDef = {
   ],
 };
 
-export const OPERATION_SECTIONS: readonly SectionDef[] = [DAEMON, SOLANA, ETHEREUM, MONERO, ROTATION, TOR, APPROVALS, INBOX, ALERTS];
+/** Contact channels as written in the file; the Registration page edits what is published. */
+export const REGISTRATION: SectionDef = {
+  path: 'registration',
+  title: 'Published contact channels',
+  fields: [
+    {
+      key: 'contacts',
+      label: 'Contact channels',
+      type: {
+        t: 'rows',
+        maxRows: 6,
+        columns: [
+          { key: 'kind', label: 'Kind', type: 'int', min: 0, max: 255 },
+          { key: 'value', label: 'Value', type: 'text' },
+        ],
+      },
+      def: [],
+      help: 'Kinds: 0 website, 1 email, 2 Matrix, 3 Discord, 4 Telegram, 5 blob endpoint, 255 other. Each value at most 96 bytes.',
+    },
+  ],
+};
+
+export const OPERATION_SECTIONS: readonly SectionDef[] = [DAEMON, SOLANA, ETHEREUM, MONERO, ROTATION, TOR, APPROVALS, INBOX, ALERTS, REGISTRATION];
 
 /** Every fixed table of the file. Markets, levels and venues are expanded from their id lists. */
 export function allSections(): SectionDef[] {
@@ -618,7 +640,7 @@ export function allSections(): SectionDef[] {
     ...OPERATION_SECTIONS,
   ];
 }
-export const TOP_LEVEL_TABLES = ['pricing', 'markets', 'liquidity', 'guardrails', 'rebalance', 'daemon', 'solana', 'ethereum', 'monero', 'offers', 'rotation', 'tor', 'approvals', 'inbox', 'alerts'] as const;
+export const TOP_LEVEL_TABLES = ['pricing', 'markets', 'liquidity', 'guardrails', 'rebalance', 'daemon', 'solana', 'ethereum', 'monero', 'offers', 'rotation', 'tor', 'approvals', 'inbox', 'alerts', 'registration'] as const;
 
 export const fieldOf = (section: SectionDef, key: string): FieldDef => {
   const f = section.fields.find((x) => x.key === key);

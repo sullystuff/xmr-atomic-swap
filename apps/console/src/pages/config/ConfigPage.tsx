@@ -28,7 +28,8 @@ import {
 } from '../../lib/config/schema.js';
 import { ConfigSyntaxError, diffConfig, getPath, isTable, parseToml, setPath, stringifyToml, type Toml } from '../../lib/config/toml.js';
 import { resolveOffers, validateConfig } from '../../lib/config/validate.js';
-import { estimateCost, impliedSolUsd } from '../../lib/cost.js';
+import { costBasis, estimateCost } from '../../lib/cost.js';
+import type { FeesX, OffersX } from '../../api/extensions.js';
 import { MARKET_LABEL, fmtTime } from '../../lib/format.js';
 import { CostPanel } from '../../ui/cost-panel.js';
 import { Async, Badge, Button, Card, ConfirmButton, Empty, Notice, PageHead, Switch } from '../../ui/kit.js';
@@ -107,8 +108,8 @@ function Editor({
 }: {
   base: ConfigResponse;
   blobEndpoint: boolean | null;
-  fees: FeesResponse | undefined;
-  offers: OffersResponse | undefined;
+  fees: FeesX | undefined;
+  offers: OffersX | undefined;
   log: ConfigLogEntry[] | undefined;
   logError: unknown;
   onSaved: (res: ConfigResponse) => void;
@@ -126,7 +127,7 @@ function Editor({
   const [review, setReview] = useState(false);
   const summaryRef = useRef<HTMLDivElement>(null);
 
-  const solUsd = impliedSolUsd(fees?.estimate ?? offers?.update_cost ?? base.validation.update_cost);
+  const { solUsd, cuLimit } = costBasis(fees, offers, { update_cost: base.validation.update_cost });
   const expected = base.validation.update_cost?.triggered_per_day.expected;
   const local = useMemo(
     () => validateConfig(draft, { blobEndpoint, solUsd, ...(expected !== undefined ? { expectedTriggeredPerDay: expected } : {}) }),
@@ -194,6 +195,13 @@ function Editor({
       onSaved(res);
     } catch (e) {
       if (e instanceof ApiFailure && e.code === 'revision_conflict') setConflict(true);
+      else if (e instanceof ApiFailure && e.status === 422) {
+        // The daemon refused the file: put each of its errors on its field.
+        const issues = e.issues.length > 0 ? e.issues : [{ path: '(file)', message: e.detail ?? 'The daemon refused this configuration.' }];
+        setRemote({ toml, validation: { ok: false, errors: issues, warnings: e.warnings, effective: [], update_cost: null } });
+        setBlocked(true);
+        queueMicrotask(() => summaryRef.current?.focus());
+      }
       else notify('bad', `Not saved. ${describeError(e)}`);
     } finally {
       setSaving(false);
@@ -219,7 +227,7 @@ function Editor({
       <div className="stack">
         <MarketsSection blobEndpoint={blobEndpoint} />
         <PricingSection />
-        <UpdatesSection fees={fees} offers={offers} solUsd={solUsd} blobEndpoint={blobEndpoint} daemonCost={remoteNow?.update_cost ?? null} />
+        <UpdatesSection fees={fees} offers={offers} solUsd={solUsd} cuLimit={cuLimit} blobEndpoint={blobEndpoint} daemonCost={remoteNow?.update_cost ?? null} />
         <LiquiditySection />
         <GuardrailsSection />
         <RebalanceSection />
@@ -345,7 +353,7 @@ function PricingSection() {
   );
 }
 
-function UpdatesSection({ fees, offers, solUsd, blobEndpoint, daemonCost }: { fees: FeesResponse | undefined; offers: OffersResponse | undefined; solUsd: number | null; blobEndpoint: boolean | null; daemonCost: ConfigValidation['update_cost'] }) {
+function UpdatesSection({ fees, offers, solUsd, cuLimit, blobEndpoint, daemonCost }: { fees: FeesResponse | undefined; offers: OffersResponse | undefined; solUsd: number | null; cuLimit: number; blobEndpoint: boolean | null; daemonCost: ConfigValidation['update_cost'] }) {
   const { draft } = useForm();
   const num = (path: string): number | undefined => {
     const v = getPath(draft, path);
@@ -367,6 +375,7 @@ function UpdatesSection({ fees, offers, solUsd, blobEndpoint, daemonCost }: { fe
     expectedTriggeredPerDay: daemonCost?.triggered_per_day.expected,
     solUsd,
     perUpdateLamports: daemonPer,
+    cuLimit,
   });
   return (
     <Card id="cfg-updates" title="Offer updates and cost" note="How often offers are refreshed on Solana, and what that costs per day, shown before you save.">

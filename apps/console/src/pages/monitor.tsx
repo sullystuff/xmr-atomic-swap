@@ -5,7 +5,7 @@ import type { AdvanceApprovalRecord, Alert, DepositView, InboxItem, SwapDeadline
 import { useAction, useChainNow, useClient, useLive, useNow, useQuery } from '../api/hooks.js';
 import { chainLabel } from '../lib/config/schema.js';
 import { MARKET_LABEL, fmtInt, fmtMarketAmount, fmtRate, fmtTime, fmtUnits, fmtUsd, fmtXmr, parseUnits } from '../lib/format.js';
-import { DIR_LABEL, DepositSummary, MessageThread, StateBadge, SwapActions, SwapLink } from '../ui/domain.js';
+import { DIR_LABEL, DepositSummary, InstructionNote, MessageThread, StateBadge, SwapActions, SwapLink } from '../ui/domain.js';
 import { Async, Badge, Button, Card, ConfirmButton, Countdown, Empty, Id, Notice, PageHead, Stat, Time } from '../ui/kit.js';
 
 // ------------------------------------------------------------------ dashboard
@@ -14,6 +14,9 @@ const LEVEL_TONE = { info: 'info', warning: 'warn', critical: 'bad' } as const;
 const LEVEL_LABEL = { info: 'Info', warning: 'Warning', critical: 'Critical' } as const;
 
 export function AlertList({ alerts }: { alerts: Alert[] }) {
+  const client = useClient();
+  const { refresh } = useLive();
+  const { busy, run } = useAction();
   const sorted = [...alerts].sort((a, b) => Number(a.acknowledged) - Number(b.acknowledged) || b.at - a.at);
   if (sorted.length === 0) return <Empty title="No alerts">Nothing needs your attention.</Empty>;
   return (
@@ -24,6 +27,9 @@ export function AlertList({ alerts }: { alerts: Alert[] }) {
             <th scope="col">Level</th>
             <th scope="col">When</th>
             <th scope="col">Alert</th>
+            <th scope="col">
+              <span className="sr-only">Acknowledge</span>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -37,6 +43,13 @@ export function AlertList({ alerts }: { alerts: Alert[] }) {
               </td>
               <td>
                 {a.message} {a.swap_ref ? <SwapLink swapRef={a.swap_ref} /> : null} {a.acknowledged ? <span className="muted">(acknowledged)</span> : null}
+              </td>
+              <td className="actions">
+                {a.acknowledged ? null : (
+                  <Button small busy={busy === a.id} aria-label={`Acknowledge alert: ${a.message}`} onClick={() => void run(a.id, () => client.acknowledgeAlert(a.id)).then(refresh)}>
+                    Acknowledge
+                  </Button>
+                )}
               </td>
             </tr>
           ))}
@@ -361,8 +374,13 @@ export function SwapDetailPage({ swapRef }: { swapRef: string }) {
                   {s.last_error ?? 'The daemon stopped acting on this swap.'} The daemon never re-sends on ambiguity; decide below.
                 </Notice>
               ) : null}
+              {s.instruction ? (
+                <div data-testid="instruction" data-status={s.instruction.status}>
+                  <InstructionNote instruction={s.instruction} chain={s.chain} />
+                </div>
+              ) : null}
               <div className="cols-2">
-                <Card title="Summary" actions={<SwapActions swap={s} deposit={deposit} only={['approve', 'reject', 'abort', 'publish-evidence']} onDone={reload} />}>
+                <Card title="Summary" actions={<SwapActions swap={s} deposit={deposit} instruction={s.instruction} only={['approve', 'reject', 'abort', 'publish-evidence']} onDone={reload} />}>
                   <dl className="kv">
                     <dt>State</dt>
                     <dd>
@@ -405,7 +423,7 @@ export function SwapDetailPage({ swapRef }: { swapRef: string }) {
                   </dl>
                 </Card>
 
-                <Card title="Deposit" actions={<SwapActions swap={s} deposit={deposit} only={['withhold', 'release']} onDone={reload} />}>
+                <Card title="Deposit" actions={<SwapActions swap={s} deposit={deposit} instruction={s.instruction} only={['withhold', 'release']} onDone={reload} />}>
                   {deposit ? (
                     <DepositSummary deposit={deposit} />
                   ) : s.deposit === '0' ? (
@@ -588,7 +606,7 @@ export function ApprovalsPage() {
                             </ul>
                           </td>
                           <td className="actions">
-                            <SwapActions swap={{ ref: p.ref, actions: ['approve', 'reject'], market: p.market, deposit: '0', chain: p.chain }} onDone={approvals.reload} />
+                            <SwapActions swap={{ ref: p.ref, actions: ['approve', 'reject'], market: p.market, deposit: '0', chain: p.chain, state: 'PENDING', direction: p.direction, next_deadline: { at: p.deadline, label: '' } }} onDone={approvals.reload} />
                           </td>
                         </tr>
                       ))}

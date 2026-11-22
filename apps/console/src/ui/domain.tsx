@@ -1,8 +1,10 @@
 /** Pieces that know the product: swap states, manual actions, deposits, message threads, upgrade status. */
 import { useId, useState } from 'react';
-import { CHAIN_CONSTS, type SwapStateName } from '@xmrswap/protocol';
+import { APPROVAL_MODE, CHAIN_CONSTS, type ChainName, type SwapStateName } from '@xmrswap/protocol';
 import type { ChainConnection, DepositView, InboxItem, SwapAction, SwapSummary } from '@xmrswap/protocol/daemon-api';
-import { useAction, useClient } from '../api/hooks.js';
+import { ApiFailure, describeError } from '../api/client.js';
+import { REFUSAL_REASONS, outcomeOf, type ActionOutcome, type RefusalReason, type SwapInstruction } from '../api/extensions.js';
+import { useAction, useChainNow, useClient, useLive, useToasts } from '../api/hooks.js';
 import { chainLabel } from '../lib/config/schema.js';
 import { MARKET_LABEL, fmtMarketAmount, fmtTime } from '../lib/format.js';
 import { Badge, Button, ConfirmButton, Countdown, Id, Notice, Time, type Tone } from './kit.js';
@@ -54,93 +56,275 @@ const ROUTE_OF: Record<SwapAction, 'swapApprove' | 'swapReject' | 'swapAbort' | 
   release: 'swapRelease',
   'publish-evidence': 'swapPublishEvidence',
 };
+export const ACTION_NOUN: Record<SwapAction, string> = {
+  approve: 'Approval',
+  reject: 'Rejection',
+  abort: 'Abort',
+  withhold: 'Withhold',
+  release: 'Release',
+  'publish-evidence': 'Evidence publication',
+};
 const DONE_TEXT: Record<SwapAction, string> = {
-  approve: 'Approved.',
-  reject: 'Rejected. The taker is refunded in full.',
-  abort: 'Aborted.',
-  withhold: 'Deposit withheld.',
+  approve: 'Approved. The swap is active and the lock notice is now due.',
+  reject: 'Rejected. The taker is refunded in full, with no fee.',
+  abort: 'Aborted. The taker gets everything back when it collects, less any deposit you withhold.',
+  withhold: 'Deposit withheld. It can only be released to the taker; after 60 days it is split.',
   release: 'Deposit released to the taker.',
-  'publish-evidence': 'Evidence published.',
+  'publish-evidence': 'Evidence published: anyone can now verify the XMR lock.',
 };
 
-/** The manual actions the daemon offers for one swap right now, each with its consequence spelled out. */
+/** Why an instruction was refused, in plain words, and what happens instead. */
+export const REFUSAL_TEXT: Record<RefusalReason, { why: string; instead: string }> = {
+  'ready-already-set': {
+    why: 'The taker has already set ready, so the swap can no longer be backed out of.',
+    instead: 'The daemon claims inside the claim window; a missed claim would be recorded against you.',
+  },
+  'refund-window-closed': {
+    why: 'The refund window is over: a refund sent now could land in the taker’s claim window and leak your key share.',
+    instead: 'The swap carries on, and the daemon recovers the escrow at the next point the flow allows.',
+  },
+  'abort-window-closed': {
+    why: 'An abort is no longer accepted in the state the swap has reached.',
+    instead: 'The swap runs to its end by the normal flow.',
+  },
+  'already-settled': {
+    why: 'The swap is already settled.',
+    instead: 'Nothing further happens.',
+  },
+  'cannot-exit-after-funding': {
+    why: 'The escrow is already funded, so this swap can no longer be exited.',
+    instead: 'It completes, or expires, by the normal flow.',
+  },
+  'reject-not-available': {
+    why: 'A pending take cannot be rejected on Solana outside window mode.',
+    instead: 'Your refusal stays on record: the daemon will not fund this take, and it lapses at the funding deadline, which is recorded as a missed funding.',
+  },
+  'hold-ended': {
+    why: 'The 30-minute hold has ended, so the deposit can no longer be withheld.',
+    instead: 'It returns to the taker.',
+  },
+  'no-deposit-held': {
+    why: 'No deposit is held or withheld on this swap.',
+    instead: 'There is nothing to withhold or release.',
+  },
+  'not-available-in-state': {
+    why: 'The swap has moved on and is no longer in a state that accepts this.',
+    instead: 'Nothing was sent. The swap is shown in its current state.',
+  },
+  'dry-run': {
+    why: 'The daemon is in dry run and sends no transaction.',
+    instead: 'Nothing changed. Switch the daemon to live mode to act on swaps.',
+  },
+};
+export function refusalText(reason: string | null | undefined, detail?: string | null): { why: string; instead: string } {
+  if (reason && (REFUSAL_REASONS as readonly string[]).includes(reason)) return REFUSAL_TEXT[reason as RefusalReason];
+  return { why: detail ?? (reason ? `The daemon refused it (${reason}).` : 'The daemon refused it.'), instead: 'Nothing was sent.' };
+}
+
+export interface ActionReport {
+  action: SwapAction;
+  outcome: ActionOutcome;
+  reason: string | null;
+  detail: string | null;
+  tx: string | null;
+}
+
+/** What became of one instruction, shown where it was given. Never silent. */
+export function OutcomeNote({ report }: { report: ActionReport }) {
+  const noun = ACTION_NOUN[report.action];
+  if (report.outcome === 'carried_out') {
+    return (
+      <div className="notice ok outcome" role="status" data-outcome="carried_out">
+        <strong>Carried out.</strong> {DONE_TEXT[report.action]}
+        {report.tx ? (
+          <>
+            {' '}
+            Transaction <Id value={report.tx} />.
+          </>
+        ) : null}
+      </div>
+    );
+  }
+  if (report.outcome === 'pending') {
+    return (
+      <div className="notice info outcome" role="status" data-outcome="pending">
+        <strong>On record, not carried out yet.</strong> {noun} waits behind a transaction that is still in flight{report.detail ? ` (${report.detail})` : ''}. It is kept through a restart and shown on the swap until it is carried out or refused; you will get an alert if it is refused.
+      </div>
+    );
+  }
+  const t = refusalText(report.reason, report.detail);
+  return (
+    <div className="notice bad outcome" role="alert" data-outcome="refused" data-reason={report.reason ?? ''}>
+      <strong>Not carried out.</strong> {t.why} <span>What happens instead: {t.instead}</span>
+    </div>
+  );
+}
+
+/** Why an action cannot be given right now, when what the console already knows says it would be refused. */
+export function blockedReason(
+  action: SwapAction,
+  ctx: { dryRun: boolean; chainNow: number; swap: Pick<SwapSummary, 'chain' | 'state' | 'direction' | 'next_deadline'> & { mode?: number }; deposit?: DepositView | undefined; instruction?: SwapInstruction | null | undefined },
+): string | null {
+  const { swap } = ctx;
+  if (swap.state === 'DONE') return 'The swap is already settled.';
+  if (ctx.instruction?.status === 'pending') return `Your ${ACTION_NOUN[ctx.instruction.action].toLowerCase()} is still waiting to be carried out.`;
+  if (ctx.dryRun) return 'Dry run: the daemon sends no transaction.';
+  if ((action === 'approve' || action === 'reject') && swap.state === 'PENDING' && swap.next_deadline && ctx.chainNow >= swap.next_deadline.at) return 'The approval window has closed; the taker is refunded in full.';
+  if (action === 'reject' && swap.chain === 'solana' && swap.direction === 'B' && swap.mode !== undefined && swap.mode !== APPROVAL_MODE.WINDOW) return 'A take on Solana outside window mode cannot be rejected; left alone, it lapses.';
+  if (action === 'withhold' && ctx.deposit && ctx.chainNow >= ctx.deposit.hold_until) return 'The 30-minute hold has ended; the deposit returns to the taker.';
+  if (action === 'abort' && swap.state === 'READY') return 'Ready is set; the swap can no longer be backed out of.';
+  return null;
+}
+
+type ActionSwap = Pick<SwapSummary, 'ref' | 'actions' | 'market' | 'deposit' | 'chain'> & Partial<Pick<SwapSummary, 'state' | 'direction' | 'next_deadline'>> & { mode?: number };
+
+/** The manual actions the daemon offers for one swap right now, each with its consequence spelled out and its outcome shown in place. */
 export function SwapActions({
   swap,
   deposit,
   only,
   onDone,
   small = true,
+  instruction,
 }: {
-  swap: Pick<SwapSummary, 'ref' | 'actions' | 'market' | 'deposit' | 'chain'>;
+  swap: ActionSwap;
   deposit?: DepositView | undefined;
   /** Show only these actions (the page decides which belong beside the item). */
   only?: readonly SwapAction[] | undefined;
   onDone?: (() => void) | undefined;
   small?: boolean | undefined;
+  /** The swap's instruction on record, when the page has it. */
+  instruction?: SwapInstruction | null | undefined;
 }) {
   const client = useClient();
-  const { busy, run } = useAction();
+  const { status } = useLive();
+  const { notify } = useToasts();
+  const chainNow = useChainNow();
+  const [busy, setBusy] = useState<SwapAction | null>(null);
+  const [report, setReport] = useState<ActionReport | null>(null);
   const [reason, setReason] = useState<0 | 1 | 2>(0);
   const reasonId = useId();
+  const noteId = useId();
   const actions = swap.actions.filter((a) => !only || only.includes(a));
-  if (actions.length === 0) return null;
+  if (actions.length === 0 && !report) return null;
   const act = async (a: SwapAction): Promise<void> => {
-    const key = `${a}:${swap.ref}`;
-    const r = await run(
-      key,
-      () => (a === 'reject' ? client.call('swapReject', { params: { ref: swap.ref }, body: { reason } }) : client.call(ROUTE_OF[a], { params: { ref: swap.ref } })),
-      (res) => res.detail ?? DONE_TEXT[a],
-    );
-    if (r) onDone?.();
+    setBusy(a);
+    setReport(null);
+    try {
+      const r = a === 'reject' ? await client.call('swapReject', { params: { ref: swap.ref }, body: { reason } }) : await client.call(ROUTE_OF[a], { params: { ref: swap.ref } });
+      const outcome = outcomeOf(r);
+      setReport({ action: a, outcome, reason: r.refused ?? null, detail: r.detail ?? null, tx: r.tx?.id ?? null });
+      // Also announced page-wide, because a row can leave its list once the action lands.
+      if (outcome === 'carried_out') notify('ok', DONE_TEXT[a]);
+      else if (outcome === 'pending') notify('info', `${ACTION_NOUN[a]} is on record and waits behind a transaction in flight.`);
+      else notify('bad', `${ACTION_NOUN[a]} was not carried out. ${refusalText(r.refused, r.detail).why}`);
+    } catch (e) {
+      // A refusal before anything was recorded: still an outcome, shown in the same place.
+      const code = e instanceof ApiFailure ? e.code : '';
+      const why = code === 'action_unavailable' ? 'not-available-in-state' : code === 'dry_run' ? 'dry-run' : null;
+      setReport({ action: a, outcome: 'refused', reason: why, detail: describeError(e), tx: null });
+      notify('bad', `${ACTION_NOUN[a]} was not carried out. ${refusalText(why, describeError(e)).why}`);
+    } finally {
+      setBusy(null);
+      onDone?.();
+    }
   };
-  const isBusy = (a: SwapAction): boolean => busy === `${a}:${swap.ref}`;
+  const ctx = {
+    dryRun: status?.mode === 'dry_run',
+    chainNow: chainNow(swap.chain),
+    swap: { chain: swap.chain, state: swap.state ?? 'ACTIVE', direction: swap.direction ?? 'A', next_deadline: swap.next_deadline ?? null, ...(swap.mode !== undefined ? { mode: swap.mode } : {}) },
+    deposit,
+    instruction,
+  };
+  const blocked = Object.fromEntries(actions.map((a) => [a, blockedReason(a, ctx)])) as Partial<Record<SwapAction, string | null>>;
+  const reasons = [...new Set(actions.map((a) => blocked[a]).filter((x): x is string => typeof x === 'string'))];
+  const off = (a: SwapAction): boolean => typeof blocked[a] === 'string';
   const dep = fmtMarketAmount(swap.market, swap.deposit);
   return (
-    <span className="row" style={{ justifyContent: 'flex-end' }}>
-      {actions.includes('approve') ? (
-        <Button variant="primary" small={small} busy={isBusy('approve')} onClick={() => void act('approve')}>
-          Approve
-        </Button>
-      ) : null}
-      {actions.includes('reject') ? (
-        <span className="row" style={{ gap: 4 }}>
-          <label className="sr-only" htmlFor={reasonId}>
-            Reason for rejecting
-          </label>
-          <select id={reasonId} value={reason} onChange={(e) => setReason(Number(e.target.value) as 0 | 1 | 2)}>
-            {REJECT_REASONS.map((r) => (
-              <option key={r.value} value={r.value}>
-                {r.label}
-              </option>
-            ))}
-          </select>
-          <Button variant="danger" small={small} busy={isBusy('reject')} onClick={() => void act('reject')}>
-            Reject
+    <span className="actions-box">
+      <span className="row" style={{ justifyContent: 'flex-end' }}>
+        {actions.includes('approve') ? (
+          <Button variant="primary" small={small} busy={busy === 'approve'} disabled={off('approve')} aria-describedby={off('approve') ? noteId : undefined} onClick={() => void act('approve')}>
+            Approve
           </Button>
+        ) : null}
+        {actions.includes('reject') ? (
+          <span className="row" style={{ gap: 4 }}>
+            <label className="sr-only" htmlFor={reasonId}>
+              Reason for rejecting
+            </label>
+            <select id={reasonId} value={reason} disabled={off('reject')} onChange={(e) => setReason(Number(e.target.value) as 0 | 1 | 2)}>
+              {REJECT_REASONS.map((r) => (
+                <option key={r.value} value={r.value}>
+                  {r.label}
+                </option>
+              ))}
+            </select>
+            <Button variant="danger" small={small} busy={busy === 'reject'} disabled={off('reject')} aria-describedby={off('reject') ? noteId : undefined} onClick={() => void act('reject')}>
+              Reject
+            </Button>
+          </span>
+        ) : null}
+        {actions.includes('release') ? (
+          <ConfirmButton label="Release deposit" small={small} busy={busy === 'release'} disabled={off('release')} onConfirm={() => void act('release')}>
+            Return the deposit of {dep} to the taker now. This cannot be undone.
+          </ConfirmButton>
+        ) : null}
+        {actions.includes('withhold') ? (
+          <ConfirmButton label="Withhold deposit" variant="danger" small={small} busy={busy === 'withhold'} disabled={off('withhold')} onConfirm={() => void act('withhold')}>
+            Withhold {dep}. A withheld deposit never goes to you: you can only release it to the taker later, and after 60 days it is split between the taker and the treasury. Your withhold rate is public.
+            {deposit?.evidence_required ? ' A lock notice is on record, so the lock evidence is published with it.' : ''}
+          </ConfirmButton>
+        ) : null}
+        {actions.includes('abort') ? (
+          <ConfirmButton label="Abort swap" variant="danger" small={small} busy={busy === 'abort'} disabled={off('abort')} onConfirm={() => void act('abort')}>
+            Abort this swap. The taker gets everything back when it collects, less any deposit you withhold, and the abort is counted in your public history.
+          </ConfirmButton>
+        ) : null}
+        {actions.includes('publish-evidence') ? (
+          <ConfirmButton label="Publish evidence" small={small} busy={busy === 'publish-evidence'} disabled={off('publish-evidence')} onConfirm={() => void act('publish-evidence')}>
+            Publish the joint view key and the lock transaction id, so anyone can verify your XMR lock and attribute the abort correctly. This links the swap to its Monero transaction.
+          </ConfirmButton>
+        ) : null}
+      </span>
+      {reasons.length > 0 ? (
+        <span id={noteId} className="blocked muted" data-testid="blocked-reason">
+          {reasons.join(' ')}
         </span>
       ) : null}
-      {actions.includes('release') ? (
-        <ConfirmButton label="Release deposit" small={small} busy={isBusy('release')} onConfirm={() => void act('release')}>
-          Return the deposit of {dep} to the taker now. This cannot be undone.
-        </ConfirmButton>
-      ) : null}
-      {actions.includes('withhold') ? (
-        <ConfirmButton label="Withhold deposit" variant="danger" small={small} busy={isBusy('withhold')} onConfirm={() => void act('withhold')}>
-          Withhold {dep}. A withheld deposit never goes to you: you can only release it to the taker later, and after 60 days it is split between the taker and the treasury. Your withhold rate is public.
-          {deposit?.evidence_required ? ' A lock notice is on record, so the lock evidence is published with it.' : ''}
-        </ConfirmButton>
-      ) : null}
-      {actions.includes('abort') ? (
-        <ConfirmButton label="Abort swap" variant="danger" small={small} busy={isBusy('abort')} onConfirm={() => void act('abort')}>
-          Abort this swap. The taker gets everything back when it collects, less any deposit you withhold, and the abort is counted in your public history.
-        </ConfirmButton>
-      ) : null}
-      {actions.includes('publish-evidence') ? (
-        <ConfirmButton label="Publish evidence" small={small} busy={isBusy('publish-evidence')} onConfirm={() => void act('publish-evidence')}>
-          Publish the joint view key and the lock transaction id, so anyone can verify your XMR lock and attribute the abort correctly. This links the swap to its Monero transaction.
-        </ConfirmButton>
-      ) : null}
+      {report ? <OutcomeNote report={report} /> : null}
     </span>
+  );
+}
+
+/** The operator's latest instruction on a swap and what became of it. */
+export function InstructionNote({ instruction, chain }: { instruction: SwapInstruction; chain: ChainName }) {
+  const noun = ACTION_NOUN[instruction.action];
+  const when = (
+    <>
+      given <Time at={instruction.at} />
+    </>
+  );
+  if (instruction.status === 'pending') {
+    return (
+      <Notice tone="info" title={`${noun} on record, not carried out yet.`}>
+        Your instruction ({when}) waits behind a transaction that is still in flight. The daemon carries it out, or refuses it with the reason, on its next step; it is kept through a restart. Other actions on this swap wait until then.
+      </Notice>
+    );
+  }
+  if (instruction.status === 'carried_out') {
+    return (
+      <Notice tone="ok" title={`${noun} carried out.`}>
+        Your instruction ({when}) was carried out{instruction.tx ? ' in transaction ' : ''}
+        {instruction.tx ? <Id value={instruction.tx} head={10} tail={8} /> : null} on {chainLabel(chain)}.
+      </Notice>
+    );
+  }
+  const t = refusalText(instruction.reason);
+  return (
+    <Notice tone="bad" title={`${noun} was not carried out.`}>
+      Your instruction ({when}) was refused. {t.why} What happens instead: {t.instead}
+    </Notice>
   );
 }
 

@@ -968,3 +968,23 @@ details > summary {
 .countdown.soon {
   color: var(--warn);
 }
+
+.actions-box {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  max-width: 100%;
+}
+.actions-box .blocked {
+  font-size: 0.86rem;
+  white-space: normal;
+  text-align: right;
+  max-width: 44ch;
+}
+.outcome {
+  white-space: normal;
+  text-align: left;
+  max-width: 52ch;
+  font-size: 0.92rem;
+}

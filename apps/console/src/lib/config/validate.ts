@@ -254,11 +254,12 @@ function checkField(issues: Issues, path: string, f: FieldDef, v: unknown): void
             if (typeof cell !== 'string' || cell === '') issues.error(p, `${col.label} must be text.`);
           } else checkNumber(issues, p, cell, { int: col.type === 'int', ...(col.min !== undefined ? { min: col.min } : {}), ...(col.max !== undefined ? { max: col.max } : {}) }, col.label);
         }
-        for (const k of Object.keys(row)) if (!t.columns.some((c) => c.key === k)) issues.warn(`${path}.${i}.${k}`, `Unknown key "${k}"; it is ignored.`);
+        for (const k of Object.keys(row)) if (!t.columns.some((c) => c.key === k)) issues.error(`${path}.${i}.${k}`, `Unknown key "${k}".`);
       });
       return;
     }
     case 'record': {
+      if (v === false && t.required) return; // written as `false`: switched off
       if (!isTable(v)) {
         issues.error(path, `${f.label} must be a table.`);
         return;
@@ -271,7 +272,7 @@ function checkField(issues: Issues, path: string, f: FieldDef, v: unknown): void
         }
         checkNumber(issues, `${path}.${col.key}`, cell, { int: col.type === 'int', ...(col.min !== undefined ? { min: col.min } : {}), ...(col.max !== undefined ? { max: col.max } : {}) }, `${f.label}: ${col.label.toLowerCase()}`);
       }
-      for (const k of Object.keys(v)) if (!t.keys.some((c) => c.key === k)) issues.warn(`${path}.${k}`, `Unknown key "${k}"; it is ignored.`);
+      for (const k of Object.keys(v)) if (!t.keys.some((c) => c.key === k)) issues.error(`${path}.${k}`, `Unknown key "${k}".`);
       return;
     }
     case 'auto-number':
@@ -309,10 +310,7 @@ function checkSection(issues: Issues, cfg: Toml, section: SectionDef): void {
     const f = section.fields.find((x) => x.key === key);
     const path = `${section.path}.${key}`;
     if (f) checkField(issues, path, f, value);
-    else if (!section.children?.includes(key)) {
-      if (section.strict) issues.error(path, `Unknown key "${key}" in [${section.path}].`);
-      else issues.warn(path, `Unknown key "${key}" in [${section.path}]; it is ignored.`);
-    }
+    else if (!section.children?.includes(key)) issues.error(path, `Unknown key "${key}" in [${section.path}]. The daemon refuses keys it does not know.`);
   }
 }
 
@@ -322,7 +320,7 @@ export function validateConfig(cfg: Toml, ctx: ValidateContext): ConfigValidatio
   const issues = new Issues();
 
   for (const key of Object.keys(cfg)) {
-    if (!(TOP_LEVEL_TABLES as readonly string[]).includes(key)) issues.warn(key, `Unknown section [${key}]; it is ignored.`);
+    if (!(TOP_LEVEL_TABLES as readonly string[]).includes(key)) issues.error(key, `Unknown section [${key}]. The daemon refuses sections it does not know.`);
     else if (!isTable(cfg[key])) issues.error(key, `[${key}] must be a table.`);
   }
   for (const section of allSections()) checkSection(issues, cfg, section);
@@ -346,7 +344,7 @@ export function validateConfig(cfg: Toml, ctx: ValidateContext): ConfigValidatio
 function checkPricing(issues: Issues, cfg: Toml): void {
   const sources = getPath(cfg, 'pricing.sources');
   if (isTable(sources)) {
-    for (const k of Object.keys(sources)) if (!(PRICE_SOURCES as readonly string[]).includes(k)) issues.warn(`pricing.sources.${k}`, `Unknown price source "${k}"; it is ignored.`);
+    for (const k of Object.keys(sources)) if (!(PRICE_SOURCES as readonly string[]).includes(k)) issues.error(`pricing.sources.${k}`, `Unknown price source "${k}".`);
   }
   const maxAge = getPath(cfg, 'pricing.max_age_seconds') ?? 60;
   const refresh = getPath(cfg, 'pricing.refresh_seconds') ?? 15;
@@ -510,7 +508,7 @@ function checkMarkets(issues: Issues, cfg: Toml, ctx: ValidateContext): Resolved
         for (const [key, value] of Object.entries(table)) {
           const f = fields.find((x) => x.key === key);
           if (f) checkField(issues, `${base}.${key}`, f, value);
-          else issues.warn(`${base}.${key}`, `Unknown key "${key}" in [${base}]; it is ignored.`);
+          else issues.error(`${base}.${key}`, `Unknown key "${key}" in [${base}]. The daemon refuses keys it does not know.`);
         }
       }
       const o = resolveOffer(cfg, market, direction, ctx);

@@ -234,7 +234,11 @@ describe('the rest of the file', () => {
     expect(check('[approvals]\nallow = ["A"]\ndeny = ["A"]').ok).toBe(false);
     expect(check('[rotation]\ninterval_hours = -1').ok).toBe(false);
     expect(check('[inbox]\npolicy = "swap_only"').ok).toBe(true);
-    expect(messages(check('[mystery]\nx = 1').warnings, 'mystery')).toMatch(/Unknown section/);
+    // The daemon's schema is strict: a key or section it does not know is an error.
+    expect(messages(check('[mystery]\nx = 1').errors, 'mystery')).toMatch(/Unknown section/);
+    expect(messages(check('[offers]\nturbo = true').errors, 'offers.turbo')).toMatch(/Unknown key/);
+    expect(check('[daemon]\nconsole_dir = "./console"\ncors_origins = ["http://127.0.0.1:5183"]\n[ethereum]\nfrom_block = 100\n[registration]\ncontacts = [{ kind = 5, value = "https://blobs.example.org" }]').ok).toBe(true);
+    expect(check('[guardrails]\nvolatility_pause = false\nprice_band_usd = false').ok).toBe(true);
   });
   it('estimates the update cost with the file', () => {
     const v = check('[offers]\nupdate_interval_seconds = 1');

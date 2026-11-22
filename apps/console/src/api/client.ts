@@ -3,7 +3,8 @@
  * (SPEC 7.8). Typed by the frozen `ApiRoutes`. It never talks to a chain, a price feed or any
  * other host, and it holds no key: the bearer token only authorises this loopback API.
  */
-import { ROUTES, WS_CHANNELS, routePath, type ApiError, type ApiRoutes, type RouteName, type WsChannel, type WsClientMessage, type WsPayloads, type WsServerMessage } from '@xmrswap/protocol/daemon-api';
+import { ROUTES, WS_CHANNELS, routePath, type Alert, type ApiError, type ApiRoutes, type ConfigIssue, type RefillView, type RouteName, type WsChannel, type WsClientMessage, type WsPayloads, type WsServerMessage } from '@xmrswap/protocol/daemon-api';
+import type { ErrorExtras, ExtendedResponses, LinkEntry, PublishedRequest, PublishedResponse, RefillChoice } from './extensions.js';
 
 export interface ResponseLike {
   ok: boolean;
@@ -27,6 +28,9 @@ export class ApiFailure extends Error {
     readonly status: number,
     readonly code: string,
     readonly detail: string | null,
+    /** Every configuration issue behind a refused save, import or preview (the daemon's A3). */
+    readonly issues: ConfigIssue[] = [],
+    readonly warnings: ConfigIssue[] = [],
   ) {
     super(detail ?? code);
     this.name = 'ApiFailure';
@@ -50,7 +54,7 @@ export function describeError(e: unknown): string {
 }
 
 type Body<N extends RouteName> = ApiRoutes[N & keyof ApiRoutes]['request'];
-type Result<N extends RouteName> = ApiRoutes[N & keyof ApiRoutes]['response'];
+type Result<N extends RouteName> = N extends keyof ExtendedResponses ? ExtendedResponses[N] : ApiRoutes[N & keyof ApiRoutes]['response'];
 export type HttpRoute = Exclude<RouteName, 'ws'>;
 export interface CallArgs<N extends HttpRoute> {
   params?: Record<string, string>;
@@ -91,17 +95,39 @@ export class DaemonClient {
 
   async call<N extends HttpRoute>(name: N, args: CallArgs<N> = {}): Promise<Result<N>> {
     const { method } = ROUTES[name];
-    let url = this.baseUrl + routePath(name, args.params ?? {});
+    return this.request<Result<N>>(method, routePath(name, args.params ?? {}), args.body);
+  }
+
+  // Routes the daemon adds to the frozen API (its "Console contract" A5).
+
+  /** Publish contact channels and the onion address with the operator key. */
+  publishRegistration(body: PublishedRequest): Promise<PublishedResponse> {
+    return this.request('PUT', '/api/registration/published', body);
+  }
+  /** The identity link's trace: every recorded change on both chains, newest first. */
+  linkHistory(): Promise<{ entries: LinkEntry[] }> {
+    return this.request('GET', '/api/registration/links', undefined);
+  }
+  acknowledgeAlert(id: string): Promise<Alert> {
+    return this.request('POST', `/api/alerts/${encodeURIComponent(id)}/ack`, {});
+  }
+  /** Acknowledge a failed or held refill; `choice` resolves an order the venue holds. */
+  acknowledgeRefill(id: string, choice?: RefillChoice): Promise<RefillView> {
+    return this.request('POST', `/api/rebalance/ack/${encodeURIComponent(id)}`, choice ? { choice } : {});
+  }
+
+  private async request<T>(method: string, path: string, body: unknown): Promise<T> {
+    let url = this.baseUrl + path;
     const headers: Record<string, string> = { Authorization: `Bearer ${this.token}`, Accept: 'application/json' };
     const init: { method: string; headers: Record<string, string>; body?: string } = { method, headers };
     if (method === 'GET') {
       const q = new URLSearchParams();
-      for (const [k, v] of Object.entries((args.body ?? {}) as Record<string, unknown>)) if (v !== undefined && v !== null) q.set(k, String(v));
+      for (const [k, v] of Object.entries((body ?? {}) as Record<string, unknown>)) if (v !== undefined && v !== null) q.set(k, String(v));
       const qs = q.toString();
       if (qs) url += `?${qs}`;
     } else {
       headers['Content-Type'] = 'application/json';
-      init.body = JSON.stringify(args.body ?? {});
+      init.body = JSON.stringify(body ?? {});
     }
     let res: ResponseLike;
     try {
@@ -117,13 +143,19 @@ export class DaemonClient {
       if (res.ok) throw new ApiFailure(res.status, 'bad_response', 'The daemon sent something that is not JSON.');
     }
     if (!res.ok) {
-      const err = (json ?? {}) as Partial<ApiError>;
-      throw new ApiFailure(res.status, typeof err.error === 'string' ? err.error : `http_${res.status}`, typeof err.detail === 'string' ? err.detail : null);
+      const err = (json ?? {}) as Partial<ApiError> & ErrorExtras;
+      throw new ApiFailure(
+        res.status,
+        typeof err.error === 'string' ? err.error : `http_${res.status}`,
+        typeof err.detail === 'string' ? err.detail : null,
+        Array.isArray(err.issues) ? err.issues : [],
+        Array.isArray(err.warnings) ? err.warnings : [],
+      );
     }
-    return json as Result<N>;
+    return json as T;
   }
 
-  /** WebSocket address of `/api/ws`. A browser cannot set a header on a WebSocket, so the token rides in the query (see DEVIATIONS.md). */
+  /** WebSocket address of `/api/ws`. A browser cannot set a header on a WebSocket, so the token rides in the query, which the daemon accepts (its A1). */
   socketUrl(): string {
     const base = this.baseUrl || (typeof location !== 'undefined' ? location.origin : 'http://127.0.0.1');
     const u = new URL(ROUTES.ws.path, base);

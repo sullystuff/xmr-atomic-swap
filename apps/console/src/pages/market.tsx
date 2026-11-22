@@ -5,7 +5,7 @@ import type { AssetId, OfferView, RebalanceResponse, RefillView, VenueId } from 
 import { useAction, useClient, useQuery } from '../api/hooks.js';
 import { ASSETS, DIRECTION_LABEL, MODE_OPTIONS, VENUE_LABEL, chainLabel } from '../lib/config/schema.js';
 import { getPath, isTable } from '../lib/config/toml.js';
-import { BASE_FEE_LAMPORTS, estimateCost, impliedSolUsd } from '../lib/cost.js';
+import { BASE_FEE_LAMPORTS, costBasis, estimateCost } from '../lib/cost.js';
 import { ASSET_DECIMALS, ASSET_LABEL, ASSET_UNIT, MARKET_LABEL, MARKET_ORDER, fmtAsset, fmtDuration, fmtMarketAmount, fmtPct, fmtTime, fmtUnits, fmtUsd, fmtXmr, parseUnits } from '../lib/format.js';
 import { CostPanel } from '../ui/cost-panel.js';
 import { SwapLink } from '../ui/domain.js';
@@ -140,7 +140,9 @@ export function OffersPage() {
                 return typeof v === 'number' ? v : undefined;
               };
               const trigger = num('offers.price_move_trigger_pct');
-              const solUsd = impliedSolUsd(est);
+              // The daemon's own SOL price and compute-unit figure when it sends them.
+              const basis = costBasis(fees.data, r);
+              const solUsd = basis.solUsd;
               const valid = r.offers.filter((o) => o.enabled).map((o) => (parsed && typeof getPath(parsed, `markets.${o.market}.${o.direction}.offer_valid_seconds`) === 'number' ? (getPath(parsed, `markets.${o.market}.${o.direction}.offer_valid_seconds`) as number) : 60));
               const per = BigInt(est.lamports_per_update);
               const cost = estimateCost({
@@ -157,7 +159,11 @@ export function OffersPage() {
                 <>
                   <CostPanel cost={cost} intervalSecs={est.interval_secs} solUsd={solUsd} fees={fees.data} offers={r} />
                   <p className="muted" style={{ marginTop: 8 }}>
-                    Refreshing every {est.interval_secs} s{per > BASE_FEE_LAMPORTS ? ` with a priority fee of ${(per - BASE_FEE_LAMPORTS).toString()} lamports per update` : ' at the base fee'}.
+                    Refreshing every {est.interval_secs} s{per > BASE_FEE_LAMPORTS ? ` with a priority fee of ${(per - BASE_FEE_LAMPORTS).toString()} lamports per update` : ' at the base fee'}.{' '}
+                    <span data-testid="cost-basis">
+                      {solUsd === null ? 'No SOL price is available, so no dollar figure is shown.' : `Priced at ${fmtUsd(solUsd)} per SOL${basis.fromDaemon ? ', the daemon’s own price' : ', implied by its last estimate'}`}
+                      {solUsd === null ? '' : `; an update is charged at ${basis.cuLimit.toLocaleString('en-US')} compute units.`}
+                    </span>
                   </p>
                 </>
               );
@@ -425,6 +431,8 @@ export function RebalancingPage() {
           const avgCost = done.length > 0 ? done.reduce((s, x) => s + (x.cost_pct ?? 0), 0) / done.length : null;
           const totalFees = done.reduce((s, x) => s + (x.fees_usd ?? 0), 0);
           const approve = (id: string) => run(`approve:${id}`, () => client.call('rebalanceApprove', { params: { id } }), 'Refill approved; it is on its way.').then(reb.reload);
+          const ack = (id: string, choice?: 'continue' | 'refund') =>
+            run(`ack:${id}:${choice ?? ''}`, () => client.acknowledgeRefill(id, choice), (x) => (choice === 'continue' ? 'Told the venue to continue.' : choice === 'refund' ? 'Asked the venue for a refund.' : `Acknowledged. Refill ${x.id} no longer counts against the in-transit cap.`)).then(reb.reload);
           const cancel = (id: string) => run(`cancel:${id}`, () => client.call('rebalanceCancel', { params: { id } }), 'Refill cancelled.').then(reb.reload);
           return (
             <div className="stack">
@@ -566,6 +574,22 @@ export function RebalancingPage() {
                         <Button small busy={busy === `cancel:${x.id}`} onClick={() => void cancel(x.id)}>
                           Cancel
                         </Button>
+                      ) : x.state === 'held' ? (
+                        <span className="row" style={{ justifyContent: 'flex-end' }}>
+                          <ConfirmButton label="Continue" small busy={busy === `ack:${x.id}:continue`} onConfirm={() => void ack(x.id, 'continue')}>
+                            Tell {venueLabel(x.venue)} to continue this order at its new rate. The funds stay with the venue until it pays out.
+                          </ConfirmButton>
+                          <ConfirmButton label="Refund" small busy={busy === `ack:${x.id}:refund`} onConfirm={() => void ack(x.id, 'refund')}>
+                            Ask {venueLabel(x.venue)} to send the deposit back, minus its network fee.
+                          </ConfirmButton>
+                          <ConfirmButton label="Close as dealt with" small variant="danger" busy={busy === `ack:${x.id}:`} onConfirm={() => void ack(x.id)}>
+                            Mark this order as settled outside the console. It is closed as failed and stops counting against the in-transit cap. Do this only once you have the funds back or have written them off.
+                          </ConfirmButton>
+                        </span>
+                      ) : x.state === 'failed' ? (
+                        <ConfirmButton label="Acknowledge" small busy={busy === `ack:${x.id}:`} onConfirm={() => void ack(x.id)}>
+                          Confirm you have checked this failed refill. It stops counting against the in-transit cap.
+                        </ConfirmButton>
                       ) : null
                     }
                   />

@@ -194,7 +194,9 @@ describe('mock daemon: swaps, approvals, deposits', () => {
     expect((await client.call('approvals')).pending.map((p) => p.ref)).not.toContain(REF.pendingSol);
     advance(120);
     const late = await failure(client.call('swapApprove', { params: { ref: REF.pendingEth } }));
-    expect(late.code).toBe('window_closed');
+    // The stored state no longer offers it: the daemon answers 409 action_unavailable (its A2).
+    expect(late.status).toBe(409);
+    expect(late.code).toBe('action_unavailable');
     // An expired window drops out of the queue.
     expect((await client.call('approvals')).pending).toEqual([]);
   });
@@ -217,7 +219,7 @@ describe('mock daemon: swaps, approvals, deposits', () => {
   it('withholds only inside the 30-minute hold, publishing the evidence with it', async () => {
     const { client, advance } = setup();
     const w = await client.call('swapWithhold', { params: { ref: REF.held } });
-    expect(w.detail).toMatch(/evidence was published/);
+    expect(w).toMatchObject({ ok: true, outcome: 'carried_out', detail: 'withhold: carried out' });
     const s = await client.call('swap', { params: { ref: REF.held } });
     expect(s.state).toBe('WITHHELD');
     expect(s.evidence_published).toBe(true);
@@ -227,7 +229,7 @@ describe('mock daemon: swaps, approvals, deposits', () => {
     const other = setup();
     other.advance(19 * 60);
     const late = await failure(other.client.call('swapWithhold', { params: { ref: REF.held } }));
-    expect(late.code).toBe('hold_ended');
+    expect(late.code).toBe('action_unavailable');
     advance(1);
   });
   it('releases a withheld deposit and settles the swap', async () => {
@@ -299,11 +301,12 @@ describe('mock daemon: inbox, keys, rebalancing, registration, pause', () => {
     const run = await client.call('rebalanceRun', { body: { from: 'usdc_sol', to: 'xmr', amount_in: '40000000000', venue: 'wxmr_bridge' } });
     expect(run.state).toBe('awaiting_approval');
     const capped = await failure(client.call('rebalanceApprove', { params: { id: run.id } }));
-    expect(capped.code).toBe('in_transit_cap');
+    expect(capped.code).toBe('refill_refused');
+    expect(capped.detail).toMatch(/above the cap of \$50,000/);
     const ok = await client.call('rebalanceApprove', { params: { id: 'refill-31' } });
     expect(ok.state).toBe('pending');
     expect((await client.call('rebalanceCancel', { params: { id: run.id } })).state).toBe('cancelled');
-    expect((await failure(client.call('rebalanceCancel', { params: { id: 'refill-28' } }))).code).toBe('cannot_cancel');
+    expect((await failure(client.call('rebalanceCancel', { params: { id: 'refill-28' } }))).code).toBe('refill_refused');
     const manual = await client.call('rebalanceManual', { body: { from: 'usdc_sol', to: 'xmr', amount_in: '4100000000', amount_out: '9900000000000', note: 'OTC' } });
     expect(manual).toMatchObject({ venue: 'manual', state: 'done', detail: 'OTC' });
     expect((await failure(client.call('rebalanceRun', { body: { from: 'xmr', to: 'xmr', amount_in: '1' } }))).status).toBe(400);

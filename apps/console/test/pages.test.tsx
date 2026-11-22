@@ -173,7 +173,7 @@ describe('approvals', () => {
     await m.user.click(within(deny).getByRole('button', { name: 'Reject' }));
     await waitFor(() => expect(rowsOf(table)).toHaveLength(1));
     expect((await m.client.call('swap', { params: { ref: REF.pendingDeny } })).outcome).toBe('rejections_no_fault');
-    expect(await screen.findByText('The taker is refunded in full, with no fee.')).toBeTruthy();
+    expect(await screen.findByText('Rejected. The taker is refunded in full, with no fee.')).toBeTruthy();
   });
 
   it('has an empty queue state', async () => {
@@ -265,12 +265,18 @@ describe('deposits', () => {
     expect((await m.client.call('swap', { params: { ref: REF.withheld } })).outcome).toBe('releases');
   });
 
-  it('reports a withhold the daemon refuses because the hold has ended', async () => {
+  it('stops offering a withhold once the hold has ended', async () => {
+    // The page still lists the deposit as held, but the hold runs out while it is open: the
+    // console does not offer a withhold the daemon would refuse.
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     const m = mount('#/deposits');
     const held = await screen.findByRole('table', { name: 'Held deposits' });
-    m.advance(19 * 60);
-    await confirm(m.user, held, 'Withhold deposit');
-    expect(await screen.findByText('The 30-minute hold has ended; a deposit can no longer be withheld.')).toBeTruthy();
+    expect((within(held).getByRole('button', { name: 'Withhold deposit' }) as HTMLButtonElement).disabled).toBe(false);
+    tick(m, 19 * 60);
+    expect((within(held).getByRole('button', { name: 'Withhold deposit' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(text(within(held).getByTestId('blocked-reason'))).toBe('The 30-minute hold has ended; the deposit returns to the taker.');
+    // Releasing is still possible.
+    expect((within(held).getByRole('button', { name: 'Release deposit' }) as HTMLButtonElement).disabled).toBe(false);
     expect((await m.client.call('swap', { params: { ref: REF.held } })).state).toBe('HOLD');
   });
 });
@@ -409,17 +415,20 @@ describe('swaps', () => {
     expect((await m.client.call('deposits')).deposits.map((d) => d.ref)).toEqual([REF.withheld]);
   });
 
-  it('flags a swap parked for review and offers the evidence publisher', async () => {
+  it('flags a swap parked for review, and offers the evidence publisher once it is aborted', async () => {
     const m = mount(`#/swaps/${REF.review}`);
     const alert = await screen.findByRole('alert');
     expect(text(alert)).toContain('Parked for you to review. post_notice: the transaction was sent but its receipt is ambiguous; it will not be re-sent');
+    expect(text(screen.getByRole('region', { name: 'Daemon steps' }))).toContain('post noticeneeds review');
+    // While the notice stands evidence is not due; after an abort it is.
     const summary = screen.getByRole('region', { name: 'Summary' });
-    await m.user.click(within(summary).getByRole('button', { name: 'Publish evidence' }));
+    expect(within(summary).queryByRole('button', { name: 'Publish evidence' })).toBeNull();
+    await confirm(m.user, summary, 'Abort swap');
+    await m.user.click(await within(summary).findByRole('button', { name: 'Publish evidence' }));
     expect(text(within(summary).getByRole('alertdialog'))).toContain('Publish the joint view key and the lock transaction id, so anyone can verify your XMR lock and attribute the abort correctly.');
     await m.user.click(within(within(summary).getByRole('alertdialog')).getByRole('button', { name: 'Publish evidence' }));
     await waitFor(async () => expect((await m.client.call('swap', { params: { ref: REF.review } })).evidence_published).toBe(true));
     await waitFor(() => expect(text(screen.getByRole('region', { name: 'Monero lock' }))).toContain('Published: anyone can verify the lock'));
-    expect(text(screen.getByRole('region', { name: 'Daemon steps' }))).toContain('post noticeneeds review');
   });
 
   it('says so when the swap is unknown', async () => {

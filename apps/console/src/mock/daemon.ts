@@ -6,7 +6,7 @@
  *
  * It moves no funds and holds no keys. Transaction ids it returns are synthetic.
  */
-import { CHAIN_CONSTS, MARKET_CHAIN, type ChainName, type Market } from '@xmrswap/protocol';
+import { CHAIN_CONSTS, MARKET_CHAIN, base58Decode, toHex, type ChainName, type Market } from '@xmrswap/protocol';
 import {
   ROUTES,
   WS_CHANNELS,
@@ -104,13 +104,29 @@ class HttpError extends Error {
     readonly status: number,
     readonly code: string,
     readonly detail?: string,
+    readonly extra: Record<string, unknown> = {},
   ) {
     super(code);
   }
 }
-const fail = (status: number, code: string, detail?: string): never => {
-  throw new HttpError(status, code, detail);
+const fail = (status: number, code: string, detail?: string, extra: Record<string, unknown> = {}): never => {
+  throw new HttpError(status, code, detail, extra);
 };
+
+/** The daemon's words for each reason an operator instruction can be refused with (its `REFUSALS`). */
+export const REFUSALS: Record<string, string> = {
+  'ready-already-set': 'ready is set; the swap can no longer be backed out of until the claim window closes',
+  'refund-window-closed': "the refund window is over; a refund sent now could land in the taker's claim window and leak the key share",
+  'abort-window-closed': 'an abort is no longer accepted in this state',
+  'already-settled': 'the swap is already settled',
+  'reject-not-available': 'a pending take cannot be rejected on Solana outside window mode; it can only be left to lapse',
+  'hold-ended': 'the 30-minute hold has ended; a deposit can no longer be withheld',
+  'no-deposit-held': 'no deposit is held or withheld on this swap',
+  'not-available-in-state': 'the swap is not in a state that accepts it',
+  'dry-run': 'the daemon is in dry run and sends no transaction',
+};
+/** Compute units the daemon charges one offer update at (20,100 measured × 1.2). */
+export const REFRESH_CU = 24_120;
 
 type Params = Record<string, string>;
 type Handler = (ctx: { params: Params; query: URLSearchParams; body: unknown }) => unknown;
@@ -135,6 +151,7 @@ export class MockDaemon {
   private alerts: Alert[];
   private inventory: InventoryResponse;
   private paused = { owner: false, operator: false };
+  private ownerPaused: Record<ChainName, boolean> = { solana: false, ethereum: false };
   private epochs: Record<ChainName, { approval_epoch: number; quote_epoch: number }> = {
     solana: { approval_epoch: 2, quote_epoch: 5 },
     ethereum: { approval_epoch: 2, quote_epoch: 3 },
@@ -179,6 +196,8 @@ export class MockDaemon {
       changes: [{ path: '(file)', old: null, new: 'loaded at start' }],
       source: 'file',
     });
+    if (this.registration.solana.link.current) this.linkLog.push({ chain: 'solana', old: `0x${'00'.repeat(20)}`, new: linkBytesHex(this.registration.solana.link.current), effective_at: now - 200 * 86_400 });
+    if (this.registration.ethereum.link.current) this.linkLog.push({ chain: 'ethereum', old: `0x${'00'.repeat(32)}`, new: linkBytesHex(this.registration.ethereum.link.current), effective_at: now - 200 * 86_400 + 600 });
     this.defineRoutes();
   }
 
@@ -212,7 +231,7 @@ export class MockDaemon {
       } catch (e) {
         if (e instanceof HttpError) {
           const body: ApiError = e.detail === undefined ? { error: e.code } : { error: e.code, detail: e.detail };
-          return { status: e.status, body };
+          return { status: e.status, body: { ...body, ...e.extra } };
         }
         return { status: 500, body: { error: 'internal', detail: e instanceof Error ? e.message : String(e) } satisfies ApiError };
       }
@@ -251,7 +270,7 @@ export class MockDaemon {
   private snapshot<C extends WsChannel>(channel: C): WsPayloads[C] {
     const data: WsPayloads = {
       status: this.status(),
-      swaps: this.swaps.map(summary),
+      swaps: this.swaps.map((x) => summary(this.view(x))),
       offers: this.offers().offers,
       inbox: this.inbox,
       rebalance: this.refills,
@@ -268,9 +287,13 @@ export class MockDaemon {
 
   private route(name: RouteName, handler: Handler): void {
     const { method, path } = ROUTES[name];
+    this.routeAt(name, method, path, handler);
+  }
+  /** A route the daemon adds to the frozen API. */
+  private routeAt(name: string, method: string, path: string, handler: Handler): void {
     const keys: string[] = [];
     const pattern = new RegExp(`^${path.replace(/:([a-z_]+)/g, (_, k: string) => (keys.push(k), '([^/]+)'))}$`);
-    this.routes.push({ name, method, pattern, keys, handler });
+    this.routes.push({ name: name as RouteName, method, pattern, keys, handler });
   }
 
   // ---------------------------------------------------------------- derived state
@@ -294,7 +317,7 @@ export class MockDaemon {
   }
 
   private validation(toml: Toml = this.parsed): ConfigValidation {
-    return validateConfig(toml, { blobEndpoint: this.registration.blob_endpoint, solUsd: REFERENCE_USD.sol, expectedTriggeredPerDay: 310 });
+    return validateConfig(toml, { blobEndpoint: this.registration.blob_endpoint, solUsd: this.solUsd, expectedTriggeredPerDay: 310 });
   }
   private configResponse(): ConfigResponse {
     return { toml: this.toml, parsed: withDefaults(this.parsed), validation: this.validation(), revision: revisionOf(this.toml) };
@@ -305,7 +328,7 @@ export class MockDaemon {
       return parseToml(toml as string);
     } catch (e) {
       const where = e instanceof ConfigSyntaxError && e.line !== null ? ` (line ${e.line})` : '';
-      return fail(400, 'invalid_toml', `${e instanceof Error ? e.message : 'invalid TOML'}${where}`);
+      return fail(400, 'invalid_toml', `${e instanceof Error ? e.message : 'invalid TOML'}${where}`, { issues: [], warnings: [] });
     }
   }
   private applyConfig(toml: string, source: ConfigLogEntry['source']): ConfigResponse {
@@ -313,7 +336,7 @@ export class MockDaemon {
     const v = this.validation(next);
     if (!v.ok) {
       const first = v.errors[0];
-      fail(422, 'invalid_config', first ? `${first.path}: ${first.message}` : 'The configuration has errors.');
+      fail(422, 'invalid_config', first ? `${first.path}: ${first.message}` : 'The configuration has errors.', { issues: v.errors, warnings: v.warnings });
     }
     const changes = diffConfig(this.parsed, next);
     this.toml = toml;
@@ -376,7 +399,12 @@ export class MockDaemon {
         published: this.registration.solana.onion !== null,
         reachable: getPath(this.parsed, 'tor.enabled') === true ? true : null,
       },
-      paused: { ...this.paused, guardrails },
+      // `chains` is the daemon's addition: the owner's pause is per chain, and on Ethereum the operator cannot pause.
+      paused: {
+        ...this.paused,
+        guardrails,
+        ...({ chains: (['solana', 'ethereum'] as const).map((chain) => ({ chain, owner: this.ownerPaused[chain], operator: chain === 'solana' && this.paused.operator })) } as object),
+      },
       needs_review: this.swaps.filter((s) => s.needs_review).length,
       alerts: this.alerts,
     };
@@ -428,7 +456,9 @@ export class MockDaemon {
   }
 
   private operatorLamports = BigInt(sol(2.4));
-  private offers(cfg: Toml = this.parsed): OffersResponse {
+  /** The daemon's SOL price; `null` when no source has answered. Tests may change it. */
+  solUsd: number | null = REFERENCE_USD.sol;
+  private offers(cfg: Toml = this.parsed): OffersResponse & { sol_usd: number | null; compute_units_per_update: number } {
     const v = this.validation(cfg);
     const offers = resolveOffers(cfg, { blobEndpoint: this.registration.blob_endpoint }).map((o) => this.offerView(o));
     const daily = v.update_cost ? BigInt(v.update_cost.daily_lamports) : 0n;
@@ -443,6 +473,8 @@ export class MockDaemon {
         { kind: 'quote_on_request', count_24h: 2, cost: '3200000', asset: 'sol' },
         { kind: 'eth_registry', count_24h: 1, cost: '412000000000000', asset: 'eth' },
       ],
+      sol_usd: this.solUsd,
+      compute_units_per_update: REFRESH_CU,
     };
   }
 
@@ -450,77 +482,143 @@ export class MockDaemon {
     const s = this.swaps.find((x) => x.ref === ref);
     return s ?? fail(404, 'unknown_swap', `No swap ${ref}.`);
   }
+  /** Manual actions the stored state allows right now (the daemon's `actionsFor`); the chain has the last word. */
+  private actionsOf(s: SwapDetail): SwapAction[] {
+    const now = this.now();
+    const out: SwapAction[] = [];
+    if (s.state === 'DONE' || s.state === 'NONE') return out;
+    if (s.state === 'PENDING' && (s.deadlines.t_pending_deadline === null || now < s.deadlines.t_pending_deadline)) out.push('approve', 'reject');
+    if (s.state === 'ACTIVE' || s.state === 'NOTICED') out.push('abort');
+    if (s.state === 'HOLD' && s.deadlines.t_hold !== null && now < s.deadlines.t_hold) out.push('withhold');
+    if (s.state === 'HOLD' || s.state === 'WITHHELD') out.push('release');
+    if (s.deadlines.t_notice !== null && !s.evidence_published && s.direction === 'A' && s.state !== 'NOTICED' && s.state !== 'READY') out.push('publish-evidence');
+    return out;
+  }
+  /** The swap as the API shows it: actions computed now, and the operator's latest instruction. */
+  private view(s: SwapDetail): SwapDetail {
+    return { ...s, actions: this.actionsOf(s), ...({ instruction: this.instructions.get(s.ref) ?? null } as object) };
+  }
   private settle(s: SwapDetail, outcome: SwapDetail['outcome']): void {
     s.state = 'DONE';
     s.phase = 'settled';
     s.outcome = outcome;
-    s.actions = [];
     s.next_deadline = null;
     s.deadlines.t_settled = this.now();
   }
-  private swapAction(ref: string, action: SwapAction, body: unknown): { ok: boolean; tx: TxResult | null; detail?: string } {
+  private readonly acknowledged = new Set<string>();
+  private desired: { contacts?: { kind: number; value: string }[]; onion?: string | null } = {};
+  /** Every recorded `LinkChanged`, as 0x-hex bytes. Seeded with the two first links. */
+  private linkLog: { chain: ChainName; old: string; new: string; effective_at: number }[] = [];
+  private readonly instructions = new Map<string, { action: SwapAction; at: number; status: 'pending' | 'carried_out' | 'refused'; reason: string | null; tx: string | null; body: unknown }>();
+  private readonly inFlight = new Map<string, string>();
+  private readonly chainRefuses = new Map<string, string>();
+  /** Test seam: a transaction of this swap is still in flight, so an instruction waits behind it. */
+  holdTransaction(ref: string, waitingOn = 'the claim transaction'): void {
+    this.inFlight.set(ref, waitingOn);
+  }
+  /** Test seam: the chain is ahead of the stored state, so the next instruction on this swap is refused with this reason. */
+  chainSays(ref: string, reason: string): void {
+    this.chainRefuses.set(ref, reason);
+  }
+  /** Test seam: the transaction in flight lands; a pending instruction is carried out or refused on this step. */
+  landTransaction(ref: string): void {
+    this.inFlight.delete(ref);
+    const ins = this.instructions.get(ref);
+    if (!ins || ins.status !== 'pending') return;
     const s = this.findSwap(ref);
-    if (!s.actions.includes(action)) fail(409, 'action_unavailable', `"${action}" is not available for this swap in state ${s.state}.`);
-    this.requireLive(`the ${action} transaction`);
+    this.resolve(s, ins);
+    if ((ins.status as string) === 'refused') {
+      this.alerts.unshift({ id: String(this.seq++), at: this.now(), level: 'warning', kind: 'instruction_refused', message: `${ins.action} on swap ${ref} was not carried out: ${REFUSALS[ins.reason ?? ''] ?? ins.reason}`, swap_ref: ref, acknowledged: false });
+      this.push('alerts');
+    }
+    this.push('swaps', 'status');
+  }
+  /** One step of the flow for an instruction: carried out with its transaction, or refused with the reason. One-shot either way. */
+  private resolve(s: SwapDetail, ins: { action: SwapAction; status: 'pending' | 'carried_out' | 'refused'; reason: string | null; tx: string | null; body: unknown }): void {
+    const refusal = this.chainRefuses.get(s.ref);
+    if (refusal !== undefined) {
+      this.chainRefuses.delete(s.ref);
+      ins.status = 'refused';
+      ins.reason = refusal;
+      return;
+    }
     const now = this.now();
-    let detail: string | undefined;
-    switch (action) {
-      case 'approve': {
-        if (s.deadlines.t_pending_deadline !== null && now >= s.deadlines.t_pending_deadline) fail(409, 'window_closed', 'The approval window has closed; the taker is refunded in full.');
+    switch (ins.action) {
+      case 'approve':
         s.state = 'ACTIVE';
         s.phase = 'approved';
-        s.actions = ['abort'];
         s.deadlines.t_active = now;
         s.deadlines.t_note_deadline = now + CHAIN_CONSTS[s.chain].minNoticeSecs + 300;
         s.next_deadline = { at: s.deadlines.t_note_deadline, label: 'Lock-notice deadline; a miss is recorded against you' };
-        this.pending = this.pending.filter((p) => p.ref !== ref);
+        this.pending = this.pending.filter((p) => p.ref !== s.ref);
         break;
-      }
       case 'reject': {
-        const reason = isTable(body) ? body.reason : undefined;
-        if (reason !== 0 && reason !== 1 && reason !== 2) fail(400, 'bad_request', 'reason must be 0, 1 or 2.');
+        const reason = isTable(ins.body) ? (ins.body.reason ?? 0) : 0;
         this.settle(s, reason === 0 ? 'rejections' : 'rejections_no_fault');
-        this.pending = this.pending.filter((p) => p.ref !== ref);
-        detail = 'The taker is refunded in full, with no fee.';
+        this.pending = this.pending.filter((p) => p.ref !== s.ref);
         break;
       }
       case 'abort':
         s.state = s.deposit !== '0' ? 'ABORTED_HOLD' : 'ABORTED_FREE';
         s.phase = 'aborted';
-        s.actions = s.deadlines.t_notice !== null && !s.evidence_published ? ['publish-evidence'] : [];
         s.next_deadline = { at: s.deadlines.t_final, label: 'Final deadline for the taker to collect' };
         break;
       case 'withhold': {
-        if (s.deadlines.t_hold !== null && now >= s.deadlines.t_hold) fail(409, 'hold_ended', 'The 30-minute hold has ended; a deposit can no longer be withheld.');
         s.state = 'WITHHELD';
         s.phase = 'deposit_withheld';
         s.deposit_state = 2;
-        s.actions = ['release'];
-        const d = this.deposits.find((x) => x.ref === ref);
+        const d = this.deposits.find((x) => x.ref === s.ref);
         if (d) {
           d.state = 'withheld';
           if (d.evidence_required) s.evidence_published = true;
         }
         s.next_deadline = d ? { at: d.split_at, label: '60-day split: half to the taker, half to the treasury' } : null;
         s.deadlines.t_split = d?.split_at ?? null;
-        detail = d?.evidence_required ? 'Withheld. The evidence was published in the same transaction.' : 'Withheld.';
         break;
       }
       case 'release':
         s.deposit_state = 4;
         this.settle(s, 'releases');
-        this.deposits = this.deposits.filter((x) => x.ref !== ref);
-        detail = 'The deposit was released to the taker.';
+        this.deposits = this.deposits.filter((x) => x.ref !== s.ref);
         break;
       case 'publish-evidence':
         s.evidence_published = true;
-        s.actions = s.actions.filter((a) => a !== 'publish-evidence');
         break;
     }
+    ins.status = 'carried_out';
+    ins.tx = this.tx(s.chain, ins.action).id;
+  }
+  /**
+   * An operator instruction (the daemon's A10): always answered 200 with `outcome` carried_out,
+   * refused (with `refused`) or pending; it is written down before anything acts on it.
+   */
+  private swapAction(ref: string, action: SwapAction, body: unknown): Record<string, unknown> {
+    const s = this.findSwap(ref);
+    if (!this.actionsOf(s).includes(action)) fail(409, 'action_unavailable', `"${action}" is not available for this swap in state ${s.state}.`);
+    this.requireLive(`the ${action} transaction`);
+    if (action === 'reject') {
+      const reason = isTable(body) ? (body.reason ?? 0) : 0;
+      if (reason !== 0 && reason !== 1 && reason !== 2) fail(400, 'bad_request', 'reason must be 0, 1 or 2.');
+    }
+    const ins = { action, at: this.now(), status: 'pending' as 'pending' | 'carried_out' | 'refused', reason: null as string | null, tx: null as string | null, body };
+    this.instructions.set(ref, ins);
+    const waiting = this.inFlight.get(ref);
+    if (waiting === undefined) this.resolve(s, ins);
     this.push('swaps', 'status');
-    const out: { ok: boolean; tx: TxResult | null; detail?: string } = { ok: true, tx: this.tx(s.chain, action) };
-    if (detail !== undefined) out.detail = detail;
-    return out;
+    const { status, reason, tx: txId } = ins as { status: 'pending' | 'carried_out' | 'refused'; reason: string | null; tx: string | null };
+    const tx: TxResult | null = txId ? { chain: s.chain, id: txId, status: 'confirmed' } : null;
+    return {
+      ok: status !== 'refused',
+      tx,
+      detail:
+        status === 'carried_out'
+          ? `${action}: carried out`
+          : status === 'refused'
+            ? `${action} was not carried out: ${REFUSALS[reason ?? ''] ?? reason}`
+            : `${action} is recorded and will be carried out as soon as it can be (waiting on ${waiting}); it survives a restart`,
+      outcome: status,
+      ...(status === 'refused' ? { refused: reason } : {}),
+    };
   }
 
   private approvals(): ApprovalsResponse {
@@ -545,7 +643,8 @@ export class MockDaemon {
       const v = getPath(this.parsed, `rebalance.levels.${asset}.${key}`);
       return typeof v === 'number' ? (BigInt(Math.round(v * 1e6)) * 10n ** BigInt(decimals[asset] - 6)).toString() : null;
     };
-    const inTransit = this.refills.filter((r) => ['pending', 'depositing', 'processing', 'paying_out', 'held', 'failed'].includes(r.state));
+    // A failed refill keeps counting until the maker acknowledges it.
+    const inTransit = this.refills.filter((r) => ['pending', 'depositing', 'processing', 'paying_out', 'held'].includes(r.state) || (r.state === 'failed' && !this.acknowledged.has(r.id)));
     const cap = getPath(this.parsed, 'rebalance.max_in_transit_usd');
     return {
       mode,
@@ -619,7 +718,7 @@ export class MockDaemon {
     return {
       estimate: o.update_cost,
       spent_24h: [
-        { asset: 'sol', amount: spent.toString(), usd: (Number(spent) / 1e9) * REFERENCE_USD.sol },
+        { asset: 'sol', amount: spent.toString(), usd: this.solUsd === null ? null : (Number(spent) / 1e9) * this.solUsd },
         { asset: 'eth', amount: '412000000000000', usd: 0.000412 * REFERENCE_USD.eth },
       ],
       operator_balances: [
@@ -628,9 +727,18 @@ export class MockDaemon {
       ],
       runway_days: o.runway_days,
       runway_alert_days: typeof alertDays === 'number' ? alertDays : 7,
+      ...({ sol_usd: this.solUsd, compute_units_per_update: REFRESH_CU } as object),
     };
   }
 
+  /** Test seam: a refill fails at its venue. */
+  failRefill(id: string, detail: string): void {
+    const r = this.findRefill(id);
+    r.state = 'failed';
+    r.finished_at = this.now();
+    r.detail = detail;
+    this.push('rebalance');
+  }
   /** Test seam: set the fee wallet's SOL balance. */
   setOperatorLamports(v: bigint): void {
     this.operatorLamports = v;
@@ -681,6 +789,8 @@ export class MockDaemon {
     const setLink = (side: 'solana' | 'ethereum', target: string): void => {
       const link = reg[side].link;
       const next = target === '' ? null : target;
+      const hex = (v: string | null): string => (v === null || v === '' ? `0x${'00'.repeat(side === 'solana' ? 20 : 32)}` : linkBytesHex(v));
+      if (next !== link.current) this.linkLog.unshift({ chain: side, old: hex(link.current), new: hex(next), effective_at: link.current === null && link.pending === null ? now : now + delay });
       if (link.current === null && link.pending === null) link.current = next; // the first link is immediate
       else if (next === link.current) {
         link.pending = null;
@@ -712,7 +822,8 @@ export class MockDaemon {
         setLink('ethereum', a.solana_owner);
         break;
       case 'set_paused':
-        this.paused.owner = a.paused;
+        this.ownerPaused[a.chain] = a.paused;
+        this.paused.owner = this.ownerPaused.solana || this.ownerPaused.ethereum;
         break;
     }
     this.refreshMutual();
@@ -770,9 +881,60 @@ export class MockDaemon {
     this.route('registrationTx', ({ body }) => this.registrationTx(body as RegistrationAction));
     this.route('registrationSubmit', ({ body }) => this.registrationSubmit(body));
 
+    // Additions to the frozen API (the daemon's "Console contract" A5).
+    this.routeAt('registrationPublished', 'PUT', '/api/registration/published', ({ body }) => {
+      const b = isTable(body) ? body : {};
+      if (b.contacts !== undefined) {
+        const c = b.contacts;
+        const ok = Array.isArray(c) && c.length <= 6 && c.every((x) => isTable(x) && Number.isInteger(x.kind) && (x.kind as number) >= 0 && (x.kind as number) <= 255 && typeof x.value === 'string' && new TextEncoder().encode(x.value).length <= 96);
+        if (!ok) return fail(400, 'bad_request', 'contacts: at most 6 entries of { kind, value }, each value at most 96 bytes.');
+        this.desired.contacts = (c as { kind: number; value: string }[]).map((x) => ({ kind: x.kind, value: x.value }));
+      }
+      if (b.onion !== undefined) {
+        const o = b.onion;
+        if (o !== null && (typeof o !== 'string' || !/^[a-z2-7]{56}\.onion$/.test(o))) return fail(400, 'bad_request', 'onion: a v3 onion host (56 base32 characters + .onion), or null to follow the Tor hostname file.');
+        this.desired.onion = o as string | null;
+      }
+      // As the daemon: the wanted values are stored first, then publishing needs live mode.
+      this.requireLive('the registry update');
+      const reg = this.registration.solana;
+      const changed = JSON.stringify(reg.contacts) !== JSON.stringify(this.desired.contacts ?? reg.contacts) || (this.desired.onion !== undefined && this.desired.onion !== reg.onion);
+      if (this.desired.contacts) reg.contacts = this.desired.contacts;
+      if (this.desired.onion !== undefined) reg.onion = this.desired.onion;
+      this.registration.blob_endpoint = reg.onion !== null || reg.contacts.some((c) => c.kind === 5);
+      this.push('status', 'offers');
+      return { tx: changed ? { ...this.tx('solana', 'set_contacts'), status: 'sent' } : null, registration: this.registration };
+    });
+    this.routeAt('registrationLinks', 'GET', '/api/registration/links', () => ({ entries: [...this.linkLog].sort((x, y) => y.effective_at - x.effective_at) }));
+    this.routeAt('alertAck', 'POST', '/api/alerts/:id/ack', ({ params }) => {
+      const a = this.alerts.find((x) => x.id === params.id) ?? fail(404, 'unknown_alert', 'No such alert.');
+      a.acknowledged = true;
+      this.push('alerts', 'status');
+      return a;
+    });
+    this.routeAt('rebalanceAck', 'POST', '/api/rebalance/ack/:id', ({ params, body }) => {
+      const r = this.findRefill(params.id ?? '');
+      const choice = isTable(body) && (body.choice === 'continue' || body.choice === 'refund') ? body.choice : undefined;
+      if (r.state === 'held' && choice) {
+        r.state = choice === 'continue' ? 'processing' : 'refunded';
+        r.detail = choice === 'continue' ? 'Continued at the venue’s new rate.' : 'Refunded by the venue, minus its network fee.';
+        if (choice === 'refund') r.finished_at = this.now();
+      } else if (r.state === 'held') {
+        r.state = 'failed';
+        r.finished_at = this.now();
+        r.detail = `${r.detail ? `${r.detail}; ` : ''}closed by the maker`;
+        this.acknowledged.add(r.id);
+      } else if (r.state === 'failed') this.acknowledged.add(r.id);
+      else return fail(409, 'refill_refused', `refill ${r.id} is neither held nor failed`);
+      this.push('rebalance');
+      return r;
+    });
+
     this.route('offers', () => this.offers());
     this.route('offersPreview', ({ body }) => {
       const cfg = this.parseOr400(isTable(body) ? body.toml : undefined);
+      const pv = this.validation(cfg);
+      if (!pv.ok) return fail(422, 'invalid_config', pv.errors[0] ? `${pv.errors[0].path}: ${pv.errors[0].message}` : 'The configuration has errors.', { issues: pv.errors, warnings: pv.warnings });
       const out = this.offers(cfg);
       // A preview is never live.
       return { ...out, offers: out.offers.map((o) => ({ ...o, live: false, seq_or_quote_id: null, updated_at: null, valid_until: null })) };
@@ -791,9 +953,13 @@ export class MockDaemon {
       const limit = Math.max(1, Math.min(500, Number(query.get('limit') ?? 100) || 100));
       const page = list.slice(0, limit);
       const last = page[page.length - 1];
-      return { swaps: page.map(summary), next_before: list.length > limit && last ? last.opened_at : null };
+      return { swaps: page.map((x) => summary(this.view(x))), next_before: list.length > limit && last ? last.opened_at : null };
     });
-    this.route('swap', ({ params }) => this.findSwap(params.ref ?? ''));
+    this.route('swap', ({ params }) => {
+      const { body: _body, ...ins } = this.instructions.get(params.ref ?? '') ?? { body: null };
+      void _body;
+      return { ...this.view(this.findSwap(params.ref ?? '')), instruction: 'action' in ins ? ins : null };
+    });
     const action = (name: RouteName, a: SwapAction): void => this.route(name, ({ params, body }) => this.swapAction(params.ref ?? '', a, body));
     action('swapApprove', 'approve');
     action('swapReject', 'reject');
@@ -888,7 +1054,7 @@ export class MockDaemon {
       const state = this.rebalance();
       const venues = state.venues.filter((v) => v.enabled && v.healthy);
       const venue = b.venue ? venues.find((v) => v.id === b.venue) : venues[0];
-      if (!venue) return fail(409, 'no_venue', b.venue ? `${b.venue} is not enabled or not healthy.` : 'No enabled venue can take this refill.');
+      if (!venue) return fail(409, 'refill_refused', b.venue ? `${b.venue} is not enabled or not healthy.` : 'No enabled venue can take this refill.');
       const refill: RefillView = {
         id: this.nextId('refill'),
         venue: venue.id as VenueId,
@@ -912,7 +1078,7 @@ export class MockDaemon {
     });
     this.route('rebalanceApprove', ({ params }) => {
       const r = this.findRefill(params.id ?? '');
-      if (r.state !== 'awaiting_approval') return fail(409, 'not_awaiting_approval', `Refill ${r.id} is ${r.state}.`);
+      if (r.state !== 'awaiting_approval') return fail(409, 'refill_refused', `refill ${r.id} is not awaiting approval (${r.state})`);
       this.requireLive('the refill');
       this.checkTransitCap(r, this.rebalance());
       r.state = 'pending';
@@ -921,7 +1087,7 @@ export class MockDaemon {
     });
     this.route('rebalanceCancel', ({ params }) => {
       const r = this.findRefill(params.id ?? '');
-      if (r.state !== 'awaiting_approval' && r.state !== 'pending') return fail(409, 'cannot_cancel', `Refill ${r.id} is ${r.state} and can no longer be cancelled here.`);
+      if (r.state !== 'awaiting_approval' && r.state !== 'pending') return fail(409, 'refill_refused', `refill ${r.id} is ${r.state} and can no longer be cancelled`);
       r.state = 'cancelled';
       r.finished_at = this.now();
       this.push('rebalance');
@@ -983,7 +1149,17 @@ export class MockDaemon {
     if (state.max_in_transit_usd === null) return;
     const after = state.in_transit_usd + usdValue(r);
     if (after > state.max_in_transit_usd)
-      fail(409, 'in_transit_cap', `This refill would put $${Math.round(after).toLocaleString('en-US')} in transit, above the cap of $${state.max_in_transit_usd.toLocaleString('en-US')}.`);
+      fail(409, 'refill_refused', `This refill would put $${Math.round(after).toLocaleString('en-US')} in transit, above the cap of $${state.max_in_transit_usd.toLocaleString('en-US')}.`);
+  }
+}
+
+/** A link target as the chain stores it: 20 bytes for an Ethereum address, 32 for a Solana key. */
+function linkBytesHex(v: string): string {
+  if (/^0x[0-9a-fA-F]+$/.test(v)) return v.toLowerCase();
+  try {
+    return `0x${toHex(base58Decode(v))}`;
+  } catch {
+    return `0x${[...new TextEncoder().encode(v)].map((b) => b.toString(16).padStart(2, '0')).join('')}`;
   }
 }
 
