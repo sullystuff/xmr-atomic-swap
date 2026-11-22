@@ -1,0 +1,9 @@
+{
+  "_provenance": "HAND-WRITTEN in the shape of a Jupiter swap/v1 quote response. Not recorded from the live API.",
+  "quote_usdc_wxmr": {
+    "inputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "inAmount": "400000000",
+    "outputMint": "WXMRyRZhsa19ety5erZhHg4N3xj3EVN92u94422teJp", "outAmount": "996000000000",
+    "otherAmountThreshold": "991020000000", "swapMode": "ExactIn", "slippageBps": 50, "priceImpactPct": "0.0031",
+    "routePlan": [ { "swapInfo": { "label": "Meteora DLMM", "inAmount": "400000000", "outAmount": "996000000000" }, "percent": 100 } ]
+  }
+}

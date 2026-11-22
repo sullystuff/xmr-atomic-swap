@@ -1,0 +1,15 @@
+{
+  "_provenance": "HAND-WRITTEN from the HoudiniSwap partner API v2 description. Not recorded from the live API. Field names are assumptions; XMR as a payout token is UNCONFIRMED.",
+  "quotes": { "quotes": [
+    { "quoteId": "hq-float-1", "amountIn": 2000, "amountOut": 4.94, "fixed": false, "type": "standard", "duration": 20 },
+    { "quoteId": "hq-float-2", "amountIn": 2000, "amountOut": 4.90, "fixed": false, "type": "standard", "duration": 12 },
+    { "quoteId": "hq-fixed-1", "amountIn": 2000, "amountOut": 4.99, "fixed": true, "type": "standard", "duration": 20 }
+  ] },
+  "quotes_empty": { "quotes": [] },
+  "minMax": [25, 100000],
+  "create": { "houdiniId": "h9Qm2Xw7", "status": 0, "senderAddress": "HdDepositAddr111111111111111111111111111111", "receiverAddress": "__XMR__", "inAmount": 2000, "outAmount": 4.94, "inSymbol": "USDCSOL", "outSymbol": "XMR" },
+  "status_anonymizing": { "houdiniId": "h9Qm2Xw7", "status": 3, "inAmount": 2000, "outAmount": 4.94, "hashIn": "5HdPayin" },
+  "status_support": { "houdiniId": "h9Qm2Xw7", "status": 2, "statusText": "Contact Support", "inAmount": 2000, "outAmount": 4.94, "hashIn": "5HdPayin" },
+  "status_completed": { "houdiniId": "h9Qm2Xw7", "status": 4, "inAmount": 2000, "outAmount": 4.937, "hashIn": "5HdPayin", "transactionHash": "hdpayouttxid" },
+  "status_refunded": { "houdiniId": "h9Qm2Xw7", "status": 7, "inAmount": 2000, "outAmount": 0, "hashIn": "5HdPayin" }
+}

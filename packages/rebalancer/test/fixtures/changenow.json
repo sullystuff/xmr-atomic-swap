@@ -1,0 +1,12 @@
+{
+  "_provenance": "HAND-WRITTEN from the ChangeNOW v2 public docs. Not recorded from the live API.",
+  "estimate_standard": { "fromCurrency": "usdc", "fromNetwork": "sol", "toCurrency": "xmr", "toNetwork": "xmr", "flow": "standard", "type": "direct", "rateId": null, "validUntil": null, "transactionSpeedForecast": "10-60", "warningMessage": null, "depositFee": 0, "withdrawalFee": 0.0002, "userId": null, "fromAmount": 2000, "toAmount": 4.9612 },
+  "estimate_fixed": { "fromCurrency": "usdc", "fromNetwork": "sol", "toCurrency": "xmr", "toNetwork": "xmr", "flow": "fixed-rate", "type": "direct", "rateId": "rate-7f3a", "validUntil": "2027-01-15T08:10:00.000Z", "transactionSpeedForecast": "10-60", "warningMessage": null, "fromAmount": 2000, "toAmount": 4.93 },
+  "estimate_fixed_reverse": { "fromCurrency": "usdc", "fromNetwork": "sol", "toCurrency": "xmr", "toNetwork": "xmr", "flow": "fixed-rate", "type": "reverse", "rateId": "rate-9c1d", "validUntil": "2027-01-15T08:10:00.000Z", "fromAmount": 2030.5, "toAmount": 5 },
+  "range": { "fromCurrency": "usdc", "fromNetwork": "sol", "toCurrency": "xmr", "toNetwork": "xmr", "flow": "standard", "minAmount": 12.5, "maxAmount": null },
+  "create": { "id": "cn4f8a21b7c9d3e0", "fromAmount": 2000, "toAmount": 4.9612, "flow": "standard", "type": "direct", "payinAddress": "CnDepositAddr1111111111111111111111111111111", "payoutAddress": "__XMR__", "payinExtraId": null, "payoutExtraId": null, "fromCurrency": "usdc", "fromNetwork": "sol", "toCurrency": "xmr", "toNetwork": "xmr", "refundAddress": "__SOL__" },
+  "status_waiting": { "id": "cn4f8a21b7c9d3e0", "status": "waiting", "payinHash": null, "payoutHash": null, "amountFrom": null, "amountTo": null, "expectedAmountFrom": 2000, "expectedAmountTo": 4.9612 },
+  "status_verifying": { "id": "cn4f8a21b7c9d3e0", "status": "verifying", "payinHash": "5PayinSig", "payoutHash": null, "amountFrom": 2000, "amountTo": null },
+  "status_finished": { "id": "cn4f8a21b7c9d3e0", "status": "finished", "payinHash": "5PayinSig", "payoutHash": "a1b2c3payouttxid", "amountFrom": 2000, "amountTo": 4.958 },
+  "error_unauthorized": { "error": "unauthorized", "message": "Invalid api key" }
+}

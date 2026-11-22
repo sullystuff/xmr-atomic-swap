@@ -1,0 +1,20 @@
+{
+  "_provenance": "HAND-WRITTEN from the Kraken REST documentation. Not recorded from the live API.",
+  "ticker_usdc": { "error": [], "result": { "USDCUSD": { "a": ["1.0001", "1", "1.000"], "b": ["1.0000", "1", "1.000"] } } },
+  "ticker_xmr": { "error": [], "result": { "XXMRZUSD": { "a": ["401.00", "1", "1.000"], "b": ["400.50", "1", "1.000"] } } },
+  "deposit_addresses": { "error": [], "result": [ { "address": "KrDepositAddr111111111111111111111111111111", "expiretm": "0", "new": true } ] },
+  "deposit_status_pending": { "error": [], "result": [ { "method": "USDC (Solana)", "asset": "USDC", "refid": "QDEP1", "txid": "solsig1", "amount": "2000.000000", "fee": "0.000000", "status": "Pending" } ] },
+  "deposit_status_success": { "error": [], "result": [ { "method": "USDC (Solana)", "asset": "USDC", "refid": "QDEP1", "txid": "solsig1", "amount": "2000.000000", "fee": "0.000000", "status": "Success" } ] },
+  "add_order_sell": { "error": [], "result": { "descr": { "order": "sell 2000.00000000 USDCUSD @ market" }, "txid": ["OSELL-AAAAA-111111"] } },
+  "add_order_buy": { "error": [], "result": { "descr": { "order": "buy 1994.0000 XMRUSD @ market" }, "txid": ["OBUY-BBBBB-222222"] } },
+  "query_sell_closed": { "error": [], "result": { "OSELL-AAAAA-111111": { "status": "closed", "vol": "2000.00000000", "vol_exec": "2000.00000000", "cost": "2000.0000", "fee": "6.0000", "price": "1.0000", "descr": { "pair": "USDCUSD", "type": "sell" } } } },
+  "query_buy_closed": { "error": [], "result": { "OBUY-BBBBB-222222": { "status": "closed", "vol": "1994.0000", "vol_exec": "4.95210000", "cost": "1986.0240", "fee": "7.9760", "price": "401.05", "descr": { "pair": "XMRUSD", "type": "buy" } } } },
+  "open_orders_none": { "error": [], "result": { "open": {} } },
+  "closed_orders_sell_only": { "error": [], "result": { "closed": { "OSELL-AAAAA-111111": { "status": "closed", "descr": { "pair": "USDCUSD", "type": "sell" } } } } },
+  "closed_orders_both": { "error": [], "result": { "closed": { "OSELL-AAAAA-111111": { "status": "closed", "descr": { "pair": "USDCUSD", "type": "sell" } }, "OBUY-BBBBB-222222": { "status": "closed", "descr": { "pair": "XMRUSD", "type": "buy" } } } } },
+  "withdraw_info": { "error": [], "result": { "method": "Monero", "limit": "100.00000000", "amount": "4.95200000", "fee": "0.00010000" } },
+  "withdraw": { "error": [], "result": { "refid": "WREF-123" } },
+  "withdraw_status_pending": { "error": [], "result": [ { "method": "Monero", "asset": "XMR", "refid": "WREF-123", "txid": null, "amount": "4.95200000", "fee": "0.00010000", "status": "Pending" } ] },
+  "withdraw_status_success": { "error": [], "result": [ { "method": "Monero", "asset": "XMR", "refid": "WREF-123", "txid": "krpayouttxid", "amount": "4.95200000", "fee": "0.00010000", "status": "Success" } ] },
+  "error_key": { "error": ["EAPI:Invalid key"] }
+}

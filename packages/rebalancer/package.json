@@ -3,18 +3,34 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "description": "Venue adapter interface, the six refill adapters, and the routing, limits and safety controls of SPEC 7.7",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "build": "echo '@xmrswap/rebalancer: not implemented yet (owned by WP7)' && exit 1",
-    "test": "echo '@xmrswap/rebalancer: not implemented yet (owned by WP7)' && exit 1"
+    "build": "tsc -p tsconfig.json",
+    "prepare": "tsc -p tsconfig.json",
+    "test": "tsc -p tsconfig.test.json && vitest run"
   },
   "dependencies": {
+    "@solana/web3.js": "1.98.4",
     "@xmrswap/protocol": "workspace:*",
-    "@solana/web3.js": "1.98.4"
+    "smol-toml": "1.9.1",
+    "zod": "4.6.7"
   },
   "devDependencies": {
-    "typescript": "7.0.2",
+    "@types/node": "22.20.5",
     "tsx": "4.23.15",
-    "vitest": "5.1.1",
-    "@types/node": "22.20.5"
+    "typescript": "7.0.2",
+    "vitest": "5.1.1"
   }
 }

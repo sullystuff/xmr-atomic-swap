@@ -1,0 +1,38 @@
+{
+  "_provenance": "HAND-WRITTEN from the FixedFloat public API page. Not recorded from the live API.",
+  "price": { "code": 0, "msg": "OK", "data": {
+    "from": { "code": "USDCSOL", "network": "SOL", "coin": "USDC", "amount": "2000", "rate": "0.002473", "precision": 6, "min": "30", "max": "250000", "usd": "2000" },
+    "to": { "code": "XMR", "network": "XMR", "coin": "XMR", "amount": "4.946", "rate": "404.37", "precision": 8, "min": "0.07", "max": "618", "usd": "1978.4" },
+    "errors": [] } },
+  "price_limit_min": { "code": 0, "msg": "OK", "data": {
+    "from": { "code": "USDCSOL", "amount": "1", "min": "30", "max": "250000" },
+    "to": { "code": "XMR", "amount": "0", "min": "0.07", "max": "618" },
+    "errors": ["LIMIT_MIN"] } },
+  "create": { "code": 0, "msg": "OK", "data": {
+    "id": "TESTFF", "token": "order-token-not-a-credential", "type": "float", "status": "NEW",
+    "time": { "reg": 1800000000, "start": null, "finish": null, "update": 1800000000, "expiration": 1800001800, "left": 1800 },
+    "from": { "code": "USDCSOL", "amount": "2000", "address": "FfDepositAddr111111111111111111111111111111", "tag": null, "tx": { "id": null } },
+    "to": { "code": "XMR", "amount": "4.946", "address": "__XMR__", "tag": null, "tx": { "id": null } },
+    "back": { "address": null, "tx": { "id": null } },
+    "emergency": { "status": [], "choice": "NONE", "repeat": "0" } } },
+  "order_emergency": { "code": 0, "msg": "OK", "data": {
+    "id": "TESTFF", "status": "EMERGENCY",
+    "from": { "code": "USDCSOL", "amount": "2000", "tx": { "id": "5FfPayin" } },
+    "to": { "code": "XMR", "amount": "4.946", "tx": { "id": null } },
+    "back": { "tx": { "id": null } },
+    "emergency": { "status": ["LIMIT"], "choice": "NONE", "repeat": "0" } } },
+  "order_done": { "code": 0, "msg": "OK", "data": {
+    "id": "TESTFF", "status": "DONE",
+    "from": { "code": "USDCSOL", "amount": "2000", "tx": { "id": "5FfPayin" } },
+    "to": { "code": "XMR", "amount": "4.9441", "tx": { "id": "ffpayouttxid" } },
+    "back": { "tx": { "id": null } },
+    "emergency": { "status": [], "choice": "NONE", "repeat": "0" } } },
+  "order_refunded": { "code": 0, "msg": "OK", "data": {
+    "id": "TESTFF", "status": "DONE",
+    "from": { "code": "USDCSOL", "amount": "2000", "tx": { "id": "5FfPayin" } },
+    "to": { "code": "XMR", "amount": "0", "tx": { "id": null } },
+    "back": { "tx": { "id": "5FfRefund" } },
+    "emergency": { "status": ["LIMIT"], "choice": "REFUND", "repeat": "0" } } },
+  "emergency_ok": { "code": 0, "msg": "OK", "data": {} },
+  "error_sign": { "code": 401, "msg": "Invalid signature", "data": null }
+}

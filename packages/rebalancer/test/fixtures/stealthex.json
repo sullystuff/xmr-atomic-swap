@@ -1,0 +1,15 @@
+{
+  "_provenance": "HAND-WRITTEN from the StealthEX v4 API reference. Not recorded from the live API. XMR on the API currency list is UNCONFIRMED.",
+  "estimate": { "estimated_amount": 4.95, "rate": null },
+  "estimate_fixed": { "estimated_amount": 4.91, "rate": { "id": "sx-rate-1", "valid_until": "2027-01-15T08:10:00.000Z" } },
+  "estimate_reversed": { "estimated_amount": 2022.4, "rate": null },
+  "range": { "min_amount": 20, "max_amount": 150000 },
+  "create": {
+    "id": "sx81c2d3", "status": "waiting", "rate": "floating",
+    "deposit": { "symbol": "usdc", "network": "sol", "amount": 0, "expected_amount": 2000, "address": "SxDepositAddr111111111111111111111111111111", "extra_id": null, "tx_hash": null },
+    "withdrawal": { "symbol": "xmr", "network": "mainnet", "amount": 0, "expected_amount": 4.95, "address": "__XMR__", "extra_id": null, "tx_hash": null },
+    "refund_address": "__SOL__"
+  },
+  "status_verifying": { "id": "sx81c2d3", "status": "verifying", "deposit": { "tx_hash": "5SxPayin", "amount": 2000 }, "withdrawal": { "tx_hash": null, "amount": 0 } },
+  "status_finished": { "id": "sx81c2d3", "status": "finished", "deposit": { "tx_hash": "5SxPayin", "amount": 2000 }, "withdrawal": { "tx_hash": "sxpayouttxid", "amount": 4.948 } }
+}
