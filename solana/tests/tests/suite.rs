@@ -15,3 +15,11 @@ mod refund_table;
 mod deposits;
 #[path = "suite/binding.rs"]
 mod binding;
+#[path = "suite/fees.rs"]
+mod fees;
+#[path = "suite/deadlines.rs"]
+mod deadlines;
+#[path = "suite/session.rs"]
+mod session;
+#[path = "suite/park.rs"]
+mod park;
