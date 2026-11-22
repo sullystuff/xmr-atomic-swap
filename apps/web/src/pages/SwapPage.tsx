@@ -1,11 +1,12 @@
 /** One swap in progress: what state the money is in, the next deadline, and what the tab is doing about it. */
 import { MONERO_LOCK_WINDOW, SWAP_STATE } from '@xmrswap/protocol';
-import { deadlinesOf, endedInClaim, endedInRefund } from '@xmrswap/sdk';
+import { type Refusal, deadlinesOf, endedInClaim, endedInRefund } from '@xmrswap/sdk';
 import { useState } from 'react';
 import type { Tracked } from '../lib/engine.js';
 import { ASSET_LABEL, formatAsset, formatDuration, formatTime, formatXmrAmount, looksLikeXmrAddress } from '../lib/format.js';
 import { marketOf } from '../lib/market.js';
 import { LEG_LABEL } from '../lib/orders.js';
+import { refusalText } from '../lib/refusal.js';
 import { downloadText } from '../lib/vault.js';
 import { href, useApp, useChainNow, useEngine, useVault } from '../ui/hooks.js';
 import { Copyable, Countdown, Empty, Field, Notice, Spinner } from '../ui/kit.js';
@@ -191,6 +192,16 @@ function PayXmr({ t, now }: { t: Tracked; now: bigint | null }) {
   );
 }
 
+/** A request that cannot be carried out: why, and what happens instead. */
+export function RefusedNotice({ reason, buying }: { reason: Refusal; buying: boolean }) {
+  const r = refusalText(reason, buying);
+  return (
+    <Notice kind="warn" title={r.title} role="alert">
+      {r.text}
+    </Notice>
+  );
+}
+
 export function SwapPage({ swapRef }: { swapRef: string }) {
   const app = useApp();
   const engine = useEngine();
@@ -277,7 +288,15 @@ export function SwapPage({ swapRef }: { swapRef: string }) {
 
   const heading = buying ? `Buying ${formatXmrAmount(xmr)} XMR for ${formatAsset(amount, market)} ${asset}` : `Selling ${formatXmrAmount(xmr)} XMR for ${formatAsset(amount, market)} ${asset}`;
   const pill = t.atRisk ? <span className="pill pill-risk">At risk: keep this tab open</span> : !s ? <span className="pill">{refunded ? 'Refunded and closed' : 'Complete and closed'}</span> : state === SWAP_STATE.READY ? <span className="pill pill-safe">Ready</span> : <span className="pill">{LEG_LABEL[t.leg]}</span>;
-  const canCancel = s !== null && t.keys !== null && !t.note.cancel && ((buying && (state === SWAP_STATE.PENDING || state === SWAP_STATE.ACTIVE || state === SWAP_STATE.NOTICED)) || (!buying && (state === SWAP_STATE.PENDING || state === SWAP_STATE.NOTICED || state === SWAP_STATE.READY)));
+  // What the user asked for, and what the flow answered. A confirmed request always has a visible result.
+  const asked = !!t.note.cancel;
+  const refusal = asked ? (t.decision?.refused ?? null) : null;
+  const backingOut = !buying && state === SWAP_STATE.ACTIVE;
+  const exitStates = buying ? [SWAP_STATE.PENDING, SWAP_STATE.ACTIVE, SWAP_STATE.NOTICED, SWAP_STATE.READY, SWAP_STATE.ABORTED_FREE, SWAP_STATE.ABORTED_HOLD] : [SWAP_STATE.PENDING, SWAP_STATE.ACTIVE, SWAP_STATE.NOTICED, SWAP_STATE.READY];
+  const canCancel = s !== null && t.keys !== null && (exitStates as number[]).includes(state) && !(backingOut && t.note.paidTxid);
+  // Once the request would be refused the control is disabled and says why, rather than offering it.
+  // Backing out of a funded sell before paying is the exception: it is a decision not to pay, and it hides the address.
+  const blocked = t.exitRefusal !== null && !(backingOut && t.exitRefusal === 'cannot-exit-after-funding') ? t.exitRefusal : null;
   const cancelCosts = state !== SWAP_STATE.PENDING && s !== null && s.deposit > 0n;
 
   return (
@@ -380,25 +399,54 @@ export function SwapPage({ swapRef }: { swapRef: string }) {
         </Notice>
       ) : null}
 
-      {canCancel ? (
+      {asked ? (
+        <section className="grid gap-3" aria-label="Your request" data-testid="request-outcome" data-refused={refusal ?? ''}>
+          {refusal ? (
+            <RefusedNotice reason={refusal} buying={buying} />
+          ) : refunded || !s ? (
+            <Notice kind="info" title={buying ? 'Refunded, as you asked' : 'Cancelled, as you asked'} role="status">
+              {s ? 'The details are above.' : 'Everything came back to you and the swap account is closed.'}
+            </Notice>
+          ) : !buying && (state === SWAP_STATE.ABORTED_FREE || state === SWAP_STATE.ABORTED_HOLD) ? (
+            <Notice kind="info" title="Aborted, as you asked" role="status">
+              You gave up your claim. The maker now takes its escrow back, which reveals the key that recovers your XMR to your refund address; the tab does that by itself. Your deposit can be withheld.
+            </Notice>
+          ) : (
+            <Notice kind="info" title={`Your request is being carried out: ${state === SWAP_STATE.PENDING ? 'cancelling' : buying ? 'refunding' : 'aborting'}`} role="status">
+              The tab is sending the transaction with the session key; no wallet prompt is needed. Keep it open until this page shows the result.
+            </Notice>
+          )}
+        </section>
+      ) : canCancel ? (
         <section className="grid gap-3" aria-label="Cancel">
-          {!askCancel ? (
+          {blocked ? (
+            <div className="grid gap-2">
+              <button type="button" className="btn justify-self-start" disabled aria-describedby="exit-why">
+                {refusalText(blocked, buying).control}
+              </button>
+              <p id="exit-why" className="muted prose-w text-sm">
+                {refusalText(blocked, buying).text}
+              </p>
+            </div>
+          ) : !askCancel ? (
             <button type="button" className="btn btn-danger justify-self-start" onClick={() => setAskCancel(true)}>
-              {state === SWAP_STATE.PENDING ? 'Cancel and take everything back' : buying ? 'Refund this swap' : 'Abort this swap'}
+              {state === SWAP_STATE.PENDING ? 'Cancel and take everything back' : buying ? 'Refund this swap' : backingOut ? 'Back out: I will not pay' : 'Abort this swap'}
             </button>
           ) : (
-            <Notice kind="warn" title={state === SWAP_STATE.PENDING ? 'Cancel this pending lock?' : buying ? 'Refund now?' : 'Abort now?'}>
+            <Notice kind="warn" title={state === SWAP_STATE.PENDING ? 'Cancel this pending lock?' : buying ? 'Refund now?' : backingOut ? 'Back out without paying?' : 'Abort now?'}>
               <p>
                 {state === SWAP_STATE.PENDING
                   ? 'Everything comes back to you, with no fee.'
-                  : cancelCosts
-                    ? `You get ${formatAsset(s!.amount - (buying ? s!.deposit : 0n), market)} ${asset} back now. The deposit of ${formatAsset(s!.deposit, market)} ${asset} is held for 30 minutes; the maker can withhold it for up to 60 days, and then half of it is lost.`
-                    : 'Your payment comes back to you.'}
-                {!buying && state !== SWAP_STATE.PENDING ? ' The XMR you paid is recovered to your refund address once the maker has taken its escrow back.' : ''}
+                  : backingOut
+                    ? refusalText('cannot-exit-after-funding', false).text
+                    : cancelCosts
+                      ? `You get ${formatAsset(s!.amount - (buying ? s!.deposit : 0n), market)} ${asset} back now. The deposit of ${formatAsset(s!.deposit, market)} ${asset} is held for 30 minutes; the maker can withhold it for up to 60 days, and then half of it is lost.`
+                      : 'Your payment comes back to you.'}
+                {!buying && !backingOut && state !== SWAP_STATE.PENDING ? ' The XMR you paid is recovered to your refund address once the maker has taken its escrow back.' : ''}
               </p>
               <div className="mt-3 flex flex-wrap gap-3">
                 <button type="button" className="btn btn-danger" onClick={() => app.engine.annotate(t.ref, { cancel: true })}>
-                  Yes, {state === SWAP_STATE.PENDING ? 'cancel' : buying ? 'refund' : 'abort'}
+                  Yes, {state === SWAP_STATE.PENDING ? 'cancel' : buying ? 'refund' : backingOut ? 'back out' : 'abort'}
                 </button>
                 <button type="button" className="btn" onClick={() => setAskCancel(false)}>
                   Keep the swap

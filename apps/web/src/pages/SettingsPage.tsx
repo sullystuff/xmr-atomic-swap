@@ -1,7 +1,7 @@
 /** Settings (SPEC 8.2): endpoints, Monero nodes, connection mode with what each reveals, pinned ids shown for checking, the recovery file. */
 import type { MoneroNetwork } from '@xmrswap/protocol';
 import { useState } from 'react';
-import { type ConnectionMode, MODE_INFO, type Settings, type ThemeChoice, settingsProblems } from '../lib/settings.js';
+import { type ConnectionMode, MODE_INFO, type Settings, type ThemeChoice, overriddenKeys, settingsProblems } from '../lib/settings.js';
 import { BackupStep, LoadFile, VaultSettings } from '../ui/Backup.js';
 import { href, useApp, useObs, useVault } from '../ui/hooks.js';
 import { Field, Notice, Segmented } from '../ui/kit.js';
@@ -24,6 +24,33 @@ export function SettingsPage() {
     setDraft((d) => ({ ...d, [k]: v }));
   };
   const dirty = JSON.stringify(next) !== JSON.stringify(saved);
+  // The site's own values (its config.json over the built-in defaults) and what this browser overrides.
+  const site = app.siteSettings();
+  const local = overriddenKeys(next, site);
+  const show = (v: unknown): string => (Array.isArray(v) ? (v.length ? v.join(', ') : 'none') : v === '' ? 'not set' : String(v));
+  /** A field's hint, plus a marker when its value is a local override, with the site's value and a way back to it. */
+  const hint = (k: keyof Settings, text?: React.ReactNode) =>
+    !text && !local.includes(k) ? undefined : (
+    <>
+      {text}
+      {local.includes(k) ? (
+        <span className="mt-1 block" data-testid={`override-${k}`}>
+          <span className="pill pill-accent">Changed in this browser</span> Site default: <code className="break-all">{show(site[k])}</code>.{' '}
+          <button
+            type="button"
+            className="btn btn-quiet btn-sm !min-h-0 !p-1 underline"
+            onClick={() => {
+              setDone(false);
+              setDraft((d) => ({ ...d, [k]: site[k] }));
+              if (k === 'moneroNodes') setNodesText(site.moneroNodes.join('\n'));
+            }}
+          >
+            Use the site's value
+          </button>
+        </span>
+      ) : null}
+    </>
+    );
 
   return (
     <div className="grid gap-10">
@@ -42,10 +69,10 @@ export function SettingsPage() {
       >
         <section className="grid max-w-2xl gap-5" aria-labelledby="chains-h">
           <h2 id="chains-h">Chains</h2>
-          <Field label="Solana RPC URL" hint="Reads the registry and submits transactions. Your own node, or a provider that then sees your queries and transactions. It must allow listing program accounts." error={err('solanaRpc')}>
+          <Field label="Solana RPC URL" hint={hint('solanaRpc', 'Reads the registry and submits transactions. Your own node, or a provider that then sees your queries and transactions. It must allow listing program accounts.')} error={err('solanaRpc')}>
             {(p) => <input {...p} className="input mono" type="url" inputMode="url" spellCheck={false} value={draft.solanaRpc} onChange={(e) => set('solanaRpc', e.target.value.trim())} />}
           </Field>
-          <Field label="Ethereum RPC URL (optional)" hint="Leave empty to switch the ETH and USDC-on-Ethereum markets off." error={err('ethereumRpc')}>
+          <Field label="Ethereum RPC URL (optional)" hint={hint('ethereumRpc', 'Leave empty to switch the ETH and USDC-on-Ethereum markets off.')} error={err('ethereumRpc')}>
             {(p) => <input {...p} className="input mono" type="url" inputMode="url" spellCheck={false} value={draft.ethereumRpc} onChange={(e) => set('ethereumRpc', e.target.value.trim())} />}
           </Field>
         </section>
@@ -55,7 +82,7 @@ export function SettingsPage() {
             <h2 id="xmr-h">Monero nodes</h2>
             <p className="muted">The page checks every XMR lock against all of these and treats any disagreement or silence as "not confirmed". A single dishonest node could fake a lock and cost you your payment, so use two or more run by different people, or one of your own.</p>
           </div>
-          <Field label="Node URLs, one per line" hint="The first node is the one the final sweep is sent through: put the one you trust most first. An HTTPS page can only call https:// nodes, localhost, or the relay's Monero proxy (for example /monero/0)." error={err('moneroNodes')}>
+          <Field label="Node URLs, one per line" hint={hint('moneroNodes', "The first node is the one the final sweep is sent through: put the one you trust most first. An HTTPS page can only call https:// nodes, localhost, or the relay's Monero proxy on this site (a path such as /monero/0).")} error={err('moneroNodes')}>
             {(p) => <textarea {...p} className="textarea mono" rows={3} spellCheck={false} value={nodesText} onChange={(e) => (setDone(false), setNodesText(e.target.value))} />}
           </Field>
           <label className="check">
@@ -104,6 +131,7 @@ export function SettingsPage() {
               </label>
             ))}
           </div>
+          {local.includes('mode') ? <p className="text-sm muted">{hint('mode')}</p> : null}
           {draft.mode === 'hosted' || draft.mode === 'self-hosted' ? (
             <div className="max-w-2xl">
               <Field
@@ -118,6 +146,7 @@ export function SettingsPage() {
                       </>
                     ) : null}
                     . Never set it to <code>*</code> on a localhost relay: any page you visit could then use your relay and nodes.
+                    {hint('relayUrl')}
                   </>
                 }
                 error={err('relayUrl')}
@@ -133,11 +162,11 @@ export function SettingsPage() {
             <h2 id="pin-h">Program and contract</h2>
             <p className="muted">Pinned by this release. Compare them with the published ones before you swap; a page pointed at another program could take your funds.</p>
           </div>
-          <Field label="Solana program id" error={err('programId')}>
+          <Field label="Solana program id" hint={hint('programId')} error={err('programId')}>
             {(p) => <input {...p} className="input mono" spellCheck={false} value={draft.programId} onChange={(e) => set('programId', e.target.value.trim())} />}
           </Field>
           <div className="grid gap-5 sm:grid-cols-[1fr_10rem]">
-            <Field label="Ethereum contract address" error={err('contract')}>
+            <Field label="Ethereum contract address" hint={hint('contract')} error={err('contract')}>
               {(p) => <input {...p} className="input mono" spellCheck={false} value={draft.contract} onChange={(e) => set('contract', e.target.value.trim())} />}
             </Field>
             <Field label="Chain id">{(p) => <input {...p} className="input input-num" inputMode="numeric" value={String(draft.ethereumChainId)} onChange={(e) => set('ethereumChainId', Number(e.target.value.replace(/\D/g, '')) || 1)} />}</Field>
@@ -156,6 +185,13 @@ export function SettingsPage() {
           </div>
         </section>
 
+        <section className="grid max-w-2xl gap-5" aria-labelledby="poll-h">
+          <h2 id="poll-h">Polling</h2>
+          <Field label="Check the chains every (seconds)" hint={hint('pollMs', 'How often this tab re-reads swap state and re-verifies Monero locks. Shorter reacts sooner and sends more requests to your RPC and nodes; a relay with strict rate limits may refuse a very short interval.')}>
+            {(p) => <input {...p} className="input input-num" inputMode="numeric" value={String(Math.round(draft.pollMs / 1000))} onChange={(e) => set('pollMs', Math.max(1, Math.min(60, Number(e.target.value.replace(/\D/g, '')) || 1)) * 1000)} />}
+          </Field>
+        </section>
+
         <section className="grid gap-3" aria-labelledby="look-h">
           <h2 id="look-h">Appearance</h2>
           <Segmented<ThemeChoice> label="Theme" value={draft.theme} onChange={(t) => (set('theme', t), app.setSettings({ theme: t }))} options={[{ value: 'system', label: 'Match system' }, { value: 'dark', label: 'Dark' }, { value: 'light', label: 'Light' }]} />
@@ -165,6 +201,22 @@ export function SettingsPage() {
           <button type="submit" className="btn btn-primary" disabled={!dirty}>
             Save settings
           </button>
+          <button
+            type="button"
+            className="btn"
+            disabled={app.overridden().length === 0 && local.length === 0}
+            onClick={() => {
+              app.resetSettings();
+              setDraft(app.settings.get());
+              setNodesText(app.settings.get().moneroNodes.join('\n'));
+              setDone(false);
+            }}
+          >
+            Reset to this site's defaults
+          </button>
+          <span className="text-sm muted" data-testid="override-count">
+            {local.length === 0 ? "Every setting follows this site's defaults." : `${local.length} setting${local.length === 1 ? '' : 's'} changed in this browser; the rest follow this site's defaults.`}
+          </span>
           {done ? (
             <span className="text-sm text-safe-text" role="status">
               Saved. <a href={href('status')}>Check the connections on the Status page</a>.

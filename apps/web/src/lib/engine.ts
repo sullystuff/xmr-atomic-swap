@@ -20,6 +20,7 @@ import {
   type Decision,
   type LegState,
   type LockReport,
+  type Refusal,
   type SwapView,
   type VerifyLockResult,
   buildNotice,
@@ -115,6 +116,8 @@ export interface Tracked {
   needsWallet: boolean;
   /** Plain statement of a loss or a missed deadline, when there is one. */
   lost: string | null;
+  /** Why a request to get out (refund, cancel, abort) would be refused right now; `null` = it would be carried out. */
+  exitRefusal: Refusal | null;
   note: SwapNote;
 }
 
@@ -311,7 +314,7 @@ export class Engine {
   private track(ref: string, chain: ChainName): Tracked {
     let t = this.tracked.get(ref);
     if (!t) {
-      t = { ref, chain, view: null, keys: null, decision: null, leg: 'planned', atRisk: false, refundDeadline: null, noticeOpens: undefined, joint: null, lockTxid: null, lock: null, lockError: null, sweep: { phase: 'idle' }, busy: null, error: null, needsWallet: false, lost: null, note: loadNote(ref) };
+      t = { ref, chain, view: null, keys: null, decision: null, leg: 'planned', atRisk: false, refundDeadline: null, noticeOpens: undefined, joint: null, lockTxid: null, lock: null, lockError: null, sweep: { phase: 'idle' }, busy: null, error: null, needsWallet: false, lost: null, exitRefusal: null, note: loadNote(ref) };
       this.tracked.set(ref, t);
     }
     return t;
@@ -625,6 +628,8 @@ export class Engine {
     t.atRisk = isAtRisk(t);
     t.refundDeadline = s && t.atRisk ? (s.state === SWAP_STATE.ACTIVE ? deadlinesOf(s.chain, s).tNote : takerRefundDeadline(s)) : null;
     t.lost = lossOf(t, now);
+    // What the flow would answer to "get me out" now, so the page never offers an action that will be refused.
+    t.exitRefusal = s && t.keys ? (takerStep({ swap: s, now, cancel: true, noticeOpens: t.noticeOpens ?? true, lock: t.lock ? lockReport(t.lock) : { state: 'not-found', ok: false, confirmations: 0 }, ...(t.note.paidTxid ? { paid: true } : {}), ...(swept ? { swept: true } : {}) }).refused ?? null) : null;
   }
 }
 

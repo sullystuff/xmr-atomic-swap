@@ -66,6 +66,8 @@ export class ModelChain implements ChainPort {
   down = false;
   /** Make `exec` fail with this error once. */
   failNext: Error | null = null;
+  /** Make every `exec` fail until cleared. */
+  failAlways: Error | null = null;
   private counter = 0;
 
   constructor(readonly chain: ChainName = 'solana') {}
@@ -185,6 +187,7 @@ export class ModelChain implements ChainPort {
   async exec(s: SwapView, d: CallDecision, keys: DerivedKeys, m: CallMaterial, opts: { wallet?: boolean } = {}): Promise<string> {
     this.check();
     if ((d.caller === 'taker' || (d.caller === 'anyone' && this.sessionEmpty)) && !opts.wallet) throw new WalletNeeded(this.chain);
+    if (this.failAlways) throw this.failAlways;
     if (this.failNext) {
       const e = this.failNext;
       this.failNext = null;

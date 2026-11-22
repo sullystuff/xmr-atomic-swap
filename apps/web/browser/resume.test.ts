@@ -155,3 +155,41 @@ describe('a false lock notice (F-1)', () => {
     await context.close();
   });
 });
+
+describe('refund requested after the lock is confirmed (BUG-1)', () => {
+  it('the swap refunds as asked; the tab does not set ready', async () => {
+    const context = await browser.newContext({ acceptDownloads: true });
+    const wallet = await injectWallet(context, w.taker);
+    const page = await context.newPage();
+    const errors = watchErrors(page);
+    const maker = w.makers[0]!;
+    const readiesBefore = (await maker.record()).counters[COUNTER.readies]!;
+    const { ref } = await lockSwap(page, w.url, { xmr: '0.4', destination: await xmr.walletAddress() });
+
+    // The maker's lock is real and reaches the swap's depth on both nodes.
+    await w.stepMakers();
+    await xmr.settle(1);
+    // Confirmed: the only thing between the tab and "ready" is the contract's minimum wait.
+    await page.getByText(/The lock is confirmed\. The contract accepts the confirmation in/).first().waitFor({ timeout: 60_000 });
+    expect((await w.client.getSwap(ref))!.state).toBe(SWAP_STATE.NOTICED);
+
+    // The user asks for a refund and confirms it.
+    await page.getByRole('button', { name: 'Refund this swap' }).click();
+    await page.getByRole('button', { name: 'Yes, refund' }).click();
+    await expect.poll(async () => (await w.client.getSwap(ref))!.state, { timeout: 60_000 }).toBe(SWAP_STATE.HOLD);
+    await page.getByTestId('request-outcome').getByText('Refunded, as you asked').waitFor();
+    expect(await page.getByTestId('request-outcome').getAttribute('data-refused')).toBe('');
+    expect(wallet.signed).toBe(1);
+
+    // Past the minimum wait, where the old behaviour set ready: nothing of the kind happens.
+    await w.warpTo(deadlinesOf('solana', (await w.client.getSwap(ref))!).tReadyMin! + 60n);
+    await page.waitForTimeout(3000);
+    expect((await w.client.getSwap(ref))!.state).toBe(SWAP_STATE.HOLD);
+    const m = await maker.record();
+    expect(m.counters[COUNTER.readies]).toBe(readiesBefore);
+    expect(await page.getByTestId('safe-banner').count() + (await page.getByTestId('risk-banner').count())).toBeLessThanOrEqual(1);
+    expect(await page.getByRole('button', { name: 'Refund this swap' }).count()).toBe(0);
+    expect(errors).toEqual([]);
+    await context.close();
+  });
+});

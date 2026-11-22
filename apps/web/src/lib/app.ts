@@ -39,7 +39,7 @@ import { type Order, type OrderLeg, nextWave, stalledMakers } from './orders.js'
 import { type ChainPort, EthereumPort, type EthereumWallet, type MoneroPort, SolanaPort, type SolanaWallet, httpEthTransport, moneroPort, swapRefOf } from './ports.js';
 import { type Safety, safetyOf } from './safety.js';
 import { SealedStore } from './sealed.js';
-import { type Settings, loadSettings, saveSettings } from './settings.js';
+import { type Settings, loadSettings, overriddenKeys, saveSettings, siteDefaults } from './settings.js';
 import { type KV, local } from './storage.js';
 import { Vault } from './vault.js';
 
@@ -177,9 +177,28 @@ export class App {
 
   // ------------------------------------------------------------------ settings, clients, ports
 
+  /** The site's own values (built-in defaults plus the served `config.json`): what a key falls back to when not overridden here. */
+  siteSettings(): Settings {
+    return siteDefaults(this.deps.deployment);
+  }
+  /** The settings this browser overrides locally. */
+  overridden(): (keyof Settings)[] {
+    return overriddenKeys(this.settings.get(), this.siteSettings());
+  }
+
   setSettings(patch: Partial<Settings>): void {
-    const next = { ...this.settings.get(), ...patch };
-    saveSettings(next);
+    this.applySettings({ ...this.settings.get(), ...patch });
+  }
+  /** Drop local overrides (all of them, or the named keys) so the site's values apply again. */
+  resetSettings(keys?: (keyof Settings)[]): void {
+    const base = this.siteSettings();
+    const next = { ...this.settings.get() } as Record<string, unknown>;
+    for (const k of keys ?? (Object.keys(base) as (keyof Settings)[])) next[k] = base[k];
+    this.applySettings(next as unknown as Settings);
+  }
+  private applySettings(next: Settings): void {
+    // Only what differs from the site's values is stored, so an updated bundle config still reaches this browser.
+    saveSettings(next, this.siteSettings());
     this.settings.set(next);
     this.engine.start(next.pollMs);
     void this.refreshRegistry();

@@ -206,7 +206,9 @@ export interface MoneroPort {
 }
 
 export function moneroPort(cfg: () => { nodes: string[]; ownNode: boolean; network: SweepParams['network'] }): MoneroPort {
-  const nodes = () => cfg().nodes.map((n) => n.trim().replace(/\/+$/, '')).filter(Boolean);
+  // A site-relative node (`/monero/0`: the relay's proxy on this origin) is resolved against the page.
+  const absolute = (n: string): string => (n.startsWith('/') && typeof location !== 'undefined' ? new URL(n, location.origin).toString() : n);
+  const nodes = () => cfg().nodes.map((n) => absolute(n.trim()).replace(/\/+$/, '')).filter(Boolean);
   const policyProblem = (): string | null => {
     const n = nodes();
     if (n.length === 0) return 'No Monero node is configured.';

@@ -93,7 +93,9 @@ export function settingsProblems(s: Settings, pageIsHttps = typeof location !== 
   else if (nodes.length === 1 && !s.ownNode)
     out.push({ field: 'moneroNodes', message: 'One node is only enough if it is your own. Add a second, independently run node, or tick "This is my own node". A single dishonest node could fake a lock and you could lose your funds.' });
   for (const n of nodes) {
-    if (!isUrl(n)) out.push({ field: 'moneroNodes', message: `"${n}" is not an http(s) URL.` });
+    // A path on this site (`/monero/0`) is the relay's Monero proxy served from the same origin.
+    if (/^\/[^/]/.test(n)) continue;
+    if (!isUrl(n)) out.push({ field: 'moneroNodes', message: `"${n}" is neither an http(s) URL nor a path on this site such as /monero/0.` });
     else if (pageIsHttps && n.startsWith('http://') && !isLoopback(n))
       out.push({ field: 'moneroNodes', message: `This page is served over HTTPS and cannot call ${n}. Use an https:// node, a node on localhost, or the relay's Monero proxy.` });
   }
@@ -111,18 +113,56 @@ export function relayUrlOf(s: Settings): string | null {
   return new URL(s.relayUrl, base).toString().replace(/\/+$/, '');
 }
 
-export function loadSettings(deployment: Partial<Settings> = {}): Settings {
-  let stored: Partial<Settings> = {};
+/** The site's own values: built-in defaults with the deployment's `config.json` on top. */
+export const siteDefaults = (deployment: Partial<Settings> = {}): Settings => ({ ...DEFAULT_SETTINGS, ...deployment });
+
+const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
+
+/**
+ * What this browser stores: only the keys the user set to something other than the site's value.
+ * Everything else follows the served `config.json`, so an operator's updated bundle (a new pinned
+ * program id, another relay) reaches returning browsers. An older build stored the whole object;
+ * keys equal to the site's value are dropped on load, which migrates it.
+ */
+export function loadOverrides(base: Settings): Partial<Settings> {
+  let raw: unknown = {};
   try {
-    stored = JSON.parse(localStorage.getItem(KEY) ?? '{}') as Partial<Settings>;
+    raw = JSON.parse(localStorage.getItem(KEY) ?? '{}');
   } catch {
-    stored = {};
+    raw = {};
   }
-  return { ...DEFAULT_SETTINGS, ...deployment, ...stored };
+  const record = (typeof raw === 'object' && raw !== null ? raw : {}) as { v?: number; overrides?: Partial<Settings> } & Partial<Settings>;
+  const legacy = record.v !== 2;
+  const stored = (legacy ? record : (record.overrides ?? {})) as Partial<Settings>;
+  const out: Record<string, unknown> = {};
+  for (const k of Object.keys(stored) as (keyof Settings)[]) {
+    if (!(k in base) || same(stored[k], base[k])) continue;
+    // A legacy whole-object record cannot say which keys the user chose. The ids pinned by the
+    // release must never be shadowed by a stale copy, so they follow the site again.
+    if (legacy && PINNED.includes(k)) continue;
+    out[k] = stored[k];
+  }
+  return out as Partial<Settings>;
+}
+/** Pinned by the release: a stale local copy of these would point the page at an old deployment. */
+const PINNED: readonly (keyof Settings)[] = ['programId', 'contract', 'ethereumChainId'];
+
+/** The keys of `s` that differ from the site's values: exactly what is stored. */
+export function overriddenKeys(s: Settings, base: Settings): (keyof Settings)[] {
+  return (Object.keys(base) as (keyof Settings)[]).filter((k) => !same(s[k], base[k]));
 }
 
-export function saveSettings(s: Settings): void {
-  localStorage.setItem(KEY, JSON.stringify(s));
+export function loadSettings(deployment: Partial<Settings> = {}): Settings {
+  const base = siteDefaults(deployment);
+  return { ...base, ...loadOverrides(base) };
+}
+
+/** Store the user's overrides only. With no `base` given the built-in defaults are the reference. */
+export function saveSettings(s: Settings, base: Settings = DEFAULT_SETTINGS): void {
+  const overrides: Record<string, unknown> = {};
+  for (const k of overriddenKeys(s, base)) overrides[k] = s[k];
+  if (Object.keys(overrides).length === 0) localStorage.removeItem(KEY);
+  else localStorage.setItem(KEY, JSON.stringify({ v: 2, overrides }));
 }
 
 /** The deployment's defaults: `config.json` next to the page, when the operator ships one. Same origin only. */
