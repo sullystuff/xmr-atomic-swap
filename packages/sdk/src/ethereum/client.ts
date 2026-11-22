@@ -290,15 +290,33 @@ export function ethSessionBudget(maxFeePerGasWei: bigint, gasPerCall = 150_000n,
 export interface EthereumClientOptions {
   transport: EthTransport;
   contract: Address;
+  /**
+   * Where secret-bearing transactions (`claim`, `refund`) are submitted when configured: a
+   * private relay, so the secret is not visible in the public mempool before it is mined.
+   */
+  privateTransport?: EthTransport;
+  /** Refuse to send when the fee the network asks for is above this (wei per gas). */
+  maxFeePerGas?: bigint;
+}
+
+/** Signs an EIP-1559 transaction: a viem `LocalAccount` (the derived session key, the daemon's operator key) satisfies it. */
+export interface EthSigner {
+  address: Address;
+  signTransaction(tx: { type: 'eip1559'; chainId: number; nonce: number; to: Address; data: Hex; value: bigint; gas: bigint; maxFeePerGas: bigint; maxPriorityFeePerGas: bigint }): Promise<Hex>;
 }
 
 export class EthereumClient {
   readonly transport: EthTransport;
   readonly contract: XmrSwapContract;
 
+  private readonly privateTransport: EthTransport | null;
+  private readonly maxFeePerGas: bigint | null;
+
   constructor(o: EthereumClientOptions) {
     this.transport = o.transport;
     this.contract = new XmrSwapContract(o.contract);
+    this.privateTransport = o.privateTransport ?? null;
+    this.maxFeePerGas = o.maxFeePerGas ?? null;
   }
 
   /** Refuse an endpoint on another chain before trusting anything it says. */
@@ -341,6 +359,36 @@ export class EthereumClient {
     } catch (e) {
       throw new ContractError(contractErrorName(revertData(e)) ?? 'CallFailed', (e as Error).message);
     }
+  }
+
+  /**
+   * Simulate, price, sign and submit one call. Returns the transaction hash.
+   *
+   * The call is simulated first from the signer (a revert throws a `ContractError` and nothing
+   * is signed), gas is the node's estimate × 1.2, the fee is twice the base fee plus the tip and
+   * is refused above `maxFeePerGas`. A call marked `secret` goes to the private transport when
+   * one is configured.
+   */
+  async send(call: EthCall, signer: EthSigner, opts: { secret?: boolean; priorityFee?: bigint } = {}): Promise<Hex> {
+    await this.simulate(call, signer.address);
+    const tx = { from: signer.address, to: call.to, data: call.data, value: `0x${call.value.toString(16)}` };
+    let estimate: bigint;
+    try {
+      estimate = BigInt((await this.transport.request({ method: 'eth_estimateGas', params: [tx] })) as string);
+    } catch (e) {
+      throw new ContractError(contractErrorName(revertData(e)) ?? 'CallFailed', (e as Error).message);
+    }
+    const [chainId, nonce, head] = await Promise.all([
+      this.transport.request({ method: 'eth_chainId' }) as Promise<string>,
+      this.transport.request({ method: 'eth_getTransactionCount', params: [signer.address, 'pending'] }) as Promise<string>,
+      this.transport.request({ method: 'eth_getBlockByNumber', params: ['latest', false] }) as Promise<{ baseFeePerGas?: string } | null>,
+    ]);
+    const tip = opts.priorityFee ?? 1_000_000_000n;
+    const maxFeePerGas = BigInt(head?.baseFeePerGas ?? '0x0') * 2n + tip;
+    if (this.maxFeePerGas !== null && maxFeePerGas > this.maxFeePerGas) throw new SdkError('FeeTooHigh', `the network asks ${maxFeePerGas} wei per gas, over the configured cap ${this.maxFeePerGas}`);
+    const signed = await signer.signTransaction({ type: 'eip1559', chainId: Number(BigInt(chainId)), nonce: Number(BigInt(nonce)), to: call.to, data: call.data, value: call.value, gas: (estimate * 12n) / 10n, maxFeePerGas, maxPriorityFeePerGas: tip });
+    const via = opts.secret && this.privateTransport ? this.privateTransport : this.transport;
+    return (await via.request({ method: 'eth_sendRawTransaction', params: [signed] })) as Hex;
   }
 
   // ---------------------------------------------------------------- readers

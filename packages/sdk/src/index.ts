@@ -21,6 +21,7 @@ export type { Decision, FlowCall, LockReport, Need, OffchainAction, Warning } fr
 export * from './flows/taker.js';
 export * from './flows/maker.js';
 export * from './flows/keys.js';
+export * from './flows/open.js';
 
 // Solana.
 export * from './solana/pdas.js';

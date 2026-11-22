@@ -6,7 +6,7 @@ import { dleqVerify, envelopeHeader, envelopeVerifySig, init, merkleProof, x2551
 import { type Address, type InboxMessage, MAKER_ROUTES, type Message, type PoolResponse, parseMessage } from '@xmrswap/protocol';
 import { fetchPool, fetchProof, leafArgument, parsePool, pickLeaf, uploadOwnProof, verifyFundedShare, verifyProof, verifyTakerShare } from '../src/messages/blobs.js';
 import { ENVELOPE_CAP, envelopeHash, makerEncKeyFor, openFromMaker, openFromTaker, sealToMaker, sealToTaker } from '../src/messages/envelope.js';
-import { MakerHttp, MakerRefused, type MessageTransport, TransportUnavailable, blobRouteAvailable, directEndpoint, ethereumTransport, relayEndpoint, relayStatus, sendWithFallback, solanaTransport, torTransport } from '../src/messages/transports.js';
+import { MakerHttp, MakerRefused, type MessageTransport, TransportUnavailable, blobRouteAvailable, directEndpoint, ethereumMessageTransport, relayEndpoint, relayStatus, sendWithFallback, solanaMessageTransport, torMessageTransport } from '../src/messages/transports.js';
 import type { SwapView } from '../src/machine/view.js';
 import { NO_SWAP } from '../src/machine/model.js';
 import { fakeMakerEndpoint, fakeRelayFetch } from '../src/testing/maker.js';
@@ -267,11 +267,11 @@ describe('maker endpoint through the relay and directly', () => {
 });
 
 describe('transport fallback', () => {
-  const tor = (fetchFn: ReturnType<typeof fakeRelayFetch>) => torTransport(new MakerHttp(relayEndpoint('http://127.0.0.1:8787', ONION, fetchFn)));
+  const tor = (fetchFn: ReturnType<typeof fakeRelayFetch>) => torMessageTransport(new MakerHttp(relayEndpoint('http://127.0.0.1:8787', ONION, fetchFn)));
 
   it('prefers Tor and gets the reply at once', async () => {
     const posted: Uint8Array[] = [];
-    const r = await sendWithFallback([tor(fakeRelayFetch({ [ONION]: makerRoutes() })), solanaTransport(async (e) => (posted.push(e), 'sig1'))], (t) => inbox(t.kind));
+    const r = await sendWithFallback([tor(fakeRelayFetch({ [ONION]: makerRoutes() })), solanaMessageTransport(async (e) => (posted.push(e), 'sig1'))], (t) => inbox(t.kind));
     expect(r.via).toBe('tor');
     expect(openReply(r.reply!).t).toBe('ack');
     expect(posted.length).toBe(0);
@@ -281,11 +281,11 @@ describe('transport fallback', () => {
     const down = fakeRelayFetch({ [ONION]: makerRoutes() });
     down.down = true;
     const posted: Uint8Array[] = [];
-    const r = await sendWithFallback([tor(down), solanaTransport(async (e) => (posted.push(e), 'sig1')), ethereumTransport(async () => '0xhash')], (t) => inbox(t.kind));
+    const r = await sendWithFallback([tor(down), solanaMessageTransport(async (e) => (posted.push(e), 'sig1')), ethereumMessageTransport(async () => '0xhash')], (t) => inbox(t.kind));
     expect(r).toEqual({ via: 'solana', reply: null, txId: 'sig1' });
     expect(posted[0]!.length <= 900).toBe(true);
     // Solana's RPC unreachable too: the Ethereum event fallback.
-    const r2 = await sendWithFallback([tor(down), solanaTransport(async () => Promise.reject(new Error('fetch failed'))), ethereumTransport(async () => '0xhash')], (t) => inbox(t.kind));
+    const r2 = await sendWithFallback([tor(down), solanaMessageTransport(async () => Promise.reject(new Error('fetch failed'))), ethereumMessageTransport(async () => '0xhash')], (t) => inbox(t.kind));
     expect(r2).toEqual({ via: 'ethereum', reply: null, txId: '0xhash' });
     await expect(sendWithFallback([tor(down)], (t) => inbox(t.kind))).rejects.toBeInstanceOf(TransportUnavailable);
     await expect(sendWithFallback([], () => inbox('tor'))).rejects.toBeInstanceOf(TransportUnavailable);
@@ -294,21 +294,21 @@ describe('transport fallback', () => {
   it('a maker\'s refusal is final: the same bytes are not retried on-chain', async () => {
     const posted: Uint8Array[] = [];
     const refusing = fakeRelayFetch({ [ONION]: makerRoutes({ refuse: 'stale_key' }) });
-    await expect(sendWithFallback([tor(refusing), solanaTransport(async (e) => (posted.push(e), 'sig'))], (t) => inbox(t.kind))).rejects.toMatchObject({ code: 'stale_key' });
+    await expect(sendWithFallback([tor(refusing), solanaMessageTransport(async (e) => (posted.push(e), 'sig'))], (t) => inbox(t.kind))).rejects.toMatchObject({ code: 'stale_key' });
     expect(posted.length).toBe(0);
   });
 
   it('a message too large for the on-chain cap goes over Tor or not at all', async () => {
     const text = 'x'.repeat(1500);
-    const viaTor = await sendWithFallback([tor(fakeRelayFetch({ [ONION]: makerRoutes() })), solanaTransport(async () => 'sig')], (t) => inbox(t.kind, text));
+    const viaTor = await sendWithFallback([tor(fakeRelayFetch({ [ONION]: makerRoutes() })), solanaMessageTransport(async () => 'sig')], (t) => inbox(t.kind, text));
     expect(viaTor.via).toBe('tor');
     const down = fakeRelayFetch({});
     down.down = true;
     const posted: Uint8Array[] = [];
-    await expect(sendWithFallback([tor(down), solanaTransport(async (e) => (posted.push(e), 'sig'))], (t) => inbox(t.kind, text))).rejects.toBeInstanceOf(TransportUnavailable);
+    await expect(sendWithFallback([tor(down), solanaMessageTransport(async (e) => (posted.push(e), 'sig'))], (t) => inbox(t.kind, text))).rejects.toBeInstanceOf(TransportUnavailable);
     expect(posted.length).toBe(0);
     // An on-chain transport refuses an oversize envelope by itself too.
-    const sol: MessageTransport = solanaTransport(async () => 'sig');
+    const sol: MessageTransport = solanaMessageTransport(async () => 'sig');
     await expect(sol.send(new Uint8Array(901))).rejects.toMatchObject({ code: 'too_large' });
     expect(sol.maxEnvelope).toBe(900);
   });

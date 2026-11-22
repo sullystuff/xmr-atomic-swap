@@ -6,7 +6,8 @@ import path from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { ethSwapId, init, twinCommitments } from '@xmrswap/core-wasm';
 import { type Address, ETH_ERROR_NAMES, ETH_SWAP_EVENT_NAMES, type Hex, IXmrSwapAbi } from '@xmrswap/protocol';
-import { type Abi, decodeFunctionData, toFunctionSelector } from 'viem';
+import { type Abi, decodeFunctionData, parseTransaction, recoverTransactionAddress, toFunctionSelector } from 'viem';
+import { privateKeyToAccount } from 'viem/accounts';
 import { ContractError, EthereumClient, XmrSwapContract, contractErrorName, ethSessionBudget, secretToUint } from '../src/ethereum/client.js';
 import type { EthSwapStruct } from '../src/machine/view.js';
 import { quoteFromMessage, quoteMessage } from '../src/signing/eip712.js';
@@ -280,6 +281,52 @@ describe('EthereumClient over a fake transport', () => {
     }
     expect(contractErrorName('0x12345678')).toBe(null);
     expect(contractErrorName(undefined)).toBe(null);
+  });
+
+  it('send: simulates first, never signs a secret that would revert, caps the fee, uses the private relay for secrets', async () => {
+    const { fake, client } = setup();
+    const account = privateKeyToAccount(v.operator_private_key);
+    const secret = unhex(vector('twin').cases[0].input.s);
+    const call = contract.claim(swapId, secret);
+    let refuse: string | null = 'TooLate';
+    fake.views.claim = () => {
+      if (refuse) throw new FakeRevert(refuse);
+      return undefined;
+    };
+    await expect(client.send(call, account, { secret: true })).rejects.toMatchObject({ code: 'TooLate' });
+    // Nothing was estimated, signed or broadcast: the secret never left the process.
+    expect(fake.sentRaw.length).toBe(0);
+    expect(fake.requests.some((q) => q.method === 'eth_estimateGas' || q.method === 'eth_sendRawTransaction')).toBe(false);
+
+    refuse = null;
+    fake.nonces.set(account.address.toLowerCase(), 7);
+    const hash = await client.send(call, account, { secret: true });
+    expect(hash).toMatch(/^0x[0-9a-f]{64}$/);
+    const raw = fake.sentRaw[0]!;
+    const tx = parseTransaction(raw);
+    expect(tx).toMatchObject({ type: 'eip1559', chainId: 31337, nonce: 7, data: call.data, gas: 120_000n, maxFeePerGas: 21_000_000_000n, maxPriorityFeePerGas: 1_000_000_000n });
+    expect(tx.to!.toLowerCase()).toBe(CONTRACT);
+    expect((await recoverTransactionAddress({ serializedTransaction: raw as never })).toLowerCase()).toBe(v.operator);
+    // A value-bearing call carries its value.
+    fake.views.fund = () => undefined;
+    await client.send(contract.fund({ swapId, expectedOpen: b32(), key: addr(), key2: addr(), spendPub: b32(), viewShare: b32(), amount: 5n, token: zeroAddr }), account);
+    expect(parseTransaction(fake.sentRaw[1]!).value).toBe(5n);
+
+    // A fee above the cap is refused before signing.
+    const capped = new EthereumClient({ transport: fake, contract: CONTRACT, maxFeePerGas: 20_000_000_000n });
+    await expect(capped.send(call, account, { secret: true })).rejects.toMatchObject({ code: 'FeeTooHigh' });
+    expect(fake.sentRaw.length).toBe(2);
+
+    // With a private relay configured, the secret goes there and only there; other calls go to the public endpoint.
+    const priv = new FakeEthereum(CONTRACT);
+    const withRelay = new EthereumClient({ transport: fake, contract: CONTRACT, privateTransport: priv });
+    await withRelay.send(call, account, { secret: true });
+    expect(priv.sentRaw.length).toBe(1);
+    expect(fake.sentRaw.length).toBe(2);
+    fake.views.setReady = () => undefined;
+    await withRelay.send(contract.setReady(swapId), account);
+    expect(priv.sentRaw.length).toBe(1);
+    expect(fake.sentRaw.length).toBe(3);
   });
 
   it('decodes events, filters by swap and maker, and ignores other contracts', async () => {

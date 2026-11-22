@@ -22,6 +22,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "prepare": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node scripts/ensure-core.mjs && tsc -p tsconfig.json --noEmit && vitest run",
     "test:integration": "node scripts/ensure-core.mjs && vitest run --config vitest.integration.config.ts"

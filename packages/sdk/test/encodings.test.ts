@@ -3,7 +3,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { CHAIN_TAG, init } from '@xmrswap/core-wasm';
 import { CHAIN_CONSTS, type Offer, SWAP_FLAG, SWAP_STATE, base58Encode } from '@xmrswap/protocol';
-import { buildNotice, checkCounterpartyShare, contactKeys, evidenceOpens, expectedOpen, exportJointWallet, jointSpendKey, makerShareKeys, openNotice, swapJointAddress, takerSwapKeys } from '../src/flows/keys.js';
+import { buildNotice, checkCounterpartyShare, contactKeys, ethereumOpenKeys, evidenceOpens, expectedOpen, exportJointWallet, jointSpendKey, makerShareKeys, openNotice, secretOpens, sharePokValid, solanaMakerShare, solanaOpenKeys, swapJointAddress, takerSwapKeys } from '../src/flows/keys.js';
 import { NO_SWAP, apply } from '../src/machine/model.js';
 import { type SwapView, deadlinesOf, viewFromEthereum, type EthSwapStruct } from '../src/machine/view.js';
 import { priceEthQuote, priceOffer, tierValue } from '../src/registry/pricing.js';
@@ -77,6 +77,127 @@ describe('keys.json', () => {
   it('refuses a seed or nonce of the wrong length', () => {
     expect(codeOf(() => takerSwapKeys(new Uint8Array(31), 'solana', new Uint8Array(16)))).toBe('BadSeed');
     expect(codeOf(() => takerSwapKeys(new Uint8Array(32), 'solana', new Uint8Array(15)))).toBe('BadNonce');
+  });
+});
+
+describe('pok.json, points.json, twin.json: what goes into lock, take, approve, fund, claim and refund', () => {
+  it('proves a share to the swap PDA (taker) or the maker PDA (maker) exactly as the vectors do', () => {
+    let n = 0;
+    for (const c of vector('pok').cases.filter((c: any) => c.valid)) {
+      const keys = { spend: unhex(c.input.s), spendPub: unhex(c.output.S), view: z32, sessionSecret: z32, sessionPub: z32, encSecret: z32, encPub: z32 };
+      const ctx = unhex(c.input.ctx);
+      const open = solanaOpenKeys(keys, ctx);
+      expect(hex(open.takerPok), c.name).toBe(c.output.pok);
+      expect(hex(open.takerSpendPub)).toBe(c.output.S);
+      expect(hex(solanaMakerShare(keys, ctx).pok), c.name).toBe(c.output.pok);
+      expect(sharePokValid(unhex(c.output.S), ctx, unhex(c.output.pok)), c.name).toBe(true);
+      n++;
+    }
+    expect(n).toBe(4);
+    expect(codeOf(() => solanaOpenKeys({ spend: z32, spendPub: z32, view: z32, sessionSecret: z32, sessionPub: z32, encSecret: z32, encPub: z32 }, new Uint8Array(31)))).toBe('BadKey');
+  });
+
+  it('refuses every invalid proof: wrong context, wrong key, tampered, rogue-key constructions', () => {
+    const bad = vector('pok').cases.filter((c: any) => !c.valid);
+    expect(bad.length).toBe(11);
+    for (const c of bad) expect(sharePokValid(unhex(c.input.S), unhex(c.input.ctx), unhex(c.input.pok)), c.name).toBe(false);
+    // A proof for one swap PDA is no proof for another (a re-lock at another nonce).
+    const good = vector('pok').cases[0];
+    expect(sharePokValid(unhex(good.output.S), unhex(vector('pok').cases[1].input.ctx), unhex(good.output.pok))).toBe(false);
+  });
+
+  it('accepts only prime-order commitments from a counterparty', () => {
+    const own = unhex(vector('pok').cases[0].output.S);
+    const cases = vector('points').cases;
+    const badPoints = cases.filter((c: any) => c.error === 'InvalidKeyCommitment');
+    expect(badPoints.length).toBe(18);
+    for (const c of badPoints) expect(codeOf(() => checkCounterpartyShare(unhex(c.input.point), own)), c.name).toBe('InvalidKeyCommitment');
+    const good = cases.filter((c: any) => c.valid);
+    expect(good.length).toBe(100);
+    for (const c of good) {
+      expect(codeOf(() => checkCounterpartyShare(unhex(c.input.point), own)), c.name).toBe(null);
+      // Its recorded scalar is the only opening the Solana program accepts.
+      expect(secretOpens(baseView({ chain: 'solana', direction: 0, takerSpendPub: unhex(c.input.point) }), unhex(c.output.scalar), 'refund'), c.name).toBe(true);
+    }
+    // Wrong openings, including s + l (the same point, a non-canonical scalar).
+    const badOpenings = cases.filter((c: any) => c.error === 'ScalarMismatch');
+    expect(badOpenings.length).toBe(6);
+    for (const c of badOpenings) expect(secretOpens(baseView({ chain: 'solana', direction: 0, takerSpendPub: unhex(c.input.point) }), unhex(c.input.scalar), 'refund'), c.name).toBe(false);
+    expect(cases.length).toBe(124);
+  });
+
+  it('builds the Ethereum TakerKeys with the twin commitments of the share', () => {
+    const maker = { encKeyVersion: 3, encKey: unhex(vector('notice').keys.maker_pub) };
+    for (const c of vector('twin').cases.filter((c: any) => c.valid)) {
+      const keys = { spend: unhex(c.input.s), spendPub: z32, view: new Uint8Array(32).fill(4), sessionSecret: z32, sessionPub: new Uint8Array(20).fill(6), encSecret: z32, encPub: new Uint8Array(32).fill(5) };
+      const a = ethereumOpenKeys(keys, 0, maker);
+      expect(a.key, c.name).toBe(`0x${c.output.key_addr}`);
+      expect(a.key2, c.name).toBe(`0x${c.output.key_addr2}`);
+      expect(hex(a.viewShare)).toBe('04'.repeat(32));
+      expect(a.sessionKey).toBe(`0x${'06'.repeat(20)}`);
+      expect(a.makerEncVersion).toBe(3);
+      // Direction B: the taker's view share is not posted.
+      expect(hex(ethereumOpenKeys(keys, 1, maker).viewShare)).toBe('00'.repeat(32));
+    }
+    for (const c of vector('twin').cases.filter((c: any) => c.error === 'ScalarOutOfRange')) {
+      const keys = { spend: unhex(c.input.s), spendPub: z32, view: z32, sessionSecret: z32, sessionPub: z32, encSecret: z32, encPub: z32 };
+      expect(codeOf(() => ethereumOpenKeys(keys, 0, maker)), c.name).toBe('ScalarOutOfRange');
+    }
+    const low = unhex(vector('points').low_order_x25519[0].key);
+    expect(codeOf(() => ethereumOpenKeys({ spend: unhex(vector('twin').cases[0].input.s), spendPub: z32, view: z32, sessionSecret: z32, sessionPub: z32, encSecret: z32, encPub: z32 }, 0, { encKeyVersion: 1, encKey: low }))).toBe('LowOrderEncryptionKey');
+  });
+
+  it('knows before broadcasting whether a secret opens the commitment the contract will check', () => {
+    const twin = vector('twin');
+    const ethSwap = (c: any, direction: 0 | 1, side: 'taker' | 'maker') => {
+      const keysOf = { key: `0x${c.output?.key_addr ?? c.input.key_addr}`, key2: `0x${c.output?.key_addr2 ?? c.input.key_addr2}` };
+      const other = { key: `0x${'11'.repeat(20)}`, key2: `0x${'22'.repeat(20)}` };
+      const t = side === 'taker' ? keysOf : other;
+      const m = side === 'maker' ? keysOf : other;
+      return baseView({ chain: 'ethereum', direction, eth: { takerKey: t.key, takerKey2: t.key2, makerKey: m.key, makerKey2: m.key2, keyLeaf: z32, openHash: z32 } });
+    };
+    for (const c of twin.cases.filter((c: any) => c.valid)) {
+      const s = unhex(c.input.s);
+      // A: the taker refunds, the maker claims. B: the maker refunds, the taker claims.
+      expect(secretOpens(ethSwap(c, 0, 'taker'), s, 'refund'), c.name).toBe(true);
+      expect(secretOpens(ethSwap(c, 0, 'maker'), s, 'claim'), c.name).toBe(true);
+      expect(secretOpens(ethSwap(c, 1, 'maker'), s, 'refund'), c.name).toBe(true);
+      expect(secretOpens(ethSwap(c, 1, 'taker'), s, 'claim'), c.name).toBe(true);
+      // The right secret for the wrong side of the swap opens nothing.
+      expect(secretOpens(ethSwap(c, 0, 'taker'), s, 'claim'), c.name).toBe(false);
+      expect(secretOpens(ethSwap(c, 1, 'taker'), s, 'refund'), c.name).toBe(false);
+    }
+    const bad = twin.cases.filter((c: any) => !c.valid);
+    expect(bad.length).toBe(10);
+    for (const c of bad) {
+      // Out-of-range scalars are tried against the commitments of the first valid case.
+      const view = c.input.key_addr ? ethSwap(c, 0, 'taker') : ethSwap(twin.cases[0], 0, 'taker');
+      expect(secretOpens(view, unhex(c.input.s), 'refund'), c.name).toBe(false);
+    }
+    // Solana: s·G against the stored commitment, canonical scalars only.
+    const ok = vector('pok').cases[0];
+    const solSwap = baseView({ chain: 'solana', direction: 0, takerSpendPub: unhex(ok.output.S), makerSpendPub: unhex(vector('pok').cases[1].output.S) });
+    expect(secretOpens(solSwap, unhex(ok.input.s), 'refund')).toBe(true);
+    expect(secretOpens(solSwap, unhex(ok.input.s), 'claim')).toBe(false);
+    expect(secretOpens(solSwap, unhex(vector('pok').cases[1].input.s), 'claim')).toBe(true);
+    expect(secretOpens({ ...solSwap, direction: 1 }, unhex(ok.input.s), 'claim')).toBe(true);
+    expect(secretOpens(solSwap, new Uint8Array(32).fill(255), 'refund')).toBe(false);
+    expect(secretOpens(solSwap, new Uint8Array(31), 'refund')).toBe(false);
+  });
+
+  it('refuses all fourteen low-order X25519 encodings as a counterparty encryption key', () => {
+    const n = vector('notice');
+    const c = n.cases[1];
+    const table = vector('points').low_order_x25519;
+    expect(table.length).toBe(14);
+    for (const row of table) {
+      const s = baseView({ direction: 0, swapRef: unhex(c.input.swap_ref), takerEncKey: unhex(row.key), makerEncKey: unhex(n.keys.maker_pub) });
+      expect(codeOf(() => buildNotice(s, unhex(n.keys.maker_secret), unhex(c.input.txid), unhex(c.input.view))), row.u).toBe('LowOrderEncryptionKey');
+    }
+    for (const key of vector('points').valid_x25519) {
+      const s = baseView({ direction: 0, swapRef: unhex(c.input.swap_ref), takerEncKey: unhex(key), makerEncKey: unhex(n.keys.maker_pub) });
+      expect(buildNotice(s, unhex(n.keys.maker_secret), unhex(c.input.txid), unhex(c.input.view)).ciphertext.length).toBe(104);
+    }
   });
 });
 

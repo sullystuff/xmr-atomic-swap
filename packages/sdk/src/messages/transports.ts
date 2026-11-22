@@ -191,7 +191,7 @@ export interface MessageTransport {
 }
 
 /** Tor: HTTP to the maker's onion service, through the relay or directly. Cap 16,384 bytes. */
-export function torTransport(http: MakerHttp): MessageTransport {
+export function torMessageTransport(http: MakerHttp): MessageTransport {
   return { kind: 'tor', maxEnvelope: ENVELOPE_MAX_TOR, send: async (envelope) => ({ via: 'tor', reply: await http.msg(envelope) }) };
 }
 
@@ -200,11 +200,11 @@ export function torTransport(http: MakerHttp): MessageTransport {
  * signs and sends the instruction (the caller owns the wallet); the reply, if any, is read
  * later from the recipient's address. Cap 900 bytes.
  */
-export function solanaTransport(post: (envelope: Bytes) => Promise<string>): MessageTransport {
+export function solanaMessageTransport(post: (envelope: Bytes) => Promise<string>): MessageTransport {
   return onChain('solana', post);
 }
 /** Ethereum events: `postMessage` on the contract. Fallback only, when the Solana RPC is unreachable. Cap 900 bytes. */
-export function ethereumTransport(post: (envelope: Bytes) => Promise<string>): MessageTransport {
+export function ethereumMessageTransport(post: (envelope: Bytes) => Promise<string>): MessageTransport {
   return onChain('ethereum', post);
 }
 function onChain(kind: 'solana' | 'ethereum', post: (envelope: Bytes) => Promise<string>): MessageTransport {

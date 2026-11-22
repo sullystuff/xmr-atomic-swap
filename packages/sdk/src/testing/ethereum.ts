@@ -32,6 +32,11 @@ export class FakeEthereum implements EthTransport {
   readonly logs: { address: string; topics: Hex[]; data: Hex; blockNumber: Hex; blockHash: Hex; transactionHash: Hex; logIndex: Hex }[] = [];
   readonly receipts = new Map<string, { blockNumber: Hex; blockHash: Hex; status: Hex }>();
   readonly requests: { method: string; params?: unknown[] }[] = [];
+  /** Raw transactions it was asked to broadcast. */
+  readonly sentRaw: Hex[] = [];
+  baseFeePerGas = 10_000_000_000n;
+  gasEstimate = 100_000n;
+  readonly nonces = new Map<string, number>();
 
   constructor(readonly contract: Hex) {}
 
@@ -74,8 +79,15 @@ export class FakeEthereum implements EthTransport {
         const n = this.resolve(params[0] as string);
         if (n > this.latest) return null;
         const b = this.block(n);
-        return { number: `0x${b.number.toString(16)}`, hash: b.hash, timestamp: `0x${b.timestamp.toString(16)}` };
+        return { number: `0x${b.number.toString(16)}`, hash: b.hash, timestamp: `0x${b.timestamp.toString(16)}`, baseFeePerGas: `0x${this.baseFeePerGas.toString(16)}` };
       }
+      case 'eth_estimateGas':
+        return `0x${this.gasEstimate.toString(16)}`;
+      case 'eth_getTransactionCount':
+        return `0x${(this.nonces.get(String(params[0]).toLowerCase()) ?? 0).toString(16)}`;
+      case 'eth_sendRawTransaction':
+        this.sentRaw.push(params[0] as Hex);
+        return `0x${this.sentRaw.length.toString(16).padStart(64, '0')}`;
       case 'eth_call': {
         const call = params[0] as { to: string; data: Hex; from?: string; value?: string };
         const { functionName, args } = decodeFunctionData({ abi: ABI, data: call.data });
