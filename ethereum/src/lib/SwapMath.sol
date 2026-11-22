@@ -61,6 +61,15 @@ library SwapMath {
         ok = amount <= MAX_AMOUNT;
     }
 
+    /// The escrowed amount of a swap: `payAmount` in direction A, `receiveAmount` in direction B.
+    /// `ok` is false when `xmr` or the amount is zero (a dust take that rounds to zero would lock
+    /// the taker's XMR against nothing) or when the amount does not fit 128 bits.
+    function swapAmount(uint256 direction, uint256 xmr, uint256 price) internal pure returns (bool ok, uint256 amount) {
+        if (xmr == 0) return (false, 0);
+        (ok, amount) = direction == 0 ? payAmount(xmr, price) : receiveAmount(xmr, price);
+        if (amount == 0) ok = false;
+    }
+
     /// `floor(amount * bps / 10^4)`: the deposit and the fee. `amount <= 2^128 - 1`.
     function bpsOf(uint256 amount, uint256 bps) internal pure returns (uint256) {
         return (amount * bps) / BPS_DENOMINATOR;

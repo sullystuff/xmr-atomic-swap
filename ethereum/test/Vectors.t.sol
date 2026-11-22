@@ -21,6 +21,10 @@ contract MathHarness {
         return SwapMath.receiveAmount(xmr, price);
     }
 
+    function swapAmount(uint256 direction, uint256 xmr, uint256 price) external pure returns (bool, uint256) {
+        return SwapMath.swapAmount(direction, xmr, price);
+    }
+
     function tier(uint256 xmr, uint64[3] memory above, uint256[3] memory values) external pure returns (bool, uint256) {
         return SwapMath.tierValue(xmr, above, values);
     }
@@ -63,17 +67,31 @@ contract VectorsTest is Base {
 
     // ------------------------------------------------------------------ amounts.json
 
+    /// Whether a case is for this chain: its `chains` field names Ethereum.
+    function _forEthereum(string memory json, string memory c) internal pure returns (bool) {
+        string[] memory chains = vm.parseJsonStringArray(json, string.concat(c, ".chains"));
+        for (uint256 i; i < chains.length; ++i) {
+            if (_eq(chains[i], "ethereum")) return true;
+        }
+        return false;
+    }
+
     function test_amountsVectors() public view {
         string memory json = vm.readFile(string.concat(VECTORS, "amounts.json"));
-        uint256[5] memory seen; // pay/receive, overflow, bps, split, tier
+        uint256[7] memory seen; // pay/receive, overflow, bps, split, tier, swap accepted, swap refused
+        uint256 total;
+        uint256 mine;
         for (uint256 i;; ++i) {
             string memory c = string.concat(".cases[", vm.toString(i), "]");
             if (!vm.keyExistsJson(json, c)) break;
+            total++;
+            if (!_forEthereum(json, c)) continue;
+            mine++;
             string memory name = vm.parseJsonString(json, string.concat(c, ".name"));
             string memory op = vm.parseJsonString(json, string.concat(c, ".input.op"));
             bool valid = vm.parseJsonBool(json, string.concat(c, ".valid"));
             if (_eq(op, "pay") || _eq(op, "receive")) {
-                if (!_eq(vm.parseJsonString(json, string.concat(c, ".input.chain")), "ethereum")) continue;
+                assertEq(vm.parseJsonString(json, string.concat(c, ".input.chain")), "ethereum", name);
                 uint256 xmr = vm.parseJsonUint(json, string.concat(c, ".input.xmr"));
                 uint256 price = vm.parseJsonUint(json, string.concat(c, ".input.price"));
                 (bool ok, uint256 amount) = _eq(op, "pay") ? h.pay(xmr, price) : h.receive_(xmr, price);
@@ -85,6 +103,22 @@ contract VectorsTest is Base {
                     // The model's MathOverflow: the amount does not fit 128 bits.
                     assertEq(vm.parseJsonString(json, string.concat(c, ".error")), "MathOverflow", name);
                     seen[1]++;
+                }
+            } else if (_eq(op, "swap")) {
+                // The escrowed amount of a swap, refused when xmr or the amount is zero.
+                uint256 direction = _eq(vm.parseJsonString(json, string.concat(c, ".input.direction")), "A") ? 0 : 1;
+                (bool ok, uint256 amount) = h.swapAmount(
+                    direction,
+                    vm.parseJsonUint(json, string.concat(c, ".input.xmr")),
+                    vm.parseJsonUint(json, string.concat(c, ".input.price"))
+                );
+                assertEq(ok, valid, name);
+                if (valid) {
+                    assertEq(amount, vm.parseJsonUint(json, string.concat(c, ".output.amount")), name);
+                    seen[5]++;
+                } else {
+                    assertEq(vm.parseJsonString(json, string.concat(c, ".error")), "AmountOutOfRange", name);
+                    seen[6]++;
                 }
             } else if (_eq(op, "bps")) {
                 assertEq(
@@ -117,20 +151,60 @@ contract VectorsTest is Base {
                 seen[4]++;
             }
         }
+        assertEq(total, 100, "cases in the file");
+        assertEq(mine, 68, "cases whose chains name ethereum");
         assertEq(seen[0], 24, "pay and receive");
         assertEq(seen[1], 2, "overflow");
         assertEq(seen[2], 10, "bps");
         assertEq(seen[3], 8, "split");
         assertEq(seen[4], 14, "tier");
+        assertEq(seen[5], 4, "swap accepted");
+        assertEq(seen[6], 6, "swap refused");
+    }
+
+    /// The `swap` cases once more through `lock` and `take`: a quote at the case's price, the
+    /// case's size, and the stored amount or `AmountOutOfRange`.
+    function test_swapVectors_throughTheContract() public {
+        string memory json = vm.readFile(string.concat(VECTORS, "amounts.json"));
+        uint256 ran;
+        for (uint256 i;; ++i) {
+            string memory c = string.concat(".cases[", vm.toString(i), "]");
+            if (!vm.keyExistsJson(json, c)) break;
+            if (!_forEthereum(json, c)) continue;
+            if (!_eq(vm.parseJsonString(json, string.concat(c, ".input.op")), "swap")) continue;
+            string memory name = vm.parseJsonString(json, string.concat(c, ".name"));
+            uint8 direction = _eq(vm.parseJsonString(json, string.concat(c, ".input.direction")), "A") ? 0 : 1;
+            Open memory o = _open(
+                direction,
+                ran % 2 == 0 ? ETH : address(usdc),
+                uint64(vm.parseJsonUint(json, string.concat(c, ".input.xmr"))),
+                vm.parseJsonUint(json, string.concat(c, ".input.price"))
+            );
+            // No size floor in the quote: the refusal is the contract's own rule.
+            o.q.minXmr = 0;
+            o.sig = _signQuote(o.q);
+            o.leafIndex = uint32(ran % POOL);
+            if (vm.parseJsonBool(json, string.concat(c, ".valid"))) {
+                bytes32 id = _send(o);
+                assertEq(_get(id).amount, vm.parseJsonUint(json, string.concat(c, ".output.amount")), name);
+            } else {
+                vm.expectRevert(_selector(vm.parseJsonString(json, string.concat(c, ".error"))));
+                this.sendOpen(o);
+            }
+            ran++;
+        }
+        assertEq(ran, 10);
     }
 
     /// The tier vectors once more through `take`: the price the swap stores is the tier's value.
     function test_tierVectors_throughTheContract() public {
         string memory json = vm.readFile(string.concat(VECTORS, "amounts.json"));
         uint256 ran;
+        uint256 zeroFirst;
         for (uint256 i;; ++i) {
             string memory c = string.concat(".cases[", vm.toString(i), "]");
             if (!vm.keyExistsJson(json, c)) break;
+            if (!_forEthereum(json, c)) continue;
             if (!_eq(vm.parseJsonString(json, string.concat(c, ".input.op")), "tier")) continue;
             uint256 xmr = vm.parseJsonUint(json, string.concat(c, ".input.xmr"));
             if (xmr == 0) continue; // a swap of zero XMR is refused
@@ -149,12 +223,16 @@ contract VectorsTest is Base {
                 bytes32 id = _send(o);
                 assertEq(_get(id).price, vm.parseJsonUint(json, string.concat(c, ".output.value")) * 1e12);
             } else {
-                vm.expectRevert(IXmrSwap.TiersInvalid.selector);
+                // A malformed tier set is `TiersInvalid`. A quote whose first price tier is unused
+                // has no price at all: the amount is zero, which is `AmountOutOfRange`.
+                vm.expectRevert(values[0] == 0 ? IXmrSwap.AmountOutOfRange.selector : IXmrSwap.TiersInvalid.selector);
                 this.sendOpen(o);
+                if (values[0] == 0) zeroFirst++;
             }
             ran++;
         }
         assertEq(ran, 13);
+        assertEq(zeroFirst, 1);
     }
 
     function sendOpen(Open memory o) external returns (bytes32) {

@@ -6,19 +6,10 @@ import {Base} from "./utils/Base.sol";
 import {XmrSwapSeeder} from "./utils/Mocks.sol";
 
 /// Replays every row and every sequence of `interfaces/vectors/transitions.json` whose chain is
-/// `ethereum` against the real contract, once with ETH and once with USDC as the asset.
+/// `ethereum` against the real contract, once with ETH and once with USDC as the asset. Every row
+/// and every step is compared exactly as written; nothing is special-cased.
 ///
 /// The file holds one array element per line, so it is read line by line.
-///
-/// Two kinds of vector step cannot be expressed on Ethereum as written; both are handled
-/// explicitly, counted, and recorded in DEVIATIONS.md:
-///  * `lock`/`take` sent by a caller other than the taker wallet (6 rows, `Unauthorized`). On
-///    Ethereum the taker of a swap is `msg.sender` by construction and `swapId` is derived from
-///    it, so another sender opens a swap of its own. The replay checks the property the row
-///    protects: the taker's swap id stays unopened and none of the taker's funds move.
-///  * `withdraw_owed` by an account that is not the owed one (2 sequence steps, `Unauthorized`).
-///    `withdrawOwed` pays the caller's own parked balance, so such a caller has nothing to pull
-///    and gets `NothingOwed`; the owed account's balance is untouched.
 contract ReplayTest is Base {
     string internal constant FILE = "../interfaces/vectors/transitions.json";
 
@@ -27,12 +18,12 @@ contract ReplayTest is Base {
     bytes32 internal id;
     Open internal o;
 
+    /// The file's own count of Ethereum rows and sequences, read from its `summary` line.
+    string internal summary;
     uint256 internal rowsOk;
     uint256 internal rowsRejected;
     uint256 internal sequences;
     uint256 internal sequenceSteps;
-    uint256 internal foreignOpens;
-    uint256 internal foreignPulls;
 
     /// What a step may change, read before and after it.
     struct Snap {
@@ -87,6 +78,7 @@ contract ReplayTest is Base {
         while (true) {
             string memory l = vm.readLine(FILE);
             if (bytes(l).length == 0) break;
+            if (_startsWith(l, '"summary":')) summary = string.concat("{", _stripComma(l), "}");
             if (!_startsWith(l, '{"case":')) continue;
             l = _stripComma(l);
             if (!_eq(vm.parseJsonString(l, ".chain"), "ethereum")) continue;
@@ -96,32 +88,32 @@ contract ReplayTest is Base {
             // Counters live outside the snapshot.
             if (vm.parseJsonBool(l, ".ok")) rowsOk++;
             else rowsRejected++;
-            if (_isForeignOpen(l, ".step")) foreignOpens++;
         }
         vm.closeFile(FILE);
-        // The summary block of the file: 399 Ethereum rows, 193 of them rejected.
-        assertEq(rowsOk + rowsRejected, 399, "ethereum rows replayed");
-        assertEq(rowsRejected, 193, "ethereum rows rejected");
-        assertEq(foreignOpens, 6, "lock/take rows by a non-taker");
+        // The summary block of the file.
+        assertEq(rowsOk + rowsRejected, vm.parseJsonUint(summary, ".summary.ethereum.rows"), "ethereum rows replayed");
+        assertEq(rowsRejected, vm.parseJsonUint(summary, ".summary.ethereum.rows_rejected"), "ethereum rows rejected");
+        assertEq(rowsOk + rowsRejected, 399);
+        assertEq(rowsRejected, 191);
     }
 
     function _replaySequences() internal {
         while (true) {
             string memory l = vm.readLine(FILE);
             if (bytes(l).length == 0) break;
+            if (_startsWith(l, '"summary":')) summary = string.concat("{", _stripComma(l), "}");
             if (!_startsWith(l, '{"about":')) continue;
             l = _stripComma(l);
             if (!_eq(vm.parseJsonString(l, ".chain"), "ethereum")) continue;
             uint256 snap = vm.snapshotState();
-            (uint256 steps, uint256 pulls) = _sequence(l);
+            uint256 steps = _sequence(l);
             vm.revertToState(snap);
             sequences++;
             sequenceSteps += steps;
-            foreignPulls += pulls;
         }
         vm.closeFile(FILE);
-        assertEq(sequences, 182, "ethereum sequences replayed");
-        assertEq(foreignPulls, 2, "withdraw_owed steps by a foreign account");
+        assertEq(sequences, vm.parseJsonUint(summary, ".summary.ethereum.sequences"), "ethereum sequences replayed");
+        assertEq(sequences, 182);
         assertGt(sequenceSteps, 800);
     }
 
@@ -145,12 +137,12 @@ contract ReplayTest is Base {
 
     /// "Start the maker record at `initial_maker`. Run every step at its `at`. A step with
     /// `expect.ok == false` must fail with `expect.error` and change nothing."
-    function _sequence(string memory l) internal returns (uint256 steps, uint256 pulls) {
+    function _sequence(string memory l) internal returns (uint256 steps) {
         _seedMaker(l);
         for (;; ++steps) {
             string memory p = string.concat(".steps[", vm.toString(steps), "]");
             if (!vm.keyExistsJson(l, p)) break;
-            if (_step(l, p, true)) pulls++;
+            _step(l, p, true);
         }
         _checkSwap(l, ".final.swap", "final");
         _checkMaker(l, ".final.maker", "final");
@@ -197,18 +189,13 @@ contract ReplayTest is Base {
         if (_isOpen(c.name)) id = _id(o);
     }
 
-    /// A step with an expectation. Returns true for a `withdraw_owed` by a foreign account.
-    function _step(string memory l, string memory p, bool inSequence) internal returns (bool foreignPull) {
+    /// A step with an expectation.
+    function _step(string memory l, string memory p, bool inSequence) internal {
         _prepare(l, p);
         Call memory c = _encode(l, p);
         string memory e = string.concat(p, ".expect");
         bool expectOk = vm.parseJsonBool(l, string.concat(e, ".ok"));
         string memory what = string.concat(_label(l), " ", p, " ", c.name);
-
-        if (_isForeignOpen(l, p)) {
-            _foreignOpen(l, p, c, what);
-            return false;
-        }
 
         Snap memory pre = _snap();
         bytes32 before = _fingerprint();
@@ -217,45 +204,20 @@ contract ReplayTest is Base {
 
         if (!expectOk) {
             string memory err = vm.parseJsonString(l, string.concat(e, ".error"));
-            if (_eq(c.name, "withdraw_owed") && _eq(err, "Unauthorized")) {
-                // See the contract comment: a foreign account has nothing of its own to pull.
-                err = "NothingOwed";
-                foreignPull = true;
-            }
             assertFalse(ok, string.concat(what, ": must fail with ", err));
             assertEq(ret.length, 4, string.concat(what, ": custom error expected"));
             assertEq(bytes4(ret), _selector(err), string.concat(what, ": error is not ", err));
             assertEq(_fingerprint(), before, string.concat(what, ": a rejected call changed state"));
-            return foreignPull;
+            return;
         }
         if (!ok) {
             emit log_named_string("step failed", what);
             emit log_named_bytes("revert data", ret);
             fail();
-            return false;
+            return;
         }
         if (_isOpen(c.name)) id = _id(o);
         _checkEffects(l, e, c, pre, what, inSequence);
-    }
-
-    /// `lock`/`take` by somebody who is not the taker wallet: it cannot open the taker's swap or
-    /// touch the taker's funds.
-    function _foreignOpen(string memory l, string memory p, Call memory c, string memory what) internal {
-        assertEq(vm.parseJsonString(l, string.concat(p, ".expect.error")), "Unauthorized", what);
-        bytes32 takerSwap = _id(o);
-        uint256 takerBal = _bal(token, taker);
-        vm.prank(c.from);
-        (bool ok, bytes memory ret) = address(swap).call{value: c.value}(c.data);
-        ok;
-        assertEq(_get(takerSwap).state, 0, string.concat(what, ": the taker's swap id was opened"));
-        assertEq(_bal(token, taker), takerBal, string.concat(what, ": the taker's funds moved"));
-        assertEq(swap.swapsOf(taker, 0, 10).length, 0, string.concat(what, ": a swap is listed for the taker"));
-        if (ok) {
-            // The sender opened a swap of its own, under its own id.
-            bytes32 own = abi.decode(ret, (bytes32));
-            assertTrue(own != takerSwap, what);
-            assertEq(_get(own).taker, c.from, what);
-        }
     }
 
     /// Clock, pay-or-park environment and the maker's open-pending count for a step.
@@ -383,12 +345,21 @@ contract ReplayTest is Base {
         return vm.parseJsonBool(l, string.concat(a, ".open_ok")) ? h : keccak256(abi.encode(h));
     }
 
-    /// The opening: one XMR at a price equal to the row's amount, so `amount` is exact.
+    /// The opening: the row's `xmr` at the price that gives exactly the row's `amount`.
     function _encodeOpen(string memory l, string memory a, Call memory c) internal returns (Call memory) {
         uint8 direction = _eq(c.name, "lock") ? 0 : 1;
         assertEq(vm.parseJsonString(l, string.concat(a, ".direction")), direction == 0 ? "A" : "B");
         uint256 amount = vm.parseJsonUint(l, string.concat(a, ".amount"));
-        Open memory n = _open(direction, token, uint64(ONE_XMR), amount);
+        uint256 xmr = vm.parseJsonUint(l, string.concat(a, ".xmr"));
+        // amount = xmr * price / 10^12, exactly. With no XMR there is no price to derive; any will do.
+        uint256 price = amount;
+        if (xmr != 0) {
+            assertEq(amount * 1e12 % xmr, 0, "the row's amount is not a whole price");
+            price = amount * 1e12 / xmr;
+        }
+        Open memory n = _open(direction, token, uint64(xmr), price);
+        // The quote sets no size floor: a refusal of a zero size is the contract's own rule.
+        n.q.minXmr = 0;
         uint256 offerMode = vm.parseJsonUint(l, string.concat(a, ".offer_mode"));
         // Offer mode 3 is a taker-bound quote; 0 to 2 are the quote's approval mode.
         if (offerMode == 3) n.q.taker = taker;
@@ -406,9 +377,7 @@ contract ReplayTest is Base {
             n.a = _approval(c.from);
             n.approvalSig = _signApproval(n.a);
         }
-        // The swap the row is about is the taker's, whoever sends the call.
         o = n;
-        o.sender = taker;
         (, uint256 stake) = _stake(n);
         c.value = token == ETH ? stake : 0;
         if (direction == 0) {
@@ -622,11 +591,6 @@ contract ReplayTest is Base {
 
     function _isOpen(string memory call) internal pure returns (bool) {
         return _eq(call, "lock") || _eq(call, "take");
-    }
-
-    function _isForeignOpen(string memory l, string memory p) internal pure returns (bool) {
-        return _isOpen(vm.parseJsonString(l, string.concat(p, ".call")))
-            && !_eq(vm.parseJsonString(l, string.concat(p, ".caller")), "taker");
     }
 
     function _stateName(uint8 state) internal pure returns (string memory) {

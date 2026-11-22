@@ -170,9 +170,14 @@ library SwapOpen {
         }
         if (q.token != address(0) && q.token != $.usdc) revert IXmrSwap.TokenNotAllowed();
 
-        // Price and depth for this size.
-        (bool ok, uint256 price) = SwapMath.tierValue(xmr, q.tierXmr, q.tierPrice);
-        if (!ok) revert IXmrSwap.TiersInvalid();
+        // Price and depth for this size. A quote with no usable first tier has no price (the
+        // amount is then zero, `AmountOutOfRange`) or no depth (`DepthInvalid`, at the depth bound).
+        bool ok;
+        uint256 price;
+        if (q.tierPrice[0] != 0) {
+            (ok, price) = SwapMath.tierValue(xmr, q.tierXmr, q.tierPrice);
+            if (!ok) revert IXmrSwap.TiersInvalid();
+        }
         uint256 depth;
         // An unusable first depth tier is reported by the depth bound (`DepthInvalid`).
         if (q.depth[0] != 0) {
@@ -181,8 +186,8 @@ library SwapOpen {
         }
         if (xmr < q.minXmr || xmr > q.maxXmr) revert IXmrSwap.AmountOutOfRange();
         uint256 amount;
-        (ok, amount) = direction == 0 ? SwapMath.payAmount(xmr, price) : SwapMath.receiveAmount(xmr, price);
-        if (!ok || amount == 0) revert IXmrSwap.AmountOutOfRange();
+        (ok, amount) = SwapMath.swapAmount(direction, xmr, price);
+        if (!ok) revert IXmrSwap.AmountOutOfRange();
         if (direction == 0 ? amount > limit : amount < limit) revert IXmrSwap.PriceMoved();
 
         // Effective mode (SPEC 3.8). Every accepted swap still starts SwapStore.PENDING.

@@ -28,7 +28,7 @@ forge inspect StorageLayoutProbe storage-layout
 
 ## The packed swap record
 
-`getSwap` returns the frozen `IXmrSwap.Swap`; in storage the same fields are packed into 24 slots (the interface struct in its own order takes 28, plus the ciphertext). `lock` writes slots 0 to 16, 17 fresh slots instead of 22. `take` writes 12 and leaves 7, 11, 12 and 15 and the address halves of 6 for `fund`.
+`getSwap` returns the frozen `IXmrSwap.Swap`; in storage the same fields are packed into 24 slots (the interface struct in its own order takes 28, plus the ciphertext). `lock` writes slots 0 to 16, 17 fresh slots instead of 22. `take` writes 13 and leaves slots 7, 11, 12 and 15 and the address half of slot 6 for `fund`.
 
 - `amount`, `deposit` and `price` are `uint128`. `lock` and `take` refuse anything above `2^128 − 1` with `AmountOutOfRange` (`SwapStore._u128`); nothing is truncated.
 - Slot 2 is the status slot: every transition writes `state` there, and the transition that settles the swap writes `outcome` and `tSettled` in the same slot.
