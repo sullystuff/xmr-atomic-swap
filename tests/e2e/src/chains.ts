@@ -114,6 +114,8 @@ export interface EthWorld {
   treasury: Address;
   taker: PrivateKeyAccount;
   taker2: PrivateKeyAccount;
+  /** A wallet no other scenario uses (for scenarios that need a browser profile with no earlier swaps on its wallet). */
+  taker3: PrivateKeyAccount;
   stranger: PrivateKeyAccount;
   rpc<T = unknown>(method: string, params?: unknown[]): Promise<T>;
   now(): Promise<bigint>;
@@ -156,11 +158,11 @@ export async function startEthereum(): Promise<EthWorld> {
   const transport: EthTransport = { request: ({ method, params }) => rpc(method, (params as unknown[]) ?? []) };
   const client = new EthereumClient({ transport, contract });
   await client.verifyChainId(31337);
-  const [taker, stranger, taker2] = [14, 15, 16].map(ethAccount) as [PrivateKeyAccount, PrivateKeyAccount, PrivateKeyAccount];
+  const [taker, stranger, taker2, taker3] = [14, 15, 16, 17].map(ethAccount) as [PrivateKeyAccount, PrivateKeyAccount, PrivateKeyAccount, PrivateKeyAccount];
   const read = async (to: string, data: Hex): Promise<bigint> => BigInt(await rpc<Hex>('eth_call', [{ to, data }, 'latest']));
   const SWAP_ABI = parseAbi(['function treasuryAccrued(address token) view returns (uint256)']);
   const w: EthWorld = {
-    url, proc, transport, client, contract, usdc, treasury, taker, taker2, stranger, rpc,
+    url, proc, transport, client, contract, usdc, treasury, taker, taker2, taker3, stranger, rpc,
     now: () => client.chainTime('latest'),
     async advance(secs) {
       await rpc('evm_increaseTime', [`0x${BigInt(secs).toString(16)}`]);
@@ -196,7 +198,7 @@ export async function startEthereum(): Promise<EthWorld> {
     stop: () => proc.stop(2_000),
   };
   await w.fund(stranger.address);
-  for (const a of [taker, taker2]) await w.fund(a.address, 1000n * 10n ** 18n, 1_000_000_000_000n);
+  for (const a of [taker, taker2, taker3]) await w.fund(a.address, 1000n * 10n ** 18n, 1_000_000_000_000n);
   // From here on a block every second (the deployment above ran with instant mining).
   await rpc('evm_setIntervalMining', [1]);
   return w;

@@ -292,8 +292,10 @@ describe('the tab\'s automatic refund at the cutoff, on Ethereum', () => {
 describe('V-1 on Ethereum, direction B: a lost tab while selling XMR', () => {
   it('eth: the first profile posts the deposit, pays the XMR and announces it, then is thrown away; a new profile restores from the recovery file and claims after the daemon\'s ready', scenario(() => w, async () => {
     const eth = w.eth!;
-    const first = track(await openTab({ solKey: w.sol.taker2, ethKey: eth.taker2, eth }));
-    const before = await eth.balance(eth.taker2.address);
+    // A wallet with no earlier swaps: see BUGS.md O3 (the pay address can appear minutes late in a profile that also sees
+    // swaps of its wallet opened under another recovery file).
+    const first = track(await openTab({ solKey: w.sol.stranger, ethKey: eth.taker3, eth }));
+    const before = await eth.balance(eth.taker3.address);
     const c0 = await counters(w.maker, 'ethereum');
     const { ref, recoveryFile } = await uiTakeSell(first, w, { market: 'eth', xmr: '0.25' });
     registerRecoverySecrets(w, recoveryFile, 'V-1.eth.B');
@@ -310,7 +312,7 @@ describe('V-1 on Ethereum, direction B: a lost tab while selling XMR', () => {
     await advanceTo(w, noticed, deadlines(noticed).tReadyMin!);
     await untilState(w, ref, 'READY');
 
-    const second = track(await openTab({ solKey: w.sol.taker2, ethKey: eth.taker2, eth }));
+    const second = track(await openTab({ solKey: w.sol.stranger, ethKey: eth.taker3, eth }));
     const p2 = second.page;
     await p2.goto(`${w.ui.url}/#/activity`);
     await p2.getByRole('heading', { name: 'Load your recovery file to resume' }).waitFor();
@@ -321,7 +323,7 @@ describe('V-1 on Ethereum, direction B: a lost tab while selling XMR', () => {
     await untilState(w, ref, 'DONE');
     expect(second.eth!.signed).toBe(0);
     const fee = funded.amount / 2000n;
-    const gained = (await eth.balance(eth.taker2.address)) - before;
+    const gained = (await eth.balance(eth.taker3.address)) - before;
     expect(gained <= funded.amount - fee && gained > funded.amount - fee - NATIVE_SLACK['eth']!).toBe(true);
     expect(counterDelta(c0, await counters(w.maker, 'ethereum'))).toEqual({ takes: 1, approvals: 1, notices: 1, readies: 1, completed: 1 });
     await w.mine(10);
