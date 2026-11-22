@@ -491,16 +491,16 @@ describe('the rest of the console, in the browser', () => {
     // (An earlier scenario killed the daemon under this tab; its lost event stream is not this scenario's business.)
     consoleTab.errors.length = 0;
     const reg = await consolePage('registration');
-    await reg.getByRole('heading', { name: 'Registration' }).waitFor();
+    await reg.getByRole('heading', { name: 'Registration', exact: true }).waitFor();
     await text(reg, w.maker.makerPda.slice(0, 6)).waitFor({ timeout: 30_000 });
     await text(reg, new RegExp(w.maker.o.onion.slice(0, 20))).waitFor({ timeout: 30_000 });
     await dump(reg, 'console registration');
     const keys = await consolePage('keys');
-    await keys.getByRole('heading', { name: 'Keys' }).waitFor();
+    await keys.getByRole('heading', { name: 'Keys', exact: true }).waitFor();
     await dump(keys, 'console keys');
     expect(await keys.locator('main').innerText()).toMatch(/version/i);
     const inv = await consolePage('inventory');
-    await inv.getByRole('heading', { name: 'Inventory' }).waitFor();
+    await inv.getByRole('heading', { name: 'Inventory', exact: true }).waitFor();
     await dump(inv, 'console inventory');
     expect(await inv.locator('main').innerText()).toMatch(/XMR/);
     expect(consoleTab.errors).toEqual([]);
