@@ -61,6 +61,8 @@ export function swapDetail(store: Store, row: SwapRow, now: number, lock: LockRe
     evidence_published: v ? (v.flags & SWAP_FLAG.EVIDENCE) !== 0 : false,
     intents: store.intents({ swapRef: row.ref }).map((i) => ({ id: String(i.id), kind: `${i.kind}${typeof i.payload['call'] === 'string' ? `:${i.payload['call']}` : ''}`, status: i.status, tx: i.tx, at: i.created_at })),
     messages: store.messages(row.ref).map(inboxItem), last_error: row.last_error,
+    // An addition to the frozen shape: the operator's latest instruction and what became of it.
+    ...({ instruction: row.facts.instruction ? { action: row.facts.instruction.action, at: row.facts.instruction.at, status: row.facts.instruction.status, reason: row.facts.instruction.reason ?? null, tx: row.facts.instruction.tx ?? null } : null } as object),
   };
 }
 

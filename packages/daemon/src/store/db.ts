@@ -101,6 +101,22 @@ export interface SwapFacts {
   /** The ladder output reserved for this swap. */
   reservedOutput?: string;
   sweep?: { txid: string; txHex: string };
+  /** The operator's latest explicit instruction, written BEFORE anything acts on it, and what became of it. */
+  instruction?: Instruction;
+}
+export type InstructionAction = 'approve' | 'reject' | 'abort' | 'withhold' | 'release' | 'publish-evidence';
+export interface Instruction {
+  action: InstructionAction;
+  at: number;
+  /** Highest intent id when it was given: only a later transaction can be the one that carries it out. */
+  mark: number;
+  /** Swap state when it was given: the database's view at first, replaced by the chain's on the first step that reads it. */
+  stateAt: number;
+  seen?: boolean;
+  status: 'pending' | 'carried_out' | 'refused';
+  /** Why it could not be honoured (the SDK's `Refusal`, or the daemon's own `not-available-in-state` / `dry-run`). */
+  reason?: string;
+  tx?: string | null;
 }
 export interface SwapRow {
   ref: string;

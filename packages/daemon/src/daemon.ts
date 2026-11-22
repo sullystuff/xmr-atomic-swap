@@ -226,7 +226,7 @@ export class Daemon {
     });
     this.executor = new Executor({
       store: this.store, journal: this.journal, alerts: this.alerts, chains: { ...(this.sol ? { solana: this.sol } : {}), ...(this.eth ? { ethereum: this.eth } : {}) }, inventory: this.inventory, monero: this.monero, broadcaster,
-      shares: this.shares, encKeys: this.encKeys, approvals: this.approvals, config: () => this.config, xmrUsd: () => this.prices.usd('xmr'),
+      shares: this.shares, encKeys: this.encKeys, approvals: this.approvals, config: () => this.config, paused: () => this.risk.paused, xmrUsd: () => this.prices.usd('xmr'),
       sweepMaxFee: () => this.o.sweepMaxFee ?? (this.config.raw.monero.sweep_max_fee !== undefined ? BigInt(this.config.raw.monero.sweep_max_fee) : undefined),
     });
     this.offers = new OfferEngine({

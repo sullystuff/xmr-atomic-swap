@@ -41,6 +41,19 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object
 const amountOk = (v: unknown): v is string => typeof v === 'string' && /^\d+$/.test(v);
 const ASSETS: AssetId[] = ['xmr', 'sol', 'eth', 'usdc_sol', 'usdc_eth'];
 
+/** Plain words for each reason an operator instruction can be refused with. */
+export const REFUSALS: Record<string, string> = {
+  'ready-already-set': 'ready is set; the swap can no longer be backed out of until the claim window closes',
+  'refund-window-closed': 'the refund window is over; a refund sent now could land in the taker\'s claim window and leak the key share',
+  'abort-window-closed': 'an abort is no longer accepted in this state',
+  'already-settled': 'the swap is already settled',
+  'reject-not-available': 'a pending take cannot be rejected on Solana outside window mode; it can only be left to lapse',
+  'hold-ended': 'the 30-minute hold has ended; a deposit can no longer be withheld',
+  'no-deposit-held': 'no deposit is held or withheld on this swap',
+  'not-available-in-state': 'the swap is not in a state that accepts it',
+  'dry-run': 'the daemon is in dry run and sends no transaction',
+};
+
 export interface ApiServer {
   server: Server;
   port: number;
@@ -241,11 +254,17 @@ export async function startApi(d: Daemon, opts: { bind?: string } = {}): Promise
       const summary = swapSummary(row, d.store.now());
       if (!summary.actions.includes(action)) fail(409, 'action_unavailable', `"${action}" is not available for this swap in state ${summary.state}.`);
       needLive(`the ${action} transaction`);
-      const before = d.store.intents({ swapRef: ref }).length;
       const out = await d.executor.manual(ref, patch(req));
-      const sent = d.store.intents({ swapRef: ref }).slice(before).filter((i) => i.tx && (i.kind === 'sol_tx' || i.kind === 'eth_tx')).pop();
-      const tx: TxResult | null = sent ? { chain: row.chain, id: sent.tx!, status: sent.status === 'confirmed' ? 'confirmed' : sent.status === 'failed' ? 'failed' : 'sent', ...(sent.error ? { error: sent.error } : {}) } : null;
-      return { ok: out.kind !== 'error', tx, ...(out.kind === 'error' ? { detail: out.error } : out.kind === 'waiting' ? { detail: `waiting on ${out.on}` } : out.kind === 'parked' ? { detail: out.why } : {}) };
+      const ins = out.instruction;
+      const tx: TxResult | null = ins?.tx ? { chain: row.chain, id: ins.tx, status: 'confirmed' } : null;
+      // Never a silent no-op: carried out (with the transaction), refused (with the reason), or pending behind a transaction in flight.
+      const outcome = ins?.status ?? 'pending';
+      const waiting = out.kind === 'waiting' ? `waiting on ${out.on}` : out.kind === 'error' ? out.error : out.kind === 'parked' ? out.why : 'in progress';
+      return {
+        ok: outcome !== 'refused', tx,
+        detail: outcome === 'carried_out' ? `${action}: carried out` : outcome === 'refused' ? `${action} was not carried out: ${REFUSALS[ins!.reason ?? ''] ?? ins!.reason}` : `${action} is recorded and will be carried out as soon as it can be (${waiting}); it survives a restart`,
+        ...({ outcome, ...(outcome === 'refused' ? { refused: ins!.reason } : {}) } as object),
+      };
     });
   };
   swapAction('approve', () => ({ approve: true }));

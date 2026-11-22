@@ -10,7 +10,7 @@ import { ata } from '@xmrswap/sdk';
 import type { Daemon } from '../src/daemon.js';
 import { CrashError } from '../src/store/journal.js';
 import { type OpenedSwap, XMR, buildNotice, swapJointAddress, viewOf } from './sim.js';
-import { type World, makeWorld } from './world.js';
+import { BASE_TOML, type World, makeWorld } from './world.js';
 
 beforeAll(async () => {
   await init();
@@ -20,11 +20,15 @@ interface Ctx {
   swap: OpenedSwap | null;
   fakeTxid?: string;
   step: number;
+  /** Operator instructions already given. Set BEFORE the call, so a crash inside it is never followed by a second request: the daemon must honour the journaled one. */
+  given: Set<string>;
 }
 interface Scenario {
   name: string;
   /** The world outside the daemon: the taker, the Monero miners and the clock. State-driven, so it resumes after a restart. */
-  env(w: World, d: Daemon, c: Ctx): void;
+  env(w: World, d: Daemon, c: Ctx): void | Promise<void>;
+  /** Configuration of the world (default: the base file). */
+  toml?: string;
   check(w: World, d: Daemon, c: Ctx): void;
 }
 
@@ -159,7 +163,7 @@ const directionB = (unconfirmed: boolean): Scenario => ({
 
 /** Run a scenario; crash at the `crashAt`-th journal point (never when `null`). Returns how many points the run passed. */
 async function run(sc: Scenario, crashAt: number | null): Promise<{ points: number; crashedAt: string | null }> {
-  const w = await makeWorld();
+  const w = await makeWorld(sc.toml);
   usdcAccount(w, w.keystore.solana.publicKey, 1_000_000_000_000n);
   let points = 0;
   let crashedAt: string | null = null;
@@ -170,7 +174,7 @@ async function run(sc: Scenario, crashAt: number | null): Promise<{ points: numb
       throw new CrashError(crashedAt);
     }
   };
-  const c: Ctx = { swap: null, step: 0 };
+  const c: Ctx = { swap: null, step: 0, given: new Set() };
   let d = await w.boot({ crash: hook });
   let started = false;
   for (let round = 0; round < 80; round++) {
@@ -179,7 +183,7 @@ async function run(sc: Scenario, crashAt: number | null): Promise<{ points: numb
         await d.start();
         started = true;
       }
-      sc.env(w, d, c);
+      await sc.env(w, d, c);
       await d.executor.tick();
       await d.offers.tick(true);
       if (c.swap && d.store.swap(c.swap.pda)?.terminal) break;
@@ -207,7 +211,93 @@ async function run(sc: Scenario, crashAt: number | null): Promise<{ points: numb
   return { points, crashedAt };
 }
 
-const scenarios = [directionA(false), directionA(true), directionB(false), directionB(true)];
+/** Give an operator instruction once, ever: the flag is set before the call. */
+async function instruct(d: Daemon, c: Ctx, name: string, patch: Parameters<Daemon['executor']['manual']>[1]): Promise<void> {
+  if (c.given.has(name)) return;
+  c.given.add(name);
+  await d.executor.manual(c.swap!.pda, patch);
+}
+const WINDOW_TOML = `${BASE_TOML.replace('[markets.sol.sell_xmr]\nenabled = true', '[markets.sol.sell_xmr]\nenabled = true\napproval_mode = "window"')}\n[approvals]\nauto_max_xmr = 1\n`;
+
+/** The operator approves a pending lock, and later backs out after the notice: both instructions are journaled before they act. */
+const operatorApprovesThenAborts: Scenario = {
+  name: 'A (window): the operator approves, then aborts after the notice',
+  toml: WINDOW_TOML,
+  async env(w, d, c) {
+    const { sim, xmr } = w;
+    if (!c.swap) {
+      if (sim.offer(0, 0)?.enabled) c.swap = sim.open({ direction: 0, mode: 1, xmr: 2n * XMR });
+      return;
+    }
+    const s = sim.swap(c.swap.pda);
+    if (!s) return;
+    if (s.state === SWAP_STATE.PENDING && d.store.swap(c.swap.pda)) await instruct(d, c, 'approve', { approve: true });
+    else if (s.state === SWAP_STATE.NOTICED && lockRelayed(w)) await instruct(d, c, 'abort', { abort: true });
+    else if (s.state === SWAP_STATE.ABORTED_FREE || s.state === SWAP_STATE.ABORTED_HOLD) {
+      xmr.mine(2);
+      sim.takerCall(c.swap.pda, { name: 'refund', secretOk: true }, { revealed: c.swap.keys.spend });
+    } else if (s.state === SWAP_STATE.HOLD) {
+      xmr.mine(10);
+      if (d.store.swap(c.swap.pda)?.swept && (s.flags & SWAP_FLAG.EVIDENCE) !== 0) {
+        sim.setTime(s.tRefund + BigInt(CHAIN_CONSTS.solana.holdSecs));
+        sim.takerCall(c.swap.pda, { name: 'release_deposit' }, {}, 'anyone');
+      }
+    } else if (s.state === SWAP_STATE.DONE) xmr.mine(10);
+  },
+  check(w, d, c) {
+    const { sim, xmr } = w;
+    const pda = c.swap!.pda;
+    expect([...c.given].sort()).toEqual(['abort', 'approve']);
+    // Each instruction was carried out exactly once, whatever the cut point, and no automatic step overtook it.
+    expect(sim.names(pda).filter((n) => n === 'approve')).toHaveLength(1);
+    expect(sim.names(pda).filter((n) => n === 'abort')).toHaveLength(1);
+    expect(sim.names(pda)).not.toContain('reject');
+    expect(sim.names(pda)).not.toContain('claim');
+    expect(sim.secretSends).toEqual([]);
+    expect(d.store.swap(pda)!.facts.instruction).toMatchObject({ action: 'abort', status: 'carried_out', tx: expect.any(String) });
+    expect(d.store.swap(pda)!.facts.manual?.abort).toBeUndefined(); // one-shot: nothing is left to fire later
+    expect(xmr.relaysOf('wallet')).toHaveLength(1);
+    expect(xmr.relaysOf('sweep')).toHaveLength(1);
+    expect(d.store.swap(pda)!.terminal).toBe(1);
+  },
+};
+
+/** After a taker refund the operator withholds the deposit, and later releases it. */
+const operatorWithholdsThenReleases: Scenario = {
+  name: 'A: after a refund the operator withholds, then releases',
+  async env(w, d, c) {
+    const { sim, xmr } = w;
+    if (!c.swap) {
+      const offer = sim.offer(0, 0);
+      if (offer?.enabled && (offer.poolFilled & ~offer.poolUsed) !== 0) c.swap = sim.open({ direction: 0, xmr: 2n * XMR, makerSpendPub: sim.takePoolKey(0) });
+      return;
+    }
+    const s = sim.swap(c.swap.pda);
+    if (!s) return;
+    if (s.state === SWAP_STATE.NOTICED && lockRelayed(w)) {
+      xmr.mine(2);
+      sim.takerCall(c.swap.pda, { name: 'refund', secretOk: true }, { revealed: c.swap.keys.spend });
+    } else if (s.state === SWAP_STATE.HOLD) await instruct(d, c, 'withhold', { withhold: true });
+    else if (s.state === SWAP_STATE.WITHHELD) {
+      xmr.mine(10);
+      if (d.store.swap(c.swap.pda)?.swept) await instruct(d, c, 'release', { release: true, withhold: false });
+    }
+  },
+  check(w, d, c) {
+    const { sim, xmr } = w;
+    const pda = c.swap!.pda;
+    expect([...c.given].sort()).toEqual(['release', 'withhold']);
+    expect(sim.names(pda).filter((n) => n === 'withhold')).toHaveLength(1);
+    expect(sim.names(pda).filter((n) => n === 'release_deposit')).toHaveLength(1);
+    expect(sim.names(pda).indexOf('withhold')).toBeLessThan(sim.names(pda).indexOf('release_deposit'));
+    expect(d.store.swap(pda)!.facts.instruction).toMatchObject({ action: 'release', status: 'carried_out' });
+    expect(xmr.relaysOf('wallet')).toHaveLength(1);
+    expect(xmr.relaysOf('sweep')).toHaveLength(1);
+    expect(d.store.swap(pda)!.terminal).toBe(1);
+  },
+};
+
+const scenarios = [directionA(false), directionA(true), directionB(false), directionB(true), operatorApprovesThenAborts, operatorWithholdsThenReleases];
 
 describe.each(scenarios)('crash recovery: $name', (sc) => {
   let total = 0;
@@ -223,7 +313,7 @@ describe.each(scenarios)('crash recovery: $name', (sc) => {
     }
     // Every kind of cut was exercised: before the action, between signing and broadcasting, after broadcasting, after acting, after recording.
     // (The last scenario has no off-chain action: the maker neither sends nor sweeps XMR in it.)
-    expect([...seen].sort()).toEqual(sc === scenarios[3] ? ['@planned', '@sent', '@signed'] : ['@acted', '@confirmed', '@planned', '@sent', '@signed']);
+    expect([...seen].sort()).toEqual(sc === scenarios[3] ? ['@planned', '@sent', '@signed'] : scenarios.indexOf(sc) >= 4 ? ['@acted', '@confirmed', '@instructed', '@planned', '@sent', '@signed'] : ['@acted', '@confirmed', '@planned', '@sent', '@signed']);
     console.log(`crash matrix: ${sc.name}: ${total} cut points, all recovered`);
   }, 600_000);
 });

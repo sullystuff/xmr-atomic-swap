@@ -54,3 +54,15 @@ What the real API does where the console's mock or the frozen types say otherwis
 | A7 | Same origin | `[daemon].console_dir` serves the built console from the API's origin (loopback). Other origins get CORS only when listed. |
 | A8 | Swap actions | An action records the maker's decision and steps the swap through the same flow as an automatic one; `tx` is the transaction that step sent, or `null` when the flow had nothing to send yet (`detail` says what it waits on). `publish-evidence` is offered only while evidence is due; the daemon publishes it by itself after an abort or refund. |
 | A9 | Revision | `revision` is the first 16 hex characters of SHA-256 of the file. The form's round trip works because `parsed` holds exactly the schema's keys; a key the daemon does not know is an error, not ignored. |
+| A10 | Operator instructions (new fields) | Every `POST /api/swaps/:ref/{approve,reject,abort,withhold,release,publish-evidence}` answers 200 with, beside the frozen `ok` / `tx` / `detail`: `outcome: "carried_out" \| "refused" \| "pending"` and, when refused, `refused: <reason>`. `ok` is `false` only when refused; `detail` is always a sentence the console can show as it is. Reasons: the SDK's `ready-already-set`, `refund-window-closed`, `abort-window-closed`, `already-settled`, `reject-not-available`, `hold-ended`, `no-deposit-held`, plus the daemon's `not-available-in-state` and `dry-run`. `pending` means the instruction is on record behind a transaction still in flight and is carried out or refused on a later step (an `instruction_refused` alert is raised if refused). `GET /api/swaps/:ref` gains `instruction: { action, at, status, reason, tx } \| null`. The console's client needs `outcome`, `refused` and `instruction` to display these; today it shows `detail` when `ok` is false. |
+
+## Operator instructions (follow-up to the SDK's BUG-1)
+
+An instruction is written to the swap's row (`facts.instruction`, with its flag in `facts.manual`) before anything acts on it, so it is honoured after a crash or restart; the crash matrix cuts at that point too (`instructed`). What the audit changed:
+
+- **Abort in direction A once ready is set** was silently overtaken by the automatic claim. It is now refused with `ready-already-set`.
+- **A refused instruction left its flag set** and could fire later when the state changed. Instructions are one-shot; the flag is cleared when the instruction settles. Exception: a refused *reject* (Solana take outside window mode) stays the decision, so the daemon does not fund a take the operator said no to; it lapses.
+- **An instruction whose own transaction died** was forgotten. It now counts as carried out only when its transaction is confirmed, and is planned again otherwise.
+- **Pause** did not stop an automatic approval whose verdict was already on record. While paused, a stored automatic "approve" is not acted on; the rules decide again and reject. An explicit approval by the operator is still honoured while paused.
+- A standing "do not withhold this one" (`withhold: false`) is a policy override, not a one-shot instruction, and persists.
+

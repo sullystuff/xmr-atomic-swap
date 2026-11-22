@@ -30,7 +30,7 @@ import type { Inventory } from '../inventory/index.js';
 import type { MoneroView } from '../monero/nodes.js';
 import type { MoneroBroadcaster } from '../monero/wallet.js';
 import type { EncKeys } from '../rotation/index.js';
-import type { IntentRow, Store, SwapFacts, SwapRow } from '../store/db.js';
+import type { Instruction, InstructionAction, IntentRow, Store, SwapFacts, SwapRow } from '../store/db.js';
 import { CrashError, type Journal } from '../store/journal.js';
 import { type Bytes, Emitter, KeyedMutex, errMsg, hex, toJson, unhex } from '../util.js';
 import type { Shares } from './shares.js';
@@ -47,6 +47,8 @@ export interface ExecutorOptions {
   encKeys: EncKeys;
   approvals: Approvals;
   config: () => Config;
+  /** The operator's pause switch: while it is on, no stored automatic approval is acted on. */
+  paused?: () => boolean;
   /** USD per XMR right now, or `null` (the withhold rule and the fill record use it). */
   xmrUsd: () => number | null;
   /** Sweep fee cap override in piconero (regtest fees are far above mainnet's). */
@@ -56,7 +58,16 @@ export interface ExecutorOptions {
   clock?: () => number;
 }
 
-export type StepOutcome =
+/** What became of an operator instruction, for the caller: carried out, refused with the reason, or still pending. */
+export interface InstructionResult {
+  instruction?: Instruction;
+}
+interface Refusable {
+  /** An explicit request the flow could not honour in this state, and why. */
+  refused?: string;
+}
+export type StepOutcome = Refusable & StepBody;
+type StepBody =
   | { kind: 'acted'; what: string }
   | { kind: 'waiting'; on: string; until: bigint | null }
   | { kind: 'done'; outcome: string }
@@ -144,9 +155,11 @@ export class Executor {
   step(ref: string): Promise<StepOutcome> {
     return this.mutex.run(ref, async () => {
       let last: StepOutcome = { kind: 'waiting', on: 'nothing', until: null };
+      let refused: string | undefined;
       try {
         for (let i = 0; i < 12; i++) {
           last = await this.once(ref);
+          refused ??= last.refused;
           if (last.kind !== 'acted') break;
         }
       } catch (e) {
@@ -155,6 +168,8 @@ export class Executor {
         this.store.updateSwap(ref, { last_error: error });
         last = { kind: 'error', error };
       }
+      if (refused !== undefined) last = { ...last, refused };
+      this.settleInstruction(ref, last);
       this.events.emit('swap', ref);
       return last;
     });
@@ -163,7 +178,7 @@ export class Executor {
   private async once(ref: string): Promise<StepOutcome> {
     const row = this.store.swap(ref);
     if (!row) return { kind: 'error', error: 'unknown swap' };
-    if (row.terminal) return { kind: 'done', outcome: row.phase };
+    if (row.terminal) return { kind: 'done', outcome: row.phase, ...(row.facts.instruction?.status === 'pending' ? { refused: 'already-settled' } : {}) };
     const chain = this.o.chains[row.chain];
     if (!chain) return { kind: 'parked', why: `${row.chain} is not configured` };
 
@@ -179,6 +194,8 @@ export class Executor {
       return this.finish(row, null, 'closed');
     }
     if (view.state !== row.state || !row.snapshot) this.store.updateSwap(ref, { state: view.state, snapshot: snapshotOf(view) });
+    const ins = row.facts.instruction;
+    if (ins && ins.status === 'pending' && !ins.seen) row.facts = this.store.patchFacts(ref, { instruction: { ...ins, stateAt: view.state, seen: true } });
 
     // 3. Facts, decision, action.
     const facts: MakerFacts = { swap: view, now, ...(await this.baseFacts(row, view)) };
@@ -243,7 +260,8 @@ export class Executor {
       if (row.facts.takerProofOk !== undefined) f.takerProofOk = row.facts.takerProofOk;
       if (m?.approve === true) f.approval = { approve: true };
       else if (m?.approve === false) f.approval = { approve: false, reason: m.rejectReason ?? 0 };
-      else if (row.facts.approval) f.approval = row.facts.approval;
+      // A verdict stored before the operator paused is not acted on while the pause is on: the rules decide again (and reject).
+      else if (row.facts.approval && !(row.facts.approval.approve && this.o.paused?.())) f.approval = row.facts.approval;
     }
     if (row.facts.verified && view.state !== S.PENDING) f.commitmentsOk = row.facts.verified === commitmentHash(view);
     if (view.direction === 0) {
@@ -265,6 +283,10 @@ export class Executor {
       f.withhold = view.state === S.HOLD && withholdDecision(offer, row.facts, this.o.xmrUsd());
       f.release = releaseDecision(row.facts);
     }
+    // An explicit withhold or release asked for while no deposit is in the hold: pass it on, so the flow says so instead of dropping it.
+    const pending = row.facts.instruction?.status === 'pending' ? row.facts.instruction.action : null;
+    if (pending === 'withhold' && view.state !== S.HOLD && view.state !== S.WITHHELD) f.withhold = true;
+    if (pending === 'release' && view.state !== S.HOLD && view.state !== S.WITHHELD) f.release = true;
     f.swept = row.swept === 1;
     return f;
   }
@@ -380,6 +402,10 @@ export class Executor {
   // ---------------------------------------------------------------- performing a decision
 
   private async perform(row: SwapRow, chain: SwapChain, view: SwapView, now: bigint, d: Exclude<Decision, { do: 'need' }>, f: MakerFacts): Promise<StepOutcome> {
+    const out = await this.performBody(row, chain, view, now, d, f);
+    return d.refused !== undefined ? { ...out, refused: d.refused } : out;
+  }
+  private async performBody(row: SwapRow, chain: SwapChain, view: SwapView, now: bigint, d: Exclude<Decision, { do: 'need' }>, f: MakerFacts): Promise<StepOutcome> {
     this.setPhase(row, view, f);
     switch (d.do) {
       case 'wait':
@@ -621,11 +647,92 @@ export class Executor {
 
   // ---------------------------------------------------------------- manual actions from the console
 
-  /** Record a manual decision and step the swap. The decision travels through the same flow as an automatic one. */
-  async manual(ref: string, patch: NonNullable<SwapFacts['manual']>): Promise<StepOutcome> {
+  /**
+   * An explicit instruction from the operator. It is written to the database BEFORE anything
+   * acts on it, so a crash or a restart cannot lose it; it then travels through the same flow
+   * as an automatic step, where it wins over every automatic step while the contract still
+   * accepts the call. The caller always learns what became of it: carried out (with the
+   * transaction), refused (with the reason), or pending behind a transaction still in flight
+   * (then it is settled on a later step, and an alert says how).
+   */
+  async manual(ref: string, patch: NonNullable<SwapFacts['manual']>): Promise<StepOutcome & InstructionResult> {
     const row = this.store.swap(ref);
     if (!row) throw new Error('unknown swap');
-    this.store.patchFacts(ref, { manual: { ...(row.facts.manual ?? {}), ...patch } });
-    return this.step(ref);
+    const action: InstructionAction = patch.approve === true ? 'approve' : patch.approve === false ? 'reject' : patch.abort ? 'abort' : patch.release ? 'release' : patch.withhold ? 'withhold' : patch.publishEvidence ? 'publish-evidence' : 'withhold';
+    // A standing override ("do not withhold this one") is a policy setting, not an action to carry out.
+    const standing = patch.withhold === false && !patch.release;
+    const mark = (this.store.db.prepare('SELECT COALESCE(MAX(id), 0) AS n FROM intents').get() as { n: number }).n;
+    const instruction: Instruction = { action, at: this.store.now(), mark, stateAt: row.state, status: 'pending' };
+    this.store.patchFacts(ref, { manual: { ...(row.facts.manual ?? {}), ...patch }, ...(standing ? {} : { instruction }) });
+    this.o.journal.crash('instructed', { id: 0, kind: row.chain === 'solana' ? 'sol_tx' : 'eth_tx', payload: { call: `instruction:${action}` } });
+    const out = await this.step(ref);
+    const settled = this.store.swap(ref)?.facts.instruction;
+    return { ...out, ...(settled && !standing ? { instruction: settled } : {}) };
+  }
+
+  /** Which landed call carries an instruction out. */
+  private static carriedBy(action: InstructionAction, direction: 0 | 1): string[] {
+    switch (action) {
+      case 'approve':
+        return ['approve', 'fund'];
+      case 'reject':
+        return ['reject'];
+      case 'abort':
+        return direction === 0 ? ['abort'] : ['refund'];
+      case 'withhold':
+        return ['withhold'];
+      case 'release':
+        return ['release_deposit'];
+      case 'publish-evidence':
+        return ['publish_evidence', 'withhold'];
+    }
+  }
+
+  /** Decide what became of a pending instruction after a step. One-shot: once settled, its flag is cleared so it cannot fire later by surprise. */
+  private settleInstruction(ref: string, last: StepOutcome): void {
+    const row = this.store.swap(ref);
+    const ins = row?.facts.instruction;
+    if (!row || !ins || ins.status !== 'pending') return;
+    const calls = Executor.carriedBy(ins.action, row.direction);
+    const mine = this.store.intents({ swapRef: ref }).filter((i) => i.id > ins.mark && calls.includes(String(i.payload['call'])));
+    const confirmed = mine.find((i) => i.status === 'confirmed' && i.meta?.['noop'] !== true);
+    const inFlight = mine.some((i) => i.status === 'planned' || i.status === 'sent' || i.status === 'needs_review');
+    let next: Instruction | null = null;
+    if (confirmed) next = { ...ins, status: 'carried_out', tx: confirmed.tx };
+    else if (inFlight) return; // sent, not yet resolved: carried out only once it is confirmed; if it dies, the flag is still set and it is planned again
+    else if (last.refused !== undefined) next = { ...ins, status: 'refused', reason: last.refused };
+    else if (last.kind === 'waiting' && last.on.startsWith('transaction')) return; // behind another transaction of this swap; honoured when that resolves
+    else if (last.kind === 'error') return; // nothing was decided (an RPC failure, a refused simulation): tried again on the next step
+    else if (last.kind === 'parked' && last.why.startsWith('dry run')) next = { ...ins, status: 'refused', reason: 'dry-run' };
+    else next = { ...ins, status: 'refused', reason: Executor.ownRefusal(ins, row) };
+    const m = { ...(row.facts.manual ?? {}) };
+    if (ins.action === 'approve' || ins.action === 'reject') {
+      // A carried-out decision stays on record. A refused APPROVAL is withdrawn. A refused REJECTION is not: where the
+      // chain offers no reject (a Solana take outside window mode) the operator's "no" still means the daemon must not
+      // fund it; the take is left to lapse.
+      if (next.status === 'refused' && ins.action === 'approve') {
+        delete m.approve;
+        delete m.rejectReason;
+      }
+    } else if (ins.action === 'abort') delete m.abort;
+    else if (ins.action === 'withhold') delete m.withhold;
+    else if (ins.action === 'release') delete m.release;
+    else delete m.publishEvidence;
+    this.store.patchFacts(ref, { manual: m, instruction: next });
+    if (next.status === 'refused') this.o.alerts.raise('warning', 'instruction_refused', `"${ins.action}" could not be carried out on this swap: ${next.reason}`, ref, 0);
+  }
+
+  /** The daemon's own reason when the flow went another way without naming one (direction A has no explicit back-out fact in the flow). */
+  private static ownRefusal(ins: Instruction, row: SwapRow): string {
+    const S = SWAP_STATE;
+    const state = ins.seen ? ins.stateAt : row.terminal ? S.DONE : ins.stateAt;
+    if (state === S.DONE || state === S.NONE) return 'already-settled';
+    if (ins.action === 'abort') {
+      if (state === S.READY) return 'ready-already-set';
+      if (state === S.HOLD || state === S.WITHHELD) return 'already-settled';
+      if (state === S.ABORTED_FREE || state === S.ABORTED_HOLD || state === S.NOTICED) return 'abort-window-closed';
+    }
+    if ((ins.action === 'withhold' || ins.action === 'release') && state !== S.HOLD && state !== S.WITHHELD) return 'no-deposit-held';
+    return 'not-available-in-state';
   }
 }
