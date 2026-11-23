@@ -1,13 +1,13 @@
 // H-A and H-B through the REAL system: the built taker UI in Chromium, the real relay behind the
 // fake Tor, the real maker daemon, the real program in svm-rpc, the real contract on anvil, and
 // real XMR on the Monero regtest. Loopback only. Every market, both directions.
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Market } from '@xmrswap/protocol';
 import { REGTEST_MAX_FEE, isMined } from '../src/monero.js';
 import { type TakerTab, openTab, text } from '../src/ui.js';
 import { waitFor } from '../src/util.js';
 import { type World, startWorld, stopShared } from '../src/world.js';
-import { advanceTo, balances, chainOf, counterDelta, counters, deadlines, expectClean, holdings, pageNote, payAddressOnPage, readSwap, registerRecoverySecrets, scenario, track, uiLockBuy, uiTakeSell, untilPhase, untilState } from './helpers.js';
+import { advanceTo, balances, chainOf, counterDelta, counters, deadlines, expectClean, holdings, pageNote, payAddressOnPage, readSwap, registerRecoverySecrets, scenario, track, uiLockBuy, uiTakeSell, untilPhase, untilState, inventorySettled } from './helpers.js';
 
 let w: World;
 // One browser profile for the whole file: one user, one recovery file, eight swaps.
@@ -20,6 +20,9 @@ afterAll(async () => {
   await tab?.close().catch(() => undefined);
   await w?.stop();
   await stopShared();
+});
+beforeEach(async () => {
+  await inventorySettled(w);
 });
 
 const MARKETS: Market[] = ['sol', 'usdc_sol', 'eth', 'usdc_eth'];

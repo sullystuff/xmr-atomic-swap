@@ -235,3 +235,19 @@ export async function payAddressOnPage(page: Page, label: string, timeoutMs = 24
   if (secs > 60 && process.env['E2E_KNOWN_FAILURES_REPORT']) appendFileSync(`${process.env['E2E_KNOWN_FAILURES_REPORT']}.observations`, `O3 ${label}: the pay address appeared ${secs} s after the maker's funding was mined\n`);
   return address;
 }
+
+/**
+ * Wait until every unspent output of each maker's inventory wallet is frozen, that is until the daemon's periodic inventory
+ * pass has taken in whatever arrived since the last one (change, a swept joint address). While BUGS.md BUG-4 is open, a lock
+ * prepared before that pass can pull such an output in as an extra input and the next lock can then try to spend it again;
+ * ordinary scenarios start from a settled inventory so that they do not depend on that race.
+ */
+export async function inventorySettled(w: World): Promise<void> {
+  for (const m of w.makers) {
+    if (!m.running) continue;
+    await waitFor(`maker ${m.o.n}'s inventory pass`, async () => {
+      const r = await m.wallet.call<{ transfers?: { spent: boolean; frozen: boolean }[] }>('incoming_transfers', { transfer_type: 'available', account_index: 0 });
+      return (r.transfers ?? []).every((t) => t.spent || t.frozen);
+    }, { timeoutMs: 90_000, intervalMs: 500 });
+  }
+}

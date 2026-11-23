@@ -15,7 +15,7 @@ import { knownFailure } from './known.js';
 let w: World;
 let tab: TakerTab;
 beforeAll(async () => {
-  w = await startWorld({ ethereum: false, inventoryBlocks: 4 });
+  w = await startWorld({ ethereum: false, inventoryBlocks: 16 });
   tab = track(await openTab({ solKey: w.sol.stranger }), true);
 });
 afterAll(async () => {
@@ -44,6 +44,33 @@ describe('KNOWN FAILURES (bugs in other packages; see tests/e2e/BUGS.md)', () =>
       expect((await w.maker.swapDetail(o.ref)).instruction).toMatchObject({ action: 'release', status: 'carried_out' });
     } finally {
       w.makerNodeB.delayMs = 0;
+    }
+  });
+
+  knownFailure('BUG-4', 'packages/daemon: two locks prepared one after the other must never spend the same Monero output; when the wallet holds an output the daemon has not frozen yet, the first lock takes it as an extra input, it is not frozen afterwards, the next lock takes it again, the node refuses that lock, and the daemon aborts the second swap after its notice (lock_double_spend)', async () => {
+    const taker = new SdkTaker(w);
+    const aborts0 = (await w.maker.counters('solana'))[COUNTER.aborts_early] ?? 0;
+    const relayed = async (ref: string) => waitFor('the daemon\'s lock relayed (or the swap aborted)', async () => {
+      const d = await w.maker.swapDetail(ref);
+      return d.phase === 'xmr_relayed' || d.state === 'ABORTED_FREE' ? d : null;
+    }, { timeoutMs: 120_000, intervalMs: 200 });
+    // Whether the stray output is still unfrozen when the first lock is built depends on where the daemon's 30-second
+    // inventory timer stands, so the situation is set up a few times; one occurrence is enough.
+    for (let round = 0; round < 6; round++) {
+      // An output arrives in the inventory wallet (as a swept joint address or change does), unlocks, and the wallet has
+      // seen it (wallet-rpc refreshes by itself every 20 s; here it is asked to) before the daemon's next inventory pass.
+      await w.takerWallet.pay(w.maker.xmrAddress, (3n * XMR) / 10n);
+      await w.mine(11);
+      await w.maker.wallet.refresh();
+      const first = await taker.open('sol', 0, XMR / 4n);
+      expect((await relayed(first.ref)).phase).toBe('xmr_relayed');
+      await w.mine(1);
+      const second = await taker.open('sol', 0, XMR / 4n);
+      const d = await relayed(second.ref);
+      expect((await w.maker.status()).alerts.filter((a) => a.kind === 'lock_double_spend')).toEqual([]);
+      expect(d.phase).toBe('xmr_relayed');
+      expect((await w.maker.counters('solana'))[COUNTER.aborts_early] ?? 0).toBe(aborts0);
+      await w.mine(2);
     }
   });
 

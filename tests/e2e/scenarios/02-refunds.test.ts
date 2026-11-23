@@ -7,7 +7,7 @@ import { REGTEST_MAX_FEE, isMined, poolTxids } from '../src/monero.js';
 import { type Opened, SdkTaker } from '../src/taker.js';
 import { XMR, waitFor } from '../src/util.js';
 import { type World, startWorld, stopShared } from '../src/world.js';
-import { balances, counterDelta, counters, deadlines, expectClean, holdings, scenario, stateName, untilPhase, untilState } from './helpers.js';
+import { balances, counterDelta, counters, deadlines, expectClean, holdings, scenario, stateName, untilPhase, untilState, inventorySettled } from './helpers.js';
 
 let w: World;
 let taker: SdkTaker;
@@ -23,6 +23,7 @@ afterAll(async () => {
 // A scenario that failed with the daemon down must not take the next one with it.
 beforeEach(async () => {
   if (!w.maker.running) await w.maker.start();
+  await inventorySettled(w);
 });
 
 const HALF = XMR / 2n;

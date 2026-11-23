@@ -11,7 +11,7 @@ import { SdkTaker } from '../src/taker.js';
 import { type TakerTab, openTab, text } from '../src/ui.js';
 import { XMR, fill, waitFor } from '../src/util.js';
 import { type World, startWorld, stopShared } from '../src/world.js';
-import { advanceTo, balances, connect, counterDelta, counters, deadlines, dump, expectClean, openOffer, pageNote, readSwap, registerRecoverySecrets, scenario, swapState, track, uiLockBuy, untilPhase, untilState } from './helpers.js';
+import { advanceTo, balances, connect, counterDelta, counters, deadlines, dump, expectClean, openOffer, pageNote, readSwap, registerRecoverySecrets, scenario, swapState, track, uiLockBuy, untilPhase, untilState, inventorySettled } from './helpers.js';
 
 let w: World;
 let taker: SdkTaker;
@@ -51,6 +51,7 @@ afterAll(async () => {
 });
 beforeEach(async () => {
   if (!w.maker.running) await w.maker.start();
+  await inventorySettled(w);
 });
 
 /** Open a page of the console, served by the daemon itself, signing in with the API token on first use. */

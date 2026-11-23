@@ -12,7 +12,7 @@ import { NODE_A, NODE_B, REGTEST_MAX_FEE, isMined, nodeOther, nodeRpc, poolTxids
 import { type Opened, SdkTaker } from '../src/taker.js';
 import { XMR, e2eRoot, stateRoot, waitFor } from '../src/util.js';
 import { type World, startWorld, stopShared } from '../src/world.js';
-import { balances, counterDelta, counters, deadlines, expectClean, holdings, scenario, stateName, untilPhase, untilState } from './helpers.js';
+import { balances, counterDelta, counters, deadlines, expectClean, holdings, scenario, stateName, untilPhase, untilState, inventorySettled } from './helpers.js';
 
 let w: World;
 let taker: SdkTaker;
@@ -27,6 +27,7 @@ afterAll(async () => {
 beforeEach(async () => {
   if (!w.maker.running) await w.maker.start();
   w.makerNodeB.mode = 'honest';
+  await inventorySettled(w);
 });
 
 const HALF = XMR / 2n;
@@ -342,8 +343,7 @@ describe('K-1: the maker rotates its encryption key while a swap is in flight', 
     const o = await taker.open('sol', 0, HALF);
     await untilState(w, o.ref, 'NOTICED');
     await untilPhase(w, o.ref, 'xmr_relayed');
-    // Rotated while the swap is in flight: the notice is on-chain, the XMR is sent and unconfirmed. (Asked for between the
-    // notice and the relay, the rotation twice coincided with the daemon aborting the swap: BUGS.md O6.)
+    // Rotated while the swap is in flight: the notice is on-chain, the XMR is sent and unconfirmed.
     const r = await w.maker.api<{ version: number }>('POST', '/api/keys/rotate', {});
     expect(r.version).toBe(v0 + 1);
     await waitFor('the new key in the registry', async () => (await w.sol.client.getMaker(w.maker.makerPda))!.encKeyVersion === v0 + 1);
@@ -396,7 +396,7 @@ describe('E-1: Ethereum specifics the daemon enforces', () => {
 });
 
 // Last of the swaps in this file: after a reorganisation the inventory wallet has seen one of its own spends disappear and
-// come back, and no later scenario should depend on how quickly it settles (BUGS.md O6).
+// come back, and no later scenario should depend on how quickly it settles.
 describe('N-1: a reorganisation orphans the daemon\'s lock', () => {
   it('direction A, a reorg orphans the daemon\'s lock: it relays the SAME stored transaction again, and the swap completes with one lock', scenario(() => w, async () => {
     const o = await taker.open('sol', 0, HALF);
