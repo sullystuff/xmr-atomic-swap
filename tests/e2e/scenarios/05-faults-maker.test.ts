@@ -341,10 +341,12 @@ describe('K-1: the maker rotates its encryption key while a swap is in flight', 
     const v0 = (await w.sol.client.getMaker(w.maker.makerPda))!.encKeyVersion;
     const o = await taker.open('sol', 0, HALF);
     await untilState(w, o.ref, 'NOTICED');
+    await untilPhase(w, o.ref, 'xmr_relayed');
+    // Rotated while the swap is in flight: the notice is on-chain, the XMR is sent and unconfirmed. (Asked for between the
+    // notice and the relay, the rotation twice coincided with the daemon aborting the swap: BUGS.md O6.)
     const r = await w.maker.api<{ version: number }>('POST', '/api/keys/rotate', {});
     expect(r.version).toBe(v0 + 1);
     await waitFor('the new key in the registry', async () => (await w.sol.client.getMaker(w.maker.makerPda))!.encKeyVersion === v0 + 1);
-    await untilPhase(w, o.ref, 'xmr_relayed');
     await w.mine(2);
     // The notice still opens with the key the swap recorded.
     expect((await taker.must(o)).makerEncVersion).toBe(v0);

@@ -135,8 +135,8 @@ describe('L-1: a large swap across three real makers', () => {
     expect(done[1]).toBe(0);
     // Three filled legs in all, shared between the two makers that delivered.
     expect(done[0]! + done[2]!).toBe(3);
-    expect(reportText).toMatch(/Filled 1\.19\d* SOL for 0\.7[67]\d* XMR/);
-    expect(reportText).toMatch(/Unfilled 0\.0\d+ SOL/);
+    // (Whether a sliver stays unfilled depends on which delivering maker took the remainder: 0.4635 SOL fits one leg at 1.56 but not at 1.53.)
+    expect(reportText).toMatch(/Filled 1\.(19\d*|20) SOL for 0\.7[67]\d* XMR\. Unfilled 0\.0\d* SOL, of which 0\.4635 SOL was locked and refunded\./);
     expect(await board.locator('[data-leg-state="refunded"]').count()).toBe(1);
     const filledLegs = done[0]! + done[2]!;
     expect(await board.locator('[data-leg-state="claimed"], [data-leg-state="swept"]').count()).toBe(filledLegs);
