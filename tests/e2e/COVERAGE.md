@@ -54,6 +54,7 @@ Files: `01-happy` (eight happy-path swaps in the browser; on Ethereum also the U
 | --- | --- | --- |
 | Approve a pending lock | covered | `03-modes-console` |
 | Reject a pending lock (answered "carried out") | covered | `03-modes-console` |
+| (taker page) A refund that is no longer possible once ready is set: the button is replaced by a disabled control with the reason and what happens instead; the swap completes | covered | `04-faults-taker`. A request confirmed in the instant ready lands (the page's refused-request notice) is **not covered**: the question closes by itself when ready is set, so it cannot be driven reliably |
 | Abort after the taker set ready: refused, reason shown in place, swap completes | covered | `03-modes-console` |
 | Pause stops an automatic approval (the lock is rejected and refunded); Resume | covered | `03-modes-console` |
 | An instruction that is on record when the daemon is killed is honoured after the restart | covered | `03-modes-console` (the daemon is killed as soon as the instruction shows on the swap's record; whether its transaction had already left is not controlled, the outcome must be "carried out" either way) |

@@ -259,23 +259,16 @@ describe('the taker asks to get out (formerly BUG-1): an explicit request wins w
     await text(page, /2 of 2 confirmations on every node/).waitFor({ timeout: 90_000 });
     // The maker is away for a moment, so that "ready" can be looked at.
     await w.maker.kill();
-    // The user opens the refund question and hesitates; meanwhile the minimum wait ends and the tab sets ready.
-    await page.getByRole('button', { name: 'Refund this swap' }).click();
-    const yes = page.getByRole('button', { name: 'Yes, refund' });
-    await yes.waitFor();
+    // While the user hesitates the minimum wait ends and the tab sets ready.
+    await page.getByRole('button', { name: 'Refund this swap' }).waitFor();
     await w.sol.warpTo(deadlines((await readSwap(w, ref))!).tReadyMin!);
     await untilState(w, ref, 'READY');
-    if (await yes.count()) {
-      await yes.click();
-      const outcome = page.locator('[data-testid="request-outcome"][data-refused="ready-already-set"]');
-      await outcome.waitFor({ timeout: 30_000 });
-      expect(await outcome.innerText()).toContain('This swap can no longer be refunded');
-      expect(await outcome.innerText()).toMatch(/The maker will claim and this tab will collect your XMR/);
-    }
-    // Whether or not the question was still open, the control now says why it cannot be used.
+    // The refund button is gone; in its place the page says that a refund is not possible, why, and what happens instead.
     const blocked = page.getByRole('button', { name: 'Refund not possible: ready is set' });
     await blocked.waitFor({ timeout: 30_000 });
     expect(await blocked.isDisabled()).toBe(true);
+    expect(await page.getByRole('button', { name: 'Refund this swap' }).count()).toBe(0);
+    await text(page, /Ready is already set, so this swap can no longer be refunded\. The maker will claim and this tab will collect your XMR/).waitFor();
     await page.waitForTimeout(2500);
     expect(await swapState(w, ref)).toBe('READY');
     // The maker is back: it claims, and the tab collects the XMR as the message said.
