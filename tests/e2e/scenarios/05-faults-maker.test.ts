@@ -79,38 +79,6 @@ describe('N-1: Monero trouble on the maker\'s side', () => {
     expect(counterDelta(c0, await counters(w.maker, 'solana'))).toEqual({ takes: 1, approvals: 1, notices: 1, readies: 1, completed: 1 });
   }));
 
-  it('direction A, a reorg orphans the daemon\'s lock: it relays the SAME stored transaction again, and the swap completes with one lock', scenario(() => w, async () => {
-    const o = await taker.open('sol', 0, HALF);
-    await untilState(w, o.ref, 'NOTICED');
-    const first = await untilPhase(w, o.ref, 'xmr_relayed');
-    const lockTxid = first.lock_txid as string;
-    await w.mine(1);
-    expect(await isMined(lockTxid)).toBe(true);
-    // Both nodes forget the block and the pool; a longer chain without the lock replaces it.
-    // (A popped transaction can travel back from the other node a moment later; if it was mined again the reorg is repeated.)
-    for (let attempt = 0; attempt < 4; attempt++) {
-      await reorg(1, w.takerXmr);
-      if (!(await isMined(lockTxid))) break;
-    }
-    expect(await isMined(lockTxid)).toBe(false);
-    const relays = async (): Promise<number> => (await intentsOf(o)).filter((i) => i.startsWith('xmr_relay')).length;
-    // Keep both pools empty until the daemon itself has seen its lock gone from every node and relayed the stored bytes again.
-    await waitFor('the daemon to rebroadcast its lock', async () => {
-      if ((await relays()) >= 2) return true;
-      for (const n of [NODE_A, NODE_B]) await nodeRpc(n, 'flush_txpool', {});
-      return false;
-    }, { timeoutMs: 120_000, intervalMs: 300, context: () => w.maker.swapDetail(o.ref) });
-    await waitFor('the lock back in the pool', async () => (await poolTxids()).includes(lockTxid) || (await isMined(lockTxid)), { timeoutMs: 60_000, context: () => w.maker.swapDetail(o.ref) });
-    await w.mine(2);
-    expect((await taker.notice(o)).txid).toBe(lockTxid);
-    expect((await w.maker.swapDetail(o.ref)).lock_txid).toBe(lockTxid);
-    const intents = await intentsOf(o);
-    // One prepared transaction, relayed twice; never a second payment.
-    expect(intents.filter((i) => i.startsWith('xmr_prepare'))).toEqual(['xmr_prepare:confirmed']);
-    expect(intents.filter((i) => i.startsWith('xmr_relay')).length).toBeGreaterThanOrEqual(2);
-    await finishA(o);
-    expect((await w.maker.status()).needs_review).toBe(0);
-  }));
 });
 
 describe('N-2: outputs to the joint address that are not the lock', () => {
@@ -422,6 +390,43 @@ describe('E-1: Ethereum specifics the daemon enforces', () => {
     await untilPhase(w, first.ref, 'xmr_relayed');
     await w.mine(2);
     await finishA(first);
+  }));
+});
+
+// Last of the swaps in this file: after a reorganisation the inventory wallet has seen one of its own spends disappear and
+// come back, and no later scenario should depend on how quickly it settles (BUGS.md O6).
+describe('N-1: a reorganisation orphans the daemon\'s lock', () => {
+  it('direction A, a reorg orphans the daemon\'s lock: it relays the SAME stored transaction again, and the swap completes with one lock', scenario(() => w, async () => {
+    const o = await taker.open('sol', 0, HALF);
+    await untilState(w, o.ref, 'NOTICED');
+    const first = await untilPhase(w, o.ref, 'xmr_relayed');
+    const lockTxid = first.lock_txid as string;
+    await w.mine(1);
+    expect(await isMined(lockTxid)).toBe(true);
+    // Both nodes forget the block and the pool; a longer chain without the lock replaces it.
+    // (A popped transaction can travel back from the other node a moment later; if it was mined again the reorg is repeated.)
+    for (let attempt = 0; attempt < 4; attempt++) {
+      await reorg(1, w.takerXmr);
+      if (!(await isMined(lockTxid))) break;
+    }
+    expect(await isMined(lockTxid)).toBe(false);
+    const relays = async (): Promise<number> => (await intentsOf(o)).filter((i) => i.startsWith('xmr_relay')).length;
+    // Keep both pools empty until the daemon itself has seen its lock gone from every node and relayed the stored bytes again.
+    await waitFor('the daemon to rebroadcast its lock', async () => {
+      if ((await relays()) >= 2) return true;
+      for (const n of [NODE_A, NODE_B]) await nodeRpc(n, 'flush_txpool', {});
+      return false;
+    }, { timeoutMs: 120_000, intervalMs: 300, context: () => w.maker.swapDetail(o.ref) });
+    await waitFor('the lock back in the pool', async () => (await poolTxids()).includes(lockTxid) || (await isMined(lockTxid)), { timeoutMs: 60_000, context: () => w.maker.swapDetail(o.ref) });
+    await w.mine(2);
+    expect((await taker.notice(o)).txid).toBe(lockTxid);
+    expect((await w.maker.swapDetail(o.ref)).lock_txid).toBe(lockTxid);
+    const intents = await intentsOf(o);
+    // One prepared transaction, relayed twice; never a second payment.
+    expect(intents.filter((i) => i.startsWith('xmr_prepare'))).toEqual(['xmr_prepare:confirmed']);
+    expect(intents.filter((i) => i.startsWith('xmr_relay')).length).toBeGreaterThanOrEqual(2);
+    await finishA(o);
+    expect((await w.maker.status()).needs_review).toBe(0);
   }));
 });
 
