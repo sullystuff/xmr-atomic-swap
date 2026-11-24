@@ -214,7 +214,7 @@ export class Daemon {
     // The engine reads the sources through this object, so a hot-applied configuration swaps them in place.
     this.approvals = new Approvals({
       store: this.store, keystore: this.keystore, risk: this.risk, shares: this.shares, encKeys: this.encKeys, config: () => this.config,
-      xmrAvailable: () => this.inventory.capacity().largest,
+      xmrAvailable: (xmr, exclude) => this.xmrAvailable(xmr, exclude),
       payingAvailable: (market, exclude) => this.payingAvailable(market, exclude),
       solana: async () => {
         if (!this.sol) return null;
@@ -368,7 +368,9 @@ export class Daemon {
   }
   /** What open direction-B swaps of a market hold in escrow. */
   escrowed(market: Market, exclude?: string): bigint {
-    return this.store.swaps({ open: true }).filter((s) => s.market === market && s.direction === 1 && s.ref !== exclude && ([SWAP_STATE.ACTIVE, SWAP_STATE.NOTICED, SWAP_STATE.READY, SWAP_STATE.ABORTED_FREE, SWAP_STATE.ABORTED_HOLD] as number[]).includes(s.state)).reduce((a, s) => a + BigInt(s.amount), 0n);
+    // Funded swaps, and pending takes already approved (their funding may be in flight): both hold a share of the cap.
+    const holds = (s: { state: number }) => ([SWAP_STATE.ACTIVE, SWAP_STATE.NOTICED, SWAP_STATE.READY, SWAP_STATE.ABORTED_FREE, SWAP_STATE.ABORTED_HOLD] as number[]).includes(s.state);
+    return this.store.swaps({ open: true }).filter((s) => s.market === market && s.direction === 1 && s.ref !== exclude && (holds(s) || (s.state === SWAP_STATE.PENDING && Risk.approved(s)))).reduce((a, s) => a + BigInt(s.amount), 0n);
   }
   payingCap(market: Market): bigint | null {
     const cap = this.config.raw.liquidity.paying_caps[market];
@@ -383,6 +385,21 @@ export class Daemon {
     if (cap === null) return balance;
     const left = cap - this.escrowed(market, exclude);
     return left < balance ? (left > 0n ? left : 0n) : balance;
+  }
+
+  /**
+   * The largest lock an unlocked output can still fund for a new approval: outputs already spoken for by direction-A
+   * swaps that were approved (or are active) but have no lock built yet are set aside first, one each.
+   */
+  xmrAvailable(xmr: bigint, exclude?: string): bigint {
+    const waiting = this.store.swaps({ open: true }).filter((s) => s.direction === 0 && s.ref !== exclude && !this.store.lockTx(s.ref) && (s.state === SWAP_STATE.ACTIVE || (s.state === SWAP_STATE.PENDING && Risk.approved(s))));
+    const free = this.inventory.usableAmounts();
+    for (const w of waiting.sort((a, b) => (BigInt(a.xmr) > BigInt(b.xmr) ? -1 : 1))) {
+      const i = free.findIndex((a) => a >= BigInt(w.xmr));
+      if (i >= 0) free.splice(i, 1);
+    }
+    const fits = free.filter((a) => a >= xmr);
+    return fits.length ? fits[fits.length - 1]! : 0n;
   }
 
   /** What the Solana record should publish: console edits (stored) take precedence over the file. */
@@ -446,34 +463,44 @@ export class Daemon {
 
   /** Restart recovery (SPEC 7.6), in order, before quoting anything. */
   async recover(): Promise<void> {
-    // Intents that belong to no swap (offer refreshes, rotations, messages, splits, venue transfers).
+    await this.resolveLooseIntents(true);
+    if (this.walletOk) await this.inventory.sync().catch((e) => this.alerts.raise('warning', 'inventory_sync_failed', errMsg(e)));
+    await this.rotation.reconcile().catch(() => undefined);
+    // Every non-terminal swap: the chain wins for state, the database for secrets, raw transactions and intents;
+    // deadlines are recomputed from on-chain timestamps by the flow on every step. New swaps are adopted by the scan.
+    await this.executor.tick();
+  }
+
+  /**
+   * Intents that belong to no swap (offer refreshes, rotations, registry updates, messages, splits, venue transfers):
+   * each is looked up, never assumed. `afterRestart`: what a crash left unfinished is failed (nothing was signed) or,
+   * for a transfer to a third party, parked for the maker and never re-sent.
+   */
+  async resolveLooseIntents(afterRestart: boolean): Promise<void> {
     for (const i of this.store.intents({ status: ['planned', 'sent'] })) {
       if (i.swap_ref) continue;
       if (i.kind === 'venue_transfer' || i.kind === 'xmr_send') {
-        // A transfer to a third party is never re-sent on ambiguity: park it for the maker.
+        if (!afterRestart) continue; // its own sender is still waiting for the confirmation
         this.journal.resolve(i, 'needs_review', 'interrupted; check the venue and the wallet before acknowledging');
         this.alerts.raise('critical', 'transfer_needs_review', `a ${i.kind} was interrupted by a restart and is parked for review; it is not re-sent`);
         continue;
       }
       if (i.status === 'planned') {
-        this.journal.resolve(i, 'failed', 'interrupted before completion');
+        if (afterRestart) this.journal.resolve(i, 'failed', 'interrupted before completion');
         continue;
       }
       const chain = i.kind === 'sol_tx' ? this.sol : i.kind === 'eth_tx' ? this.eth : null;
       if (!chain || !i.tx) continue;
       const s = await chain.status(i.tx, i.meta).catch(() => null);
       if (s?.state === 'confirmed') this.journal.resolve(i, 'confirmed');
-      else if (s?.state === 'failed' || s?.state === 'dead') this.journal.resolve(i, 'failed', 'did not land');
-      else {
+      else if (s?.state === 'failed' || s?.state === 'dead') {
+        this.journal.resolve(i, 'failed', s.state === 'failed' ? 'the transaction failed on-chain' : 'did not land');
+        this.alerts.raise('warning', 'tx_failed', `${String(i.payload['call'] ?? i.kind)} (${i.tx}) ${s.state === 'failed' ? 'failed on-chain' : 'did not land'}`);
+      } else if (afterRestart) {
         this.journal.resolve(i, 'needs_review', 'sent before a restart; neither confirmed nor dead');
         this.alerts.raise('warning', 'tx_needs_review', `transaction ${i.tx} (${String(i.payload['call'] ?? i.kind)}) was sent before a restart and is neither confirmed nor dead; it is not re-sent`);
       }
     }
-    if (this.walletOk) await this.inventory.sync().catch((e) => this.alerts.raise('warning', 'inventory_sync_failed', errMsg(e)));
-    await this.rotation.reconcile().catch(() => undefined);
-    // Every non-terminal swap: the chain wins for state, the database for secrets, raw transactions and intents;
-    // deadlines are recomputed from on-chain timestamps by the flow on every step. New swaps are adopted by the scan.
-    await this.executor.tick();
   }
 
   async start(): Promise<void> {
@@ -520,6 +547,7 @@ export class Daemon {
 
   async housekeeping(): Promise<void> {
     this.store.beat();
+    await this.resolveLooseIntents(false).catch(() => undefined);
     await this.refreshUpgrade().catch(() => undefined);
     this.moneroStatus = await this.monero.status().catch(() => ({ nodes: [], agree: false }));
     await this.rotation.tick().catch((e) => this.alerts.raise('warning', 'rotation_failed', errMsg(e)));
@@ -540,6 +568,7 @@ export class Daemon {
     for (const t of this.timers) clearInterval(t);
     this.timers = [];
     unwatchFile(this.o.configPath);
+    await this.offers.halt();
     // Let a running pass finish before the database closes.
     for (let i = 0; i < 100 && this.busy.size > 0; i++) await new Promise((r) => setTimeout(r, 50));
     this.store.close();

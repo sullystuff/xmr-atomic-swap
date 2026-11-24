@@ -172,6 +172,9 @@ describe('direction A', () => {
     const other = await w.xmr.prepare([{ address: 'elsewhere', amount: XMR }]);
     await w.xmr.sendRaw(other.txHex);
     w.sim.warp(61);
+    // The rebroadcast is refused as a double spend (journaled as a refusal); the next pass aborts.
+    await d.executor.tick();
+    expect(d.store.intents({ swapRef: s.pda, kind: 'xmr_relay' }).pop()).toMatchObject({ status: 'failed', error: expect.stringMatching(/double spend/) });
     await d.executor.tick();
     expect(w.sim.names(s.pda)).toContain('abort');
     expect(d.store.swap(s.pda)!.facts.lockFailed).toBe(true);

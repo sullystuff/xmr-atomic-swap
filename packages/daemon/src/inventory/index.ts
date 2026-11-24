@@ -81,6 +81,17 @@ export function planSplit(outputs: PlanOutput[], ladderIn: Rung[], headroomPct: 
   return batches;
 }
 
+/** A node refused a transaction it does not already hold. */
+export class RelayRefused extends Error {
+  constructor(
+    readonly doubleSpend: boolean,
+    reason: string,
+  ) {
+    super(`the nodes refused the transaction: ${reason}`);
+    this.name = 'RelayRefused';
+  }
+}
+
 export interface InventoryOptions {
   store: Store;
   wallet: InventoryWallet;
@@ -118,23 +129,65 @@ export class Inventory {
 
   /** Read the wallet's outputs into the table and freeze any the daemon has not frozen yet. */
   sync(): Promise<void> {
-    return this.serial(async () => {
-      await this.o.wallet.refresh();
-      this.walletHeight = await this.o.wallet.height();
-      const outs = await this.o.wallet.outputs();
-      for (const w of outs) {
-        if (w.spent) continue;
-        // Unlocked needs both the wallet's word and 10 confirmations by our own count.
-        const deep = w.blockHeight !== null && this.walletHeight - w.blockHeight >= MONERO_LOCK_WINDOW;
-        if (!w.frozen) await this.o.wallet.freeze(w.keyImage);
-        this.store.upsertOutput({ key_image: w.keyImage, amount: w.amount.toString(), block_height: w.blockHeight, unlocked: w.unlocked && deep, frozen: true, spent: false });
+    return this.serial(() => this.syncLocked());
+  }
+  /**
+   * The body of `sync`, for callers that already hold the wallet section. Every build of a
+   * transaction starts with it, so that at the moment one output is thawed NOTHING else in the
+   * wallet is spendable: an output that arrived since the last pass (a swept joint address,
+   * change, a payment) cannot be pulled in as a second input.
+   */
+  private async syncLocked(): Promise<void> {
+    await this.o.wallet.refresh();
+    this.walletHeight = await this.o.wallet.height();
+    const outs = await this.o.wallet.outputs();
+    for (const w of outs) {
+      if (w.spent) continue;
+      // Unlocked needs both the wallet's word and 10 confirmations by our own count.
+      const deep = w.blockHeight !== null && this.walletHeight - w.blockHeight >= MONERO_LOCK_WINDOW;
+      if (!w.frozen) await this.o.wallet.freeze(w.keyImage);
+      this.store.upsertOutput({ key_image: w.keyImage, amount: w.amount.toString(), block_height: w.blockHeight, unlocked: w.unlocked && deep, frozen: true, spent: false });
+    }
+    this.store.markOutputsSpent(outs.filter((w) => !w.spent).map((w) => w.keyImage));
+  }
+
+  /**
+   * Build a transaction from EXACTLY the given outputs: they are reserved in the database first,
+   * thawed for the build only, and the result is refused unless every input it spends is one of
+   * them. If the wallet pulled in anything else (an output that appeared in the instant between
+   * the freeze pass and the build), that transaction is thrown away unstored and unrelayed, the
+   * stray output is frozen, and the build is tried once more. `null` = the outputs do not cover it.
+   */
+  private async buildExclusive(inputs: string[], reservedFor: string, destinations: { address: string; amount: bigint }[]): Promise<PreparedTx | null> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await this.syncLocked();
+      for (const k of inputs) this.store.reserveOutput(k, reservedFor);
+      let tx: PreparedTx;
+      try {
+        for (const k of inputs) await this.o.wallet.thaw(k);
+        tx = await this.o.wallet.prepare(destinations);
+      } catch (e) {
+        if (e instanceof WalletError && e.code === 'not_enough') return null;
+        throw e;
+      } finally {
+        for (const k of inputs) await this.o.wallet.freeze(k);
       }
-      this.store.markOutputsSpent(outs.filter((w) => !w.spent).map((w) => w.keyImage));
-    });
+      const foreign = tx.keyImages.filter((k) => !inputs.includes(k));
+      if (foreign.length === 0) return tx;
+      // Never stored, never relayed: the wallet's choice is not ours to accept.
+      for (const k of foreign) await this.o.wallet.freeze(k).catch(() => undefined);
+    }
+    throw new WalletError('rpc', 'the wallet keeps adding inputs that were not reserved for this transaction; nothing was built');
   }
 
   private usable(): OutputRow[] {
     return this.store.outputs().filter((o) => o.unlocked === 1 && !o.reserved_for && !o.spent);
+  }
+
+  /** What each unlocked, unreserved output can fund (its amount less the fee reserve), smallest first. */
+  usableAmounts(): bigint[] {
+    const fee = this.feeReserve();
+    return this.usable().map((o) => BigInt(o.amount) - fee).filter((a) => a > 0n).sort((a, b) => (a < b ? -1 : 1));
   }
 
   /** Capacity counted in unlocked, unreserved outputs: the total (less the reserve) and the largest single swap an output can fund. */
@@ -156,6 +209,7 @@ export class Inventory {
     return this.serial(async () => {
       const existing = this.store.lockTx(swapRef);
       if (existing) return existing;
+      await this.syncLocked();
       const candidates = this.usable().filter((o) => BigInt(o.amount) >= amount + this.feeReserve());
       if (candidates.length === 0) return 'unavailable';
       let chosen: { output: OutputRow; tx: PreparedTx } | null = null;
@@ -166,23 +220,20 @@ export class Inventory {
           { address, amount },
           async () => {
             for (const output of candidates) {
-              this.store.reserveOutput(output.key_image, swapRef);
-              await this.o.wallet.thaw(output.key_image);
-              try {
-                return { output, tx: await this.o.wallet.prepare([{ address, amount }]) };
-              } catch (e) {
+              // Reserved in the database BEFORE the wallet is asked; stays reserved until the lock is stored, or is given back here.
+              const tx = await this.buildExclusive([output.key_image], swapRef, [{ address, amount }]).catch((e) => {
                 this.store.reserveOutput(output.key_image, null);
-                if (!(e instanceof WalletError) || e.code !== 'not_enough') throw e;
-              } finally {
-                await this.o.wallet.freeze(output.key_image);
-              }
+                throw e;
+              });
+              if (tx) return { output, tx };
+              this.store.reserveOutput(output.key_image, null);
             }
             return null;
           },
           (r) => {
             if (!r) return { meta: { unavailable: true } };
-            const keyImages = r.tx.keyImages.length > 0 ? r.tx.keyImages : [r.output.key_image];
-            for (const k of keyImages) this.store.reserveOutput(k, swapRef);
+            // Exactly the reserved output (a wallet that does not report its inputs was given nothing else to spend).
+            const keyImages = [r.output.key_image];
             this.store.insertLockTx({ swap_ref: swapRef, tx_hex: r.tx.txHex, txid: r.tx.txid, key_images: keyImages, amount: amount.toString() });
             return { tx: r.tx.txid, meta: { fee: r.tx.fee.toString(), output: r.output.key_image } };
           },
@@ -203,23 +254,54 @@ export class Inventory {
   async relayLock(swapRef: string, known: () => Promise<boolean>, rebroadcast = false): Promise<'relayed' | 'double-spend'> {
     const lock = this.store.lockTx(swapRef);
     if (!lock) throw new Error(`no stored lock transaction for ${swapRef}`);
-    const result = await this.o.journal.act(
-      'xmr_relay',
-      swapRef,
-      { txid: lock.txid, rebroadcast },
-      async () => {
-        const r = await this.o.broadcaster.sendRaw(lock.tx_hex);
-        if (r.ok) return 'relayed' as const;
-        if (await known()) return 'relayed' as const;
-        if (r.doubleSpend) return 'double-spend' as const;
-        throw new Error(`the nodes refused the lock transaction: ${r.reason ?? 'unknown reason'}`);
-      },
-      (r) => {
-        if (r === 'relayed') this.store.markLockRelayed(swapRef, rebroadcast);
-        return { tx: lock.txid, meta: { result: r } };
-      },
-    );
-    return result;
+    try {
+      await this.o.journal.act(
+        'xmr_relay',
+        swapRef,
+        { txid: lock.txid, rebroadcast },
+        async () => {
+          const r = await this.o.broadcaster.sendRaw(lock.tx_hex);
+          if (r.ok) return r;
+          // A refusal is a success only if the nodes already hold this very transaction.
+          if (await known()) return r;
+          // Anything else is a refusal, and is journaled as one: never `confirmed`.
+          throw new RelayRefused(r.doubleSpend === true, r.reason ?? 'unknown reason');
+        },
+        () => {
+          this.store.markLockRelayed(swapRef, rebroadcast);
+          return { tx: lock.txid, meta: { result: 'relayed' } };
+        },
+      );
+    } catch (e) {
+      if (e instanceof RelayRefused && e.doubleSpend) return 'double-spend';
+      throw e;
+    }
+    return 'relayed';
+  }
+
+  /**
+   * Whether the stored (not yet relayed) lock of a swap can still be accepted: none of its
+   * inputs is spent in the chain or by a pool transaction on any node asked, and no other
+   * stored lock spends one of them. Checked BEFORE the notice that names it is posted; the
+   * transaction itself is not shown to any node before the notice is final.
+   */
+  async lockSpendable(swapRef: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+    const lock = this.store.lockTx(swapRef);
+    if (!lock) return { ok: false, reason: 'no stored lock transaction' };
+    for (const o of this.store.outputs()) if (lock.key_images.includes(o.key_image) && o.reserved_for !== swapRef) return { ok: false, reason: `input ${o.key_image.slice(0, 8)}… is reserved for ${o.reserved_for ?? 'nothing'}` };
+    const status = await this.o.broadcaster.keyImageStatus(lock.key_images);
+    const bad = status.findIndex((x) => x !== 0);
+    return bad < 0 ? { ok: true } : { ok: false, reason: `input ${lock.key_images[bad]!.slice(0, 8)}… is already spent ${status[bad] === 1 ? 'in the chain' : 'by a transaction in the pool'}` };
+  }
+
+  /** Drop a prepared lock that can no longer be accepted (before its notice): its inputs are gone, so they are not given back. */
+  discardLock(swapRef: string): void {
+    this.store.tx(() => {
+      const lock = this.store.lockTx(swapRef);
+      if (!lock || lock.relayed_at !== null) return;
+      this.store.deleteUnrelayedLockTx(swapRef);
+      for (const k of lock.key_images) this.store.reserveOutput(k, `unspendable:${lock.txid}`);
+    });
   }
 
   /** Whether an input of the stored lock was spent by another transaction (the lock can then never confirm). */
@@ -251,12 +333,12 @@ export class Inventory {
           null,
           { inputs: b.inputs, amounts: b.amounts },
           async () => {
-            for (const k of b.inputs) await this.o.wallet.thaw(k);
-            try {
-              return await this.o.wallet.prepare(b.amounts.map((amount) => ({ address, amount })));
-            } finally {
-              for (const k of b.inputs) await this.o.wallet.freeze(k);
+            const built = await this.buildExclusive(b.inputs, 'split:pending', b.amounts.map((amount) => ({ address, amount })));
+            if (!built) {
+              for (const k of b.inputs) this.store.reserveOutput(k, null);
+              throw new WalletError('not_enough', 'the split sources do not cover the ladder outputs and the fee');
             }
+            return built;
           },
           (r) => ({ tx: r.txid, meta: { txHex: r.txHex } }),
         );
@@ -305,12 +387,12 @@ export class Inventory {
         null,
         { to, amount, inputs },
         async () => {
-          for (const k of inputs) await this.o.wallet.thaw(k);
-          try {
-            return await this.o.wallet.prepare([{ address: to, amount }]);
-          } finally {
-            for (const k of inputs) await this.o.wallet.freeze(k);
+          const built = await this.buildExclusive(inputs, 'send:pending', [{ address: to, amount }]);
+          if (!built) {
+            for (const k of inputs) this.store.reserveOutput(k, null);
+            throw new WalletError('not_enough', 'not enough unlocked XMR outputs for this payment');
           }
+          return built;
         },
         (r) => {
           for (const k of inputs) this.store.reserveOutput(k, `send:${r.txid}`);

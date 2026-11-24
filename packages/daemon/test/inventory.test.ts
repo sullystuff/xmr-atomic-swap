@@ -93,7 +93,7 @@ describe('inventory', () => {
   });
 
   it('reports a double spend of the lock\'s input instead of relaying', async () => {
-    const { xmr, inv } = setup();
+    const { xmr, inv, store } = setup();
     const k = xmr.addOutput(5_050_000_000_000n);
     await inv.sync();
     const lock = await inv.prepareLock('swap-1', 'joint', XMR);
@@ -103,6 +103,11 @@ describe('inventory', () => {
     const other = await xmr.prepare([{ address: 'elsewhere', amount: XMR }]);
     await xmr.sendRaw(other.txHex);
     expect(await inv.relayLock('swap-1', () => xmr.txKnown(lock.txid))).toBe('double-spend');
+    // The refusal is journaled as a refusal, never as a relay that happened.
+    expect(store.intents({ kind: 'xmr_relay' }).map((i) => i.status)).toEqual(['failed']);
+    expect(store.lockTx('swap-1')!.relayed_at).toBeNull();
+    expect(await inv.inputsSpentElsewhere('swap-1')).toBe(false); // only in the pool so far
+    xmr.mine(1);
     expect(await inv.inputsSpentElsewhere('swap-1')).toBe(true);
     expect(xmr.relays).toEqual([other.txid]);
   });

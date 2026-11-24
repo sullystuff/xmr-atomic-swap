@@ -56,6 +56,9 @@ async function boot(): Promise<{ w: World; d: Daemon; eth: FakeEthereum; swaps: 
   for (const fn of ['approve', 'reject', 'postNotice', 'claim', 'abort']) eth.views[fn] = () => undefined;
   const d = await w.boot({ ethTransport: eth });
   await d.start();
+  // The key pool is generated in the background; the first quote goes out on the refresh after it is complete.
+  await d.offers.poolsReady();
+  await d.offers.tick(true);
   return { w, d, eth, swaps };
 }
 /** The calls the daemon broadcast on Ethereum, decoded. */
@@ -67,7 +70,8 @@ describe('Ethereum quotes on the Solana board', () => {
     const { w, d } = await boot();
     const setQuote = w.sim.landed.filter((l) => l.name === 'set_eth_quote');
     expect(setQuote).toHaveLength(1);
-    const refresh = w.sim.landed.filter((l) => l.name === 'refresh_offers');
+    const refresh = w.sim.landed.filter((l) => l.name === 'refresh_offers').slice(1);
+    expect((w.sim.landed.find((l) => l.name === 'refresh_offers')!.args['eth'] as unknown[]).length).toBe(0); // at start the pool was not ready: no quote yet, and nothing waited for it
     expect(refresh).toHaveLength(1); // one transaction for the Solana offers AND the Ethereum quote
     expect((refresh[0]!.args['offers'] as unknown[]).length).toBe(1); // the buy offer has no paying balance in this world and was never published
     const ethRefresh = (refresh[0]!.args['eth'] as { slot: number; tierPrice: bigint[]; validUntil: bigint; quoteId: bigint; sig: Uint8Array }[])[0]!;
@@ -97,7 +101,7 @@ describe('Ethereum quotes on the Solana board', () => {
     w.prices.xmr = 160;
     await d.offers.tick();
     expect(w.sim.landed.filter((l) => l.name === 'set_eth_quote')).toHaveLength(1);
-    const second = (w.sim.landed.filter((l) => l.name === 'refresh_offers')[1]!.args['eth'] as { quoteId: bigint; tierPrice: bigint[] }[])[0]!;
+    const second = (w.sim.landed.filter((l) => l.name === 'refresh_offers')[2]!.args['eth'] as { quoteId: bigint; tierPrice: bigint[] }[])[0]!;
     expect(second.quoteId).toBe(ethRefresh.quoteId);
     expect(second.tierPrice[0]).toBe(54_400_000_000_000_000n);
     expect(d.offers.views().find((v) => v.market === 'eth' && v.direction === 'sell_xmr')).toMatchObject({ live: true, key_pool: { size: 4, available: 4 }, seq_or_quote_id: ethRefresh.quoteId.toString() });
@@ -105,6 +109,86 @@ describe('Ethereum quotes on the Solana board', () => {
   });
 });
 const eth_now = (d: Daemon): bigint => 1_800_000_000n + 100n * 12n + 0n * BigInt(d.startedAt);
+
+describe('key pool generation stays off the hot path', () => {
+  it('a large pool is generated in the background, one proof per turn: swap passes and timers stay prompt, and a restart resumes it', async () => {
+    const w = await makeWorld(ETH_TOML.replace('eth_pool_size = 4', 'eth_pool_size = 32'));
+    const eth = new FakeEthereum(CONTRACT);
+    eth.views['getMaker'] = () => ({ operator: w.keystore.ethereum.address, payout: '0x00000000000000000000000000000000000000bb', quoteEpoch: 3, approvalEpoch: 2, paused: false, registeredAt: 5n, solanaOwner: zero32, solanaOwnerNext: zero32, solanaOwnerNextAt: 0n, openPending: 0, responseSecsSum: 0n, counters: new Array(40).fill(0) });
+    eth.views['usdc'] = () => USDC;
+    let d = await w.boot({ ethTransport: eth });
+    const t0 = Date.now();
+    await d.start(); // returns without waiting for 32 proofs
+    const startMs = Date.now() - t0;
+    expect(d.offers.poolProgress()).toEqual([{ token: `0x${'00'.repeat(20)}`, built: expect.any(Number) }]);
+    // A Solana swap arrives while the pool is being generated: its passes run between proofs.
+    const s = w.sim.open({ direction: 0, xmr: XMR, makerSpendPub: w.sim.takePoolKey(0) });
+    const passes: number[] = [];
+    let worstGap = 0;
+    let last = Date.now();
+    const timer = setInterval(() => {
+      worstGap = Math.max(worstGap, Date.now() - last);
+      last = Date.now();
+    }, 10);
+    let built = 0;
+    while (d.offers.poolProgress().length > 0 && built < 12) {
+      const t = Date.now();
+      await d.executor.tick();
+      passes.push(Date.now() - t);
+      built = d.offers.poolProgress()[0]?.built ?? 32;
+      // The daemon's passes are timer-driven and do real I/O; the fakes answer without ever leaving the microtask queue.
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    clearInterval(timer);
+    expect(passes.length).toBeGreaterThan(3); // many passes completed DURING the refill
+    expect(w.sim.swap(s.pda)!.state).toBe(SWAP_STATE.NOTICED); // and did real work: lock built, notice posted, XMR relayed
+    // No pass and no timer ever waited for more than a few proofs; the whole pool is seconds of CPU.
+    const perProof = (Date.now() - t0) / Math.max(1, built);
+    expect(Math.max(...passes)).toBeLessThan(Math.max(1500, perProof * 6));
+    expect(worstGap).toBeLessThan(Math.max(1500, perProof * 4));
+    expect(startMs).toBeLessThan(Math.max(1500, perProof * 6));
+    // Restart mid-refill: the proofs already made are kept, the rest are generated, and the pool has exactly 32 leaves.
+    const before = d.store.shares({ purpose: `ethpool:0x${'00'.repeat(20)}` }).length;
+    expect(before).toBeLessThan(32);
+    await d.stop(); // halts the generation; what was made is on disk
+    const kept = d.offers.poolProgress().length;
+    expect(kept).toBe(0);
+    d = await w.boot({ ethTransport: eth });
+    // (One more proof may have been finished while the daemon was stopping.)
+    const resumedFrom = d.store.shares({ purpose: `ethpool:0x${'00'.repeat(20)}` }).length;
+    expect(resumedFrom).toBeGreaterThanOrEqual(before);
+    expect(resumedFrom).toBeLessThan(32);
+    await d.start();
+    await d.offers.poolsReady();
+    await d.offers.tick(true);
+    const pool = d.store.currentPool<{ spend_pub: string }[]>(`0x${'00'.repeat(20)}`)!;
+    expect(pool.leaves).toHaveLength(32);
+    expect(new Set(pool.leaves.map((l) => l.spend_pub)).size).toBe(32);
+    expect(d.store.shares({ purpose: `ethpool:0x${'00'.repeat(20)}` })).toHaveLength(32);
+    expect(w.sim.landed.filter((l) => l.name === 'set_eth_quote')).toHaveLength(1);
+    d.store.close();
+  }, 120_000);
+});
+
+describe('the Ethereum operator nonce', () => {
+  it('two sends at once never sign the same nonce', async () => {
+    const { d, eth } = await boot();
+    // A node that answers the nonce slowly and counts what it was sent: unserialised, both sends would read nonce 0.
+    const real = eth.request.bind(eth);
+    eth.request = async (a) => {
+      if (a.method === 'eth_getTransactionCount') {
+        await new Promise((r) => setTimeout(r, 20));
+        return `0x${eth.sentRaw.length.toString(16)}`;
+      }
+      return real(a);
+    };
+    eth.views['bumpEpochs'] = () => undefined;
+    const call = () => d.eth!.client.contract.bumpEpochs(false, true);
+    await Promise.all([d.eth!.sendCall(call(), () => {}), d.eth!.sendCall(call(), () => {}), d.eth!.sendCall(call(), () => {})]);
+    expect(eth.sentRaw.map((raw) => parseTransaction(raw).nonce)).toEqual([0, 1, 2]);
+    d.store.close();
+  });
+});
 
 describe('Ethereum message fallback', () => {
   it('reads messages posted through the contract, once, and only when final', async () => {

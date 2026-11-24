@@ -35,8 +35,8 @@ export interface ApprovalsOptions {
   shares: Shares;
   encKeys: EncKeys;
   config: () => Config;
-  /** Direction A: the largest swap an unlocked ladder output can fund right now. */
-  xmrAvailable: () => bigint;
+  /** Direction A: the largest lock of at least `xmr` an unlocked output can fund, with the outputs other approved swaps still need set aside. */
+  xmrAvailable: (xmr: bigint, excludeRef: string) => bigint;
   /** Direction B: what the operator can still commit of a market's paying asset (balance and cap, less what open swaps hold), or `null` when unknown. */
   payingAvailable: (market: Market, excludeRef: string) => Promise<bigint | null>;
   /** What an advance approval is bound to on each chain; `null` = that chain is not configured. */
@@ -89,7 +89,7 @@ export class Approvals {
     if (view.xmr < offer.minXmr || (offer.maxXmr > 0n && view.xmr > offer.maxXmr)) reasons.push('the size is outside the offer limits');
     reasons.push(...this.o.risk.check({ ref: row.ref, taker: row.taker, xmr: view.xmr }, offer).reasons);
     if (view.direction === 0) {
-      if (this.o.xmrAvailable() < view.xmr) reasons.push('no unlocked XMR output can fund this lock');
+      if (this.o.xmrAvailable(view.xmr, row.ref) < view.xmr) reasons.push('no unlocked XMR output can fund this lock');
     } else {
       const available = await this.o.payingAvailable(row.market as Market, row.ref);
       if (available !== null && available < view.amount) reasons.push('the paying balance or its cap does not cover this swap');

@@ -105,6 +105,7 @@ export class SimSolana {
         err = { InstructionError: [2, { Custom: e.custom }] };
       }
       this.fake.addTransaction({ signature, slot: ++this.blockHeight, blockTime: Number(this.now), err, logs: [], instructions: [] }, []);
+      this.newBlockhash();
       return signature;
     };
   }
@@ -133,6 +134,15 @@ export class SimSolana {
   setTime(t: bigint): void {
     if (t > this.now) this.now = t;
     this.fake.setClock(this.now);
+    this.newBlockhash();
+  }
+  /** A cluster's blockhash moves with every slot; here it moves whenever a transaction lands or the clock does. */
+  private hashCounter = 0;
+  newBlockhash(): void {
+    const b = new Uint8Array(32);
+    new DataView(b.buffer).setUint32(0, ++this.hashCounter);
+    b[31] = 1;
+    this.fake.blockhash = base58Encode(b);
   }
   warp(secs: number | bigint): void {
     this.setTime(this.now + BigInt(secs));
@@ -381,6 +391,15 @@ export class FakeMonero implements InventoryWallet, MoneroBroadcaster, MoneroVie
   readonly sweepsBuilt: string[] = [];
   /** Fail verification as an unreachable node would. */
   down = false;
+  /** As wallet2 may: spend every unfrozen unlocked output it holds, not only what the amount needs. */
+  greedy = false;
+  /** Called at the start of each build, after the daemon's freeze pass: the instant an output can still slip in. */
+  beforePrepare: (() => void) | null = null;
+  /** Make the nodes refuse every relay with this reason (not a double spend). */
+  refuseRelay: string | null = null;
+  /** When set, every `verify` waits for it: a slow node, so a pass over a swap stays in flight. */
+  verifyGate: Promise<void> | null = null;
+  verifying = 0;
   private spentInputs = new Map<string, string>();
   private counter = 0;
 
@@ -437,13 +456,16 @@ export class FakeMonero implements InventoryWallet, MoneroBroadcaster, MoneroVie
     if (o) o.frozen = false;
   }
   async prepare(destinations: { address: string; amount: bigint }[]): Promise<PreparedTx> {
+    const hook = this.beforePrepare;
+    this.beforePrepare = null;
+    hook?.();
     const fee = 100_000_000n;
     const need = destinations.reduce((a, d) => a + d.amount, 0n) + fee;
     const usable = this.outs.filter((o) => !o.frozen && !o.spent && o.unlocked).sort((a, b) => (a.amount < b.amount ? -1 : 1));
     const inputs: WalletOutput[] = [];
     let sum = 0n;
     for (const o of usable) {
-      if (sum >= need) break;
+      if (sum >= need && !this.greedy) break;
       inputs.push(o);
       sum += o.amount;
     }
@@ -458,6 +480,7 @@ export class FakeMonero implements InventoryWallet, MoneroBroadcaster, MoneroVie
   async sendRaw(txHex: string): Promise<RelayResult> {
     const t = [...this.txs.values()].find((x) => x.txHex === txHex);
     if (!t) return { ok: false, reason: 'unparseable' };
+    if (this.refuseRelay) return { ok: false, reason: this.refuseRelay };
     if (t.relayed > 0) return { ok: false, reason: 'already in the pool or the chain' };
     if (t.inputs.some((k) => this.spentInputs.has(k) && this.spentInputs.get(k) !== t.txid)) return { ok: false, reason: 'double spend', doubleSpend: true };
     t.relayed++;
@@ -473,12 +496,25 @@ export class FakeMonero implements InventoryWallet, MoneroBroadcaster, MoneroVie
     return { ok: true };
   }
   async keyImagesSpent(keyImages: string[]): Promise<boolean[]> {
-    return keyImages.map((k) => this.spentInputs.has(k));
+    return (await this.keyImageStatus(keyImages)).map((x) => x === 1);
+  }
+  async keyImageStatus(keyImages: string[]): Promise<number[]> {
+    if (this.down) throw new Error('connection refused');
+    return keyImages.map((k) => {
+      const by = this.spentInputs.get(k);
+      return by === undefined ? 0 : this.txs.get(by)?.minedAt != null ? 1 : 2;
+    });
   }
 
   // ---- MoneroView
   async verify(a: { txid: string; minAmount: bigint; minConf: number }): Promise<VerifyLockResult> {
     if (this.down) throw new Error('connection refused');
+    this.verifying++;
+    try {
+      if (this.verifyGate) await this.verifyGate;
+    } finally {
+      this.verifying--;
+    }
     const t = this.txs.get(a.txid);
     const base = { reasons: [] as string[], codes: [] as never[], nodes: [] as never[], outputs: [] as never[] };
     if (!t || t.relayed === 0) return { ...base, ok: false, state: 'not-found' as LockState, confirmations: 0 } as unknown as VerifyLockResult;

@@ -76,6 +76,9 @@ export class SolanaChain implements SwapChain {
       publicKey: this.signer.publicKey,
       sign: async (message) => {
         const sig = await this.signer.sign(message);
+        // A byte-identical transaction on the same blockhash has the same signature: the cluster would treat it as the
+        // one already sent, and a status lookup would report THAT one as this one's success. Refuse before anything is recorded.
+        if ((await this.client.transport.getSignatureStatus(base58Encode(sig))) !== null) throw new Refused('DuplicateTransaction', 'identical to a transaction already sent on this blockhash; it is sent again on the next one');
         onSigned(base58Encode(sig), { lastValidBlockHeight, signedAtMs: this.clock() });
         return sig;
       },

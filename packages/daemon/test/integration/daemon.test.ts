@@ -185,6 +185,9 @@ confirmation_depth = [{ above_xmr = 0, depth = 2 }]
   endpoint = await serveEndpoint(daemonEndpoint(d), '127.0.0.1:0');
   http = new MakerHttp(directEndpoint(`http://127.0.0.1:${endpoint.port}`));
   await d.start();
+  // The Ethereum key pool is generated in the background; its first quote goes out on the refresh after it is ready.
+  await d.offers.poolsReady();
+  await d.offers.tick(true);
 });
 afterAll(async () => {
   await endpoint?.close();

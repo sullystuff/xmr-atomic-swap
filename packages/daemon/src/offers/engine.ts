@@ -135,7 +135,14 @@ export class OfferEngine {
   // ---------------------------------------------------------------- the loop
 
   /** One pass: refresh prices when due, recompute, and publish when due. Called on a short timer. */
-  async tick(force = false): Promise<{ published: boolean; reason: string }> {
+  tick(force = false): Promise<{ published: boolean; reason: string }> {
+    // One pass at a time: the timer and an API call (pause, resume) must not both publish terms or refill the same key slots.
+    const next = this.ticking.then(() => this.tickOne(force), () => this.tickOne(force));
+    this.ticking = next.catch(() => undefined);
+    return next;
+  }
+  private ticking: Promise<unknown> = Promise.resolve();
+  private async tickOne(force: boolean): Promise<{ published: boolean; reason: string }> {
     const cfg = this.o.config();
     const t = this.o.store.now();
     if (force || t - this.lastPriceRefresh >= cfg.raw.pricing.refresh_seconds) {
@@ -257,28 +264,64 @@ export class OfferEngine {
 
   // ---------------------------------------------------------------- Ethereum quotes and key pools
 
-  /** The current key pool of a token, or a new one when none exists or half of it is consumed (SPEC 2.7). */
-  private pool(token: Bytes, size: number): { root: Bytes; leaves: PoolLeafRow[] } {
+  /**
+   * The key pool to sign into a quote for a token (SPEC 2.7), or `null` while the first one is still being built.
+   *
+   * A pool is `size` shares, each with a cross-curve DLEQ proof that takes about 0.2 s of CPU. They are generated in the
+   * BACKGROUND, one proof per turn of the event loop, and persisted as they are made (a restart resumes, it does not
+   * start over). Nothing waits for them: swaps, timers and the API run between proofs, and quoting simply goes on with
+   * the current pool until its replacement is complete. A new pool is started when half of the current one is consumed.
+   */
+  private pool(token: Bytes, size: number): { root: Bytes; leaves: PoolLeafRow[] } | null {
     const tokenHex = hex0x(token);
     const cur = this.o.store.currentPool<PoolLeafRow[]>(tokenHex);
-    if (cur) {
-      const used = cur.leaves.filter((l) => this.o.store.shareByPub(l.spend_pub)?.swap_ref).length;
-      if (used * 2 < cur.leaves.length) return { root: unhex(cur.root), leaves: cur.leaves };
-      this.o.store.retirePool(cur.root);
-    }
-    const leaves: PoolLeafRow[] = [];
-    const hashes: Bytes[] = [];
-    for (let index = 0; index < size; index++) {
+    const used = cur ? cur.leaves.filter((l) => this.o.store.shareByPub(l.spend_pub)?.swap_ref).length : 0;
+    if ((!cur || used * 2 >= cur.leaves.length) && !this.halted) this.startPoolBuild(tokenHex, size);
+    return cur ? { root: unhex(cur.root), leaves: cur.leaves } : null;
+  }
+  private builds = new Map<string, Promise<void>>();
+  private halted = false;
+  /** Stop generating (shutdown): the proofs made so far are kept for the next start. */
+  async halt(): Promise<void> {
+    this.halted = true;
+    await this.poolsReady();
+  }
+  /** Whether a pool is being generated right now, and how far it is. */
+  poolProgress(): { token: string; built: number }[] {
+    return [...this.builds.keys()].map((token) => ({ token, built: (JSON.parse(this.o.store.kv(`poolbuild:${token}`) ?? '[]') as unknown[]).length }));
+  }
+  /** Resolves when no pool is being generated (tests, and a start that wants its first quotes at once). */
+  async poolsReady(): Promise<void> {
+    while (this.builds.size > 0) await Promise.all([...this.builds.values()]);
+  }
+  private startPoolBuild(tokenHex: string, size: number): void {
+    if (this.builds.has(tokenHex)) return;
+    const job = this.buildPool(tokenHex, size)
+      .catch((e) => void this.o.alerts.raise('warning', 'key_pool_failed', `the Ethereum key pool could not be generated: ${errMsg(e)}`))
+      .finally(() => this.builds.delete(tokenHex));
+    this.builds.set(tokenHex, job);
+  }
+  private async buildPool(tokenHex: string, size: number): Promise<void> {
+    const key = `poolbuild:${tokenHex}`;
+    const leaves = (JSON.parse(this.o.store.kv(key) ?? '[]') as PoolLeafRow[]).slice(0, size);
+    while (leaves.length < size) {
+      if (this.halted) return; // what was made is persisted; the next start resumes from it
+      // Let everything else run first: one proof per turn of the event loop, never a batch.
+      await new Promise<void>((r) => setImmediate(r));
       // Row first, then the proof the endpoint serves, then the leaf: a share is never signed into a root before it is recorded.
       const s = this.o.shares.create('ethereum', `ethpool:${tokenHex}`, null, 'published');
       const twin = twinCommitments(s.keys.spend);
       this.o.store.putBlob(s.row.spend_pub, dleqProve(s.keys.spend), true);
-      leaves.push({ index, key: hex0x(twin.keyAddr), key2: hex0x(twin.keyAddr2), spend_pub: s.row.spend_pub });
-      hashes.push(keyLeaf(index, twin.keyAddr, twin.keyAddr2, s.keys.spendPub));
+      leaves.push({ index: leaves.length, key: hex0x(twin.keyAddr), key2: hex0x(twin.keyAddr2), spend_pub: s.row.spend_pub });
+      this.o.store.setKv(key, JSON.stringify(leaves));
     }
-    const root = merkleRoot(hashes);
-    this.o.store.putPool(hex(root), tokenHex, leaves);
-    return { root, leaves };
+    const root = merkleRoot(leaves.map((l) => keyLeaf(l.index, unhex(l.key), unhex(l.key2), unhex(l.spend_pub))));
+    this.o.store.tx(() => {
+      const old = this.o.store.currentPool<PoolLeafRow[]>(tokenHex);
+      if (old) this.o.store.retirePool(old.root);
+      this.o.store.putPool(hex(root), tokenHex, leaves);
+      this.o.store.setKv(key, '[]');
+    });
   }
 
   private async ethContext(): Promise<{ eth: EthereumChain & { deployment: EthDeployment }; usdc: Bytes; quoteEpoch: number; now: bigint } | null> {
@@ -288,7 +331,7 @@ export class OfferEngine {
     return { eth, usdc: unhex(usdc), quoteEpoch: maker.quoteEpoch, now };
   }
 
-  private buildEthQuote(c: ComputedOffer, ctx: { eth: EthereumChain; usdc: Bytes; quoteEpoch: number; now: bigint }, cfg: Config, bound?: { taker: Bytes; xmr: bigint; depth: number; price: bigint }): EthQuote {
+  private buildEthQuote(c: ComputedOffer, ctx: { eth: EthereumChain; usdc: Bytes; quoteEpoch: number; now: bigint }, cfg: Config, bound?: { taker: Bytes; xmr: bigint; depth: number; price: bigint }): EthQuote | null {
     const o = c.offer;
     const token = o.market === 'eth' ? new Uint8Array(20) : ctx.usdc;
     const depthXmr: [bigint, bigint, bigint] = [0n, 0n, 0n];
@@ -300,13 +343,16 @@ export class OfferEngine {
         depth[i] = t.depth;
       });
     const claimDelay = bound ? Math.max(o.claimDelaySecs, minClaimDelay('ethereum', bound.depth)) : o.claimDelaySecs;
+    // Direction A needs a key pool; while the first one is still being generated there is nothing to sign yet.
+    const keyRoot = o.directionCode === 0 ? this.pool(token, cfg.raw.offers.eth_pool_size)?.root : new Uint8Array(32);
+    if (!keyRoot) return null;
     return {
       maker: unhex(ctx.eth.makerAddress), taker: bound?.taker ?? new Uint8Array(20), token, direction: o.directionCode, approvalMode: modeCode(o.mode),
       minXmr: bound?.xmr ?? o.minXmr, maxXmr: bound?.xmr ?? minBig(o.maxXmr, c.capacityXmr > 0n ? c.capacityXmr : o.maxXmr),
       tierXmr: bound ? [0n, 0n, 0n] : c.priced.tierAbove, tierPrice: bound ? [bound.price, 0n, 0n] : c.priced.tierPrice, depthXmr, depth,
       depositBps: o.depositBps, approvalWindow: o.approvalWindowSecs, noticeWindow: o.noticeSecs, claimDelay, claimWindow: o.claimWindowSecs, finalWindow: o.finalSecs,
       validUntil: ctx.now + BigInt(o.validSecs), epoch: ctx.quoteEpoch,
-      keyRoot: o.directionCode === 0 ? this.pool(token, cfg.raw.offers.eth_pool_size).root : new Uint8Array(32),
+      keyRoot,
       quoteId: randomBytes(8).readBigUInt64LE(),
     };
   }
@@ -321,6 +367,7 @@ export class OfferEngine {
     for (const c of live) {
       const slot = ETH_SLOT[key(c.offer)]!;
       const fresh = this.buildEthQuote(c, ctx, cfg);
+      if (!fresh) continue; // its key pool is being generated in the background; the quote goes out on a later refresh
       const fingerprint = hex(encodeEthQuoteCompact({ ...fresh, tierPrice: [0n, 0n, 0n], validUntil: 0n, quoteId: 0n }));
       const id = `ethboard:${key(c.offer)}`;
       const stored = this.o.store.quote<StoredEthQuote>(id)?.payload;
@@ -391,6 +438,7 @@ export class OfferEngine {
       const ctx = await this.ethContext();
       if (!ctx) return refuse('Ethereum is not configured');
       const quote = this.buildEthQuote(c, ctx, cfg, { taker: unhex(req.taker), xmr, depth, price });
+      if (!quote) return refuse('the maker is preparing its keys; ask again in a moment');
       quote.validUntil = ctx.now + BigInt(Math.min(c.offer.validSecs, 180));
       const sig = await signEthQuote(this.o.keystore.ethereumOperatorKey, ctx.eth.deployment, quote);
       this.o.store.putQuote(`eth:${quote.quoteId}`, 'ethereum', 'bound', { taker: req.taker, xmr, market: req.market, direction }, Number(quote.validUntil));

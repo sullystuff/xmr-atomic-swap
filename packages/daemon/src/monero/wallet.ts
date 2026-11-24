@@ -126,7 +126,10 @@ export interface RelayResult {
 /** Node-side writes: relay a raw transaction; ask whether key images are spent. */
 export interface MoneroBroadcaster {
   sendRaw(txHex: string): Promise<RelayResult>;
+  /** Spent in the CHAIN (a pool transaction does not count: it may be our own). */
   keyImagesSpent(keyImages: string[]): Promise<boolean[]>;
+  /** Per key image: 0 = unspent, 1 = spent in the chain, 2 = spent by a transaction in the pool. The worst answer of the nodes asked. */
+  keyImageStatus(keyImages: string[]): Promise<number[]>;
 }
 
 /** Broadcast through the configured nodes, most trusted first: the first that accepts wins. */
@@ -152,18 +155,25 @@ export function nodeBroadcaster(urls: string[], fetchFn: JsonFetch = (u, init) =
       return last;
     },
     async keyImagesSpent(keyImages) {
+      return (await this.keyImageStatus(keyImages)).map((x) => x === 1);
+    },
+    async keyImageStatus(keyImages) {
       if (keyImages.length === 0) return [];
       let lastError: unknown = new Error('no node configured');
+      let worst: number[] | null = null;
       for (const url of urls) {
         try {
           const r = await post(url, 'is_key_image_spent', { key_images: keyImages });
           // 0 = unspent, 1 = spent in the chain, 2 = spent in the pool.
-          return ((r['spent_status'] as number[] | undefined) ?? []).map((s) => s === 1);
+          const got = (r['spent_status'] as number[] | undefined) ?? [];
+          if (got.length !== keyImages.length) throw new Error('is_key_image_spent: malformed answer');
+          worst = worst ? worst.map((w, i) => (w === 1 || got[i] === 1 ? 1 : Math.max(w, got[i]!))) : got;
         } catch (e) {
           lastError = e;
         }
       }
-      throw lastError;
+      if (!worst) throw lastError;
+      return worst;
     },
   };
 }

@@ -46,7 +46,12 @@ const directionA = (refund: boolean): Scenario => ({
     const { sim, xmr } = w;
     if (!c.swap) {
       const offer = sim.offer(0, 0);
-      if (offer?.enabled && (offer.poolFilled & ~offer.poolUsed) !== 0) c.swap = sim.open({ direction: 0, xmr: 2n * XMR, makerSpendPub: sim.takePoolKey(0) });
+      if (offer?.enabled && (offer.poolFilled & ~offer.poolUsed) !== 0) {
+        // BUG-4's setting: a wallet that spends whatever is unfrozen, and an output the daemon has not frozen yet.
+        xmr.greedy = true;
+        xmr.addOutput(3n * XMR);
+        c.swap = sim.open({ direction: 0, xmr: 2n * XMR, makerSpendPub: sim.takePoolKey(0) });
+      }
       return;
     }
     const s = sim.swap(c.swap.pda);
@@ -78,6 +83,14 @@ const directionA = (refund: boolean): Scenario => ({
     expect(log.indexOf('chain:post_notice')).toBeLessThan(log.indexOf('xmr:relay:wallet'));
     expect(sim.names(pda).filter((n) => n === 'post_notice')).toHaveLength(1);
     expect(d.store.lockTx(pda)!.txid).toBe(xmr.relaysOf('wallet')[0]);
+    // Reserve → build → notice → relay, whatever the cut: the lock spends exactly the one output reserved for it, the
+    // relay is journaled as it happened, and nothing was announced that the nodes then refused.
+    const lock = d.store.lockTx(pda)!;
+    expect(lock.key_images).toHaveLength(1);
+    expect(xmr.txs.get(lock.txid)!.inputs).toEqual(lock.key_images);
+    expect(d.store.intents({ swapRef: pda, kind: 'xmr_relay' }).filter((i) => i.payload['sweep'] !== true && i.status === 'confirmed')).toHaveLength(1);
+    expect(d.alerts.list(100).filter((a) => a.kind === 'lock_double_spend' || a.kind === 'lock_rebuilt')).toEqual([]);
+    expect(sim.names(pda)).not.toContain('abort');
     if (refund) {
       expect(row.phase).toBe('closed');
       expect(sim.secretSends).toEqual([]);

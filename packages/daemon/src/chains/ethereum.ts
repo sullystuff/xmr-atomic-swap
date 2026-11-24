@@ -87,7 +87,14 @@ export class EthereumChain implements SwapChain {
   }
 
   /** Simulate (a revert is refused before signing), sign and submit. The hash is handed to `onSigned` before the raw transaction leaves. */
-  async sendCall(call: EthCall, onSigned: OnSigned, opts: { secret?: boolean } = {}): Promise<Hex> {
+  sendCall(call: EthCall, onSigned: OnSigned, opts: { secret?: boolean } = {}): Promise<Hex> {
+    // One at a time: the operator's nonce is read from the node inside `send`, and two sends reading it together would sign the same one.
+    const next = this.sending.then(() => this.sendOne(call, onSigned, opts), () => this.sendOne(call, onSigned, opts));
+    this.sending = next.catch(() => undefined);
+    return next;
+  }
+  private sending: Promise<unknown> = Promise.resolve();
+  private async sendOne(call: EthCall, onSigned: OnSigned, opts: { secret?: boolean }): Promise<Hex> {
     const hooked: EthSigner = {
       address: this.signer.address,
       signTransaction: async (tx) => {

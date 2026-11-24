@@ -153,7 +153,11 @@ export class Executor {
 
   /** Advance one swap as far as it goes without waiting. Serialised per swap; safe to call at any time and after any crash. */
   step(ref: string): Promise<StepOutcome> {
-    return this.mutex.run(ref, async () => {
+    return this.mutex.run(ref, () => this.pass(ref));
+  }
+  /** One pass over a swap. The caller holds the swap's section. */
+  private async pass(ref: string): Promise<StepOutcome> {
+    {
       let last: StepOutcome = { kind: 'waiting', on: 'nothing', until: null };
       let refused: string | undefined;
       try {
@@ -172,7 +176,7 @@ export class Executor {
       this.settleInstruction(ref, last);
       this.events.emit('swap', ref);
       return last;
-    });
+    }
   }
 
   private async once(ref: string): Promise<StepOutcome> {
@@ -312,10 +316,15 @@ export class Executor {
         return null;
       }
       case 'approval-decision': {
-        const d = await this.o.approvals.decide(view, row, this.offerFor(row));
+        // Exposure limits, paying caps and unlocked outputs are shared by every pending swap: the check and the record
+        // of its verdict are one section, so two swaps decided at once cannot both take the last of a limit.
+        const d = await this.mutex.run('#approval-decision', async () => {
+          const got = await this.o.approvals.decide(view, row, this.offerFor(row));
+          // The verdict is bound to the lock it examined: remember what was verified.
+          if (got.verdict) this.store.patchFacts(row.ref, { approval: got.verdict, ...(got.verdict.approve ? { verified: commitmentHash(view) } : {}) });
+          return got;
+        });
         if (!d.verdict) return { kind: 'waiting', on: 'approval-decision', until: deadlinesOf(view.chain, view).tPend };
-        // The verdict is bound to the lock it examined: remember what was verified.
-        this.store.patchFacts(row.ref, { approval: d.verdict, ...(d.verdict.approve ? { verified: commitmentHash(view) } : {}) });
         f.approval = d.verdict;
         return null;
       }
@@ -604,6 +613,19 @@ export class Executor {
         if (approveTx.tx) return { kind: 'acted', what: 'approved token allowance' };
       }
     }
+    if (name === 'post_notice' && view.direction === 0) {
+      // Never announce a lock that can no longer be accepted. The transaction itself is shown to no node before the
+      // notice is final (SPEC 7.5), so what is checked is everything a node would refuse it for: its inputs must be
+      // unspent in the chain AND the pool on the nodes, and reserved for this swap alone. If the nodes cannot be
+      // asked, the notice waits.
+      const ok = await this.o.inventory.lockSpendable(row.ref);
+      if (!ok.ok) {
+        this.o.inventory.discardLock(row.ref);
+        this.store.updateSwap(row.ref, { lock_txid: null });
+        this.o.alerts.raise('warning', 'lock_rebuilt', `the prepared lock could no longer be accepted (${ok.reason}); it was discarded before any notice and is built again from another output`, row.ref);
+        return { kind: 'acted', what: 'discarded an unspendable lock' };
+      }
+    }
     let material: CallMaterial;
     try {
       material = await this.material(row, chain, view, d.call);
@@ -656,18 +678,23 @@ export class Executor {
    * (then it is settled on a later step, and an alert says how).
    */
   async manual(ref: string, patch: NonNullable<SwapFacts['manual']>): Promise<StepOutcome & InstructionResult> {
-    const row = this.store.swap(ref);
-    if (!row) throw new Error('unknown swap');
-    const action: InstructionAction = patch.approve === true ? 'approve' : patch.approve === false ? 'reject' : patch.abort ? 'abort' : patch.release ? 'release' : patch.withhold ? 'withhold' : patch.publishEvidence ? 'publish-evidence' : 'withhold';
-    // A standing override ("do not withhold this one") is a policy setting, not an action to carry out.
-    const standing = patch.withhold === false && !patch.release;
-    const mark = (this.store.db.prepare('SELECT COALESCE(MAX(id), 0) AS n FROM intents').get() as { n: number }).n;
-    const instruction: Instruction = { action, at: this.store.now(), mark, stateAt: row.state, status: 'pending' };
-    this.store.patchFacts(ref, { manual: { ...(row.facts.manual ?? {}), ...patch }, ...(standing ? {} : { instruction }) });
-    this.o.journal.crash('instructed', { id: 0, kind: row.chain === 'solana' ? 'sol_tx' : 'eth_tx', payload: { call: `instruction:${action}` } });
-    const out = await this.step(ref);
-    const settled = this.store.swap(ref)?.facts.instruction;
-    return { ...out, ...(settled && !standing ? { instruction: settled } : {}) };
+    if (!this.store.swap(ref)) throw new Error('unknown swap');
+    // The instruction is journaled INSIDE the swap's own section: a pass already running over this swap finishes first
+    // and never sees it (it decided before the instruction existed, so it has no say on it). The pass that settles it
+    // therefore always began after it was journaled, and reads the chain afresh.
+    return this.mutex.run(ref, async () => {
+      const row = this.store.swap(ref)!;
+      const action: InstructionAction = patch.approve === true ? 'approve' : patch.approve === false ? 'reject' : patch.abort ? 'abort' : patch.release ? 'release' : patch.withhold ? 'withhold' : patch.publishEvidence ? 'publish-evidence' : 'withhold';
+      // A standing override ("do not withhold this one") is a policy setting, not an action to carry out.
+      const standing = patch.withhold === false && !patch.release;
+      const mark = (this.store.db.prepare('SELECT COALESCE(MAX(id), 0) AS n FROM intents').get() as { n: number }).n;
+      const instruction: Instruction = { action, at: this.store.now(), mark, stateAt: row.state, status: 'pending' };
+      this.store.patchFacts(ref, { manual: { ...(row.facts.manual ?? {}), ...patch }, ...(standing ? {} : { instruction }) });
+      this.o.journal.crash('instructed', { id: 0, kind: row.chain === 'solana' ? 'sol_tx' : 'eth_tx', payload: { call: `instruction:${action}` } });
+      const out = await this.pass(ref);
+      const settled = this.store.swap(ref)?.facts.instruction;
+      return { ...out, ...(settled && !standing ? { instruction: settled } : {}) };
+    });
   }
 
   /** Which landed call carries an instruction out. */
@@ -704,6 +731,9 @@ export class Executor {
     else if (last.kind === 'waiting' && last.on.startsWith('transaction')) return; // behind another transaction of this swap; honoured when that resolves
     else if (last.kind === 'error') return; // nothing was decided (an RPC failure, a refused simulation): tried again on the next step
     else if (last.kind === 'parked' && last.why.startsWith('dry run')) next = { ...ins, status: 'refused', reason: 'dry-run' };
+    // A refusal must mean the contract would refuse it: only a pass that read the chain with this instruction on record
+    // (`seen`), or that found the swap already settled, may say so. Anything else leaves it pending for the next pass.
+    else if (!ins.seen && !row.terminal) return;
     else next = { ...ins, status: 'refused', reason: Executor.ownRefusal(ins, row) };
     const m = { ...(row.facts.manual ?? {}) };
     if (ins.action === 'approve' || ins.action === 'reject') {

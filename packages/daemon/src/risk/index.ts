@@ -32,8 +32,15 @@ export class Risk {
   }
 
   // ---------------------------------------------------------------- exposure
+  /**
+   * Swaps that hold a share of the limits: those in flight, and pending ones this maker has already said yes to (the
+   * approval or funding may be sent, or mined and not yet final, while the row still reads PENDING).
+   */
   private open(): SwapRow[] {
-    return this.store.swaps({ open: true }).filter((s) => IN_FLIGHT.includes(s.state));
+    return this.store.swaps({ open: true }).filter((s) => IN_FLIGHT.includes(s.state) || (s.state === SWAP_STATE.PENDING && Risk.approved(s)));
+  }
+  static approved(s: SwapRow): boolean {
+    return s.facts.manual?.approve === true || (s.facts.manual?.approve === undefined && s.facts.approval?.approve === true);
   }
   inFlightXmr(exclude?: string): bigint {
     return this.open().filter((s) => s.ref !== exclude).reduce((a, s) => a + BigInt(s.xmr), 0n);
