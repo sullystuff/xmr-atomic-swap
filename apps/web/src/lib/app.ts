@@ -34,7 +34,7 @@ import { Engine, type EngineState, type SwapNote, type Tracked } from './engine.
 import { Guard, type GuardEnv } from './guard.js';
 import { Inbox, type ReplyKey, type Thread } from './inbox.js';
 import { type OfferRow, type RegistrySnapshot, type UpgradeStatus, marketOf, readRegistry } from './market.js';
-import { OpenRefused, checkFundedShare, ethereumSessionBudget, ethereumUpgradeStatus, makerHttp, openEthereum, openSolanaWave, solanaUpgradeStatus } from './open.js';
+import { OpenRefused, type ProofResult, checkFundedShare, ethereumSessionBudget, ethereumUpgradeStatus, makerHttp, openEthereum, openSolanaWave, solanaUpgradeStatus } from './open.js';
 import { type Order, type OrderLeg, nextWave, stalledMakers } from './orders.js';
 import { type ChainPort, EthereumPort, type EthereumWallet, type MoneroPort, SolanaPort, type SolanaWallet, httpEthTransport, moneroPort, swapRefOf } from './ports.js';
 import { type Safety, safetyOf } from './safety.js';
@@ -89,6 +89,8 @@ export interface AppDeps {
   readRegistry?: () => Promise<RegistrySnapshot>;
   openLegs?: (legs: { row: OfferRow; xmr: bigint }[], groups: number[][]) => Promise<OpenResult>;
   upgrade?: () => Promise<{ solana: UpgradeStatus; ethereum: UpgradeStatus }>;
+  makerProof?: (s: SwapView) => Promise<ProofResult>;
+  proofTimeoutMs?: number;
 }
 
 const UNKNOWN: UpgradeStatus = { frozen: null, authority: null };
@@ -133,7 +135,8 @@ export class App {
       takers: () => this.takers(),
       network: () => this.settings.get().moneroNetwork,
       sweepMaxFee: () => (/^\d+$/.test(this.settings.get().sweepMaxFee) ? BigInt(this.settings.get().sweepMaxFee) : null),
-      makerProof: (s) => this.makerProof(s),
+      makerProof: (s) => (deps.makerProof ? deps.makerProof(s) : this.makerProof(s)),
+      ...(deps.proofTimeoutMs !== undefined ? { proofTimeoutMs: deps.proofTimeoutMs } : {}),
     });
     this.guard = new Guard(deps.guardEnv);
   }
@@ -491,9 +494,16 @@ export class App {
     return this.inbox.refresh({ makerPda: maker.pda, maker: maker.solana, keys: this.replyKeys(maker), http: makerHttp(maker, this.settings.get()), solana: sol, taker: this.wallets.get().solana?.address ?? null, now: sol ? await sol.chainTime() : 0n });
   }
 
-  private async makerProof(s: SwapView): Promise<boolean | undefined> {
-    const maker = this.registry.get().snapshot?.makers.find((m) => m.ethereum?.address.toLowerCase() === s.maker.toLowerCase());
-    return maker ? checkFundedShare(s, makerHttp(maker, this.settings.get())) : undefined;
+  private async makerProof(s: SwapView): Promise<ProofResult> {
+    const find = () => this.registry.get().snapshot?.makers.find((m) => m.ethereum?.address.toLowerCase() === s.maker.toLowerCase());
+    let maker = find();
+    if (!maker) {
+      // The snapshot may predate this maker's Ethereum record (or an Ethereum RPC hiccup hid it): read the registry again.
+      await this.refreshRegistry();
+      maker = find();
+    }
+    if (!maker) return { retry: 'This maker\'s registry record could not be read, so its proof endpoint is unknown' };
+    return checkFundedShare(s, makerHttp(maker, this.settings.get()));
   }
 
   // ------------------------------------------------------------------ large-swap orders

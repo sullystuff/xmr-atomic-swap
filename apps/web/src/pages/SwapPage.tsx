@@ -1,9 +1,9 @@
 /** One swap in progress: what state the money is in, the next deadline, and what the tab is doing about it. */
-import { MONERO_LOCK_WINDOW, SWAP_STATE } from '@xmrswap/protocol';
+import { B_ADDRESS_MIN_LEFT_SECS, MONERO_LOCK_WINDOW, type Market, SWAP_STATE } from '@xmrswap/protocol';
 import { type Refusal, deadlinesOf, endedInClaim, endedInRefund } from '@xmrswap/sdk';
 import { useState } from 'react';
 import type { Tracked } from '../lib/engine.js';
-import { ASSET_LABEL, formatAsset, formatDuration, formatTime, formatXmrAmount, looksLikeXmrAddress } from '../lib/format.js';
+import { ASSET_LABEL, CHAIN_LABEL, formatAsset, formatDuration, formatTime, formatXmrAmount, looksLikeXmrAddress } from '../lib/format.js';
 import { marketOf } from '../lib/market.js';
 import { LEG_LABEL } from '../lib/orders.js';
 import { refusalText } from '../lib/refusal.js';
@@ -192,6 +192,84 @@ function PayXmr({ t, now }: { t: Tracked; now: bigint | null }) {
   );
 }
 
+const about = (secs: number | null): string => (secs === null ? 'a few minutes' : secs <= 30 ? 'under a minute' : `about ${formatDuration(Math.ceil(secs / 60) * 60)}`);
+
+/**
+ * A newer state is in a block but not final. The tab acts on final state only, and says what it
+ * is waiting for and for how long, with the deadline that runs meanwhile.
+ */
+export function FinalityNotice({ t, now, buying, market }: { t: Tracked; now: bigint | null; buying: boolean; market: Market }) {
+  const head = t.pending!.view;
+  const eta = about(t.pending!.etaSecs);
+  const chain = CHAIN_LABEL[t.chain];
+  const d = deadlinesOf(head.chain, head);
+  const asset = ASSET_LABEL[market];
+  if (t.view === null)
+    return (
+      <Notice kind="info" title={`Your ${buying ? 'lock' : 'deposit'} is in a block. Waiting for it to be final on ${chain}: ${eta}`} role="status">
+        Nothing can happen to it before then, and the maker waits for the same thing. Keep this tab open: it carries on by itself the moment the block is final.
+      </Notice>
+    );
+  if (!buying && head.state === SWAP_STATE.ACTIVE)
+    return (
+      <Notice kind="info" title={`The maker has funded. Waiting for its deposit to be final on ${chain}: ${eta}`} role="status">
+        <p>
+          Its {formatAsset(head.amount, market)} {asset} is in a block but could still be reorganised away, so the address to pay is not shown yet: XMR sent against a deposit that later disappears could be lost. On mainnet this wait is normally 13 to 19 minutes.
+        </p>
+        {d.tNote !== null ? (
+          <p className="mt-2">
+            The maker's notice window runs meanwhile: <Countdown to={d.tNote} now={now} /> left (until {formatTime(d.tNote, now ?? undefined)}). The address is not shown with under {formatDuration(B_ADDRESS_MIN_LEFT_SECS[t.chain])} of it left.
+          </p>
+        ) : null}
+      </Notice>
+    );
+  const what: Partial<Record<number, string>> = {
+    [SWAP_STATE.ACTIVE]: 'The maker approved your lock',
+    [SWAP_STATE.NOTICED]: buying ? 'The maker announced its XMR lock' : 'Your lock notice was posted',
+    [SWAP_STATE.READY]: buying ? 'Ready was set' : 'The maker confirmed your payment',
+    [SWAP_STATE.DONE]: 'The swap was settled',
+    [SWAP_STATE.HOLD]: 'The refund was sent',
+  };
+  return (
+    <Notice kind="info" title={`${what[head.state] ?? 'The swap changed'}. Waiting for that to be final on ${chain}: ${eta}`} role="status">
+      The tab acts only on final state, because a block that is reorganised away would undo what it relied on. Deadlines shown on this page are counted from final state and update when it arrives.
+    </Notice>
+  );
+}
+
+/** Ethereum, selling: the check of the maker's key proof that stands between a funded swap and the pay address. */
+export function ProofStatusNotice({ t, now }: { t: Tracked; now: bigint | null }) {
+  const s = t.view!;
+  const d = deadlinesOf(s.chain, s);
+  const lastShow = d.tNote !== null ? d.tNote - BigInt(B_ADDRESS_MIN_LEFT_SECS[s.chain]) : null;
+  const deadline =
+    lastShow !== null ? (
+      <>
+        {' '}
+        The address can be shown for another <Countdown to={lastShow} now={now} /> (until {formatTime(lastShow, now ?? undefined)}); after that, do not pay: the maker takes its escrow back and your deposit can be withheld.
+      </>
+    ) : null;
+  if (t.decision?.do === 'wait' && t.decision.warning === 'maker-proof-invalid')
+    return (
+      <Notice kind="danger" title="The maker's key proof does not verify. Do not send XMR" role="alert">
+        The proof must show that the key the maker committed to on Ethereum is the same key that guards the Monero address. It does not, so XMR sent to that address could be lost; the address is not shown. The maker can only take its escrow back; your deposit is then returned, and the maker can withhold it.
+      </Notice>
+    );
+  if (t.proof.phase === 'checking')
+    return (
+      <Notice kind="info" title={`Verifying the maker's key proof${t.proof.attempts > 1 ? ` (attempt ${t.proof.attempts})` : ''}`} role="status">
+        The page is downloading the proof (about 57 kB) from the maker and checking it before it shows you where to pay.{deadline}
+      </Notice>
+    );
+  if (t.proof.phase === 'retrying')
+    return (
+      <Notice kind="warn" title={`Retrying the proof download (attempt ${t.proof.attempts} failed)`} role="alert">
+        {t.proof.error}. The page tries again in a few seconds and keeps trying. Without a verified proof the address is not shown, because XMR sent to an unverified address could be lost.{deadline}
+      </Notice>
+    );
+  return null;
+}
+
 /** A request that cannot be carried out: why, and what happens instead. */
 export function RefusedNotice({ reason, buying }: { reason: Refusal; buying: boolean }) {
   const r = refusalText(reason, buying);
@@ -222,16 +300,19 @@ export function SwapPage({ swapRef }: { swapRef: string }) {
     );
 
   const s = t.view;
-  const market = t.note.market ?? (s ? marketOf(t.chain, s.asset) : 'sol');
+  // What is shown about the swap may come from a block that is not final yet; what the tab does never does.
+  const head = t.pending?.view ?? null;
+  const shown = s ?? head;
+  const market = t.note.market ?? (shown ? marketOf(t.chain, shown.asset) : 'sol');
   const asset = ASSET_LABEL[market];
-  const amount = s?.amount ?? BigInt(t.note.amount ?? '0');
-  const xmr = s?.xmr ?? BigInt(t.note.xmr ?? '0');
-  const buying = (s?.direction ?? t.note.direction ?? 0) === 0;
+  const amount = shown?.amount ?? BigInt(t.note.amount ?? '0');
+  const xmr = shown?.xmr ?? BigInt(t.note.xmr ?? '0');
+  const buying = (shown?.direction ?? t.note.direction ?? 0) === 0;
   const d = s ? deadlinesOf(s.chain, s) : null;
   const state = s?.state ?? SWAP_STATE.NONE;
   const r = rank(state);
-  const refunded = s ? endedInRefund(s) || state === SWAP_STATE.HOLD || state === SWAP_STATE.WITHHELD : t.leg === 'refunded';
-  const claimed = s ? endedInClaim(s) : t.leg === 'swept';
+  const refunded = s ? endedInRefund(s) || state === SWAP_STATE.HOLD || state === SWAP_STATE.WITHHELD : head ? false : t.leg === 'refunded';
+  const claimed = s ? endedInClaim(s) : head ? false : t.leg === 'swept';
   const waitOn = t.decision?.do === 'wait' ? t.decision.on : null;
 
   const steps: Step[] = [];
@@ -287,7 +368,7 @@ export function SwapPage({ swapRef }: { swapRef: string }) {
   }
 
   const heading = buying ? `Buying ${formatXmrAmount(xmr)} XMR for ${formatAsset(amount, market)} ${asset}` : `Selling ${formatXmrAmount(xmr)} XMR for ${formatAsset(amount, market)} ${asset}`;
-  const pill = t.atRisk ? <span className="pill pill-risk">At risk: keep this tab open</span> : !s ? <span className="pill">{refunded ? 'Refunded and closed' : 'Complete and closed'}</span> : state === SWAP_STATE.READY ? <span className="pill pill-safe">Ready</span> : <span className="pill">{LEG_LABEL[t.leg]}</span>;
+  const pill = t.atRisk ? <span className="pill pill-risk">At risk: keep this tab open</span> : !s && head ? <span className="pill pill-warn">Waiting for Ethereum finality</span> : !s ? <span className="pill">{refunded ? 'Refunded and closed' : 'Complete and closed'}</span> : state === SWAP_STATE.READY ? <span className="pill pill-safe">Ready</span> : <span className="pill">{LEG_LABEL[t.leg]}</span>;
   // What the user asked for, and what the flow answered. A confirmed request always has a visible result.
   const asked = !!t.note.cancel;
   const refusal = asked ? (t.decision?.refused ?? null) : null;
@@ -322,6 +403,8 @@ export function SwapPage({ swapRef }: { swapRef: string }) {
           {t.lost}
         </Notice>
       ) : null}
+      {t.pending ? <FinalityNotice t={t} now={now} buying={buying} market={market} /> : null}
+      {s && !buying && state === SWAP_STATE.ACTIVE && !asked ? <ProofStatusNotice t={t} now={now} /> : null}
       {t.keys === null && s ? (
         <Notice kind="danger" title="This swap was opened with a different recovery file" role="alert">
           {vault.unlocked ? 'The seed that is loaded does not derive this swap\'s keys.' : 'No recovery seed is loaded.'} This tab cannot refund or collect for it. Load the right file in <a href={href('settings')}>Settings</a>; if a deadline passes first, its funds can be
@@ -341,7 +424,7 @@ export function SwapPage({ swapRef }: { swapRef: string }) {
       ) : null}
 
       <section aria-label="Steps" className="grid gap-4">
-        <Steps steps={refunded ? steps.filter((x) => x.state === 'done') : steps} />
+        <Steps steps={!s && head ? [] : refunded ? steps.filter((x) => x.state === 'done') : steps} />
         {!buying && state === SWAP_STATE.ACTIVE && s ? t.decision?.do === 'offchain' && t.decision.action === 'show-address' ? <PayXmr t={t} now={now} /> : t.decision?.do === 'wait' && t.decision.warning === 'too-late-to-pay' ? (
           <Notice kind="warn" title="Too little time is left to pay safely">
             The address is not shown with less than three minutes before the notice deadline: a payment that arrives late can cost you your deposit. Do not send XMR. The maker will take its escrow back and your deposit is returned.

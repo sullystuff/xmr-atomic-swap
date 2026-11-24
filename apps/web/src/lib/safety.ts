@@ -24,7 +24,7 @@ export interface Safety {
   open: Tracked[];
 }
 
-const settled = (t: Tracked): boolean => t.view === null || (t.decision !== null && t.decision.do === 'done');
+const settled = (t: Tracked): boolean => (t.view === null && t.pending === null) || (t.view !== null && t.decision !== null && t.decision.do === 'done');
 
 export function safetyOf(engine: EngineState, backedUp: boolean): Safety {
   const open = engine.swaps.filter((t) => !settled(t));
@@ -41,7 +41,9 @@ export function safetyOf(engine: EngineState, backedUp: boolean): Safety {
     }
   }
   const chainsSeen = open.every((t) => engine.health[t.chain].ok);
-  const safeToClose = engine.ready && backedUp && open.length > 0 && atRisk.length === 0 && sellOpen.length === 0 && blind.length === 0 && chainsSeen;
+  // A state that is in a block but not final is not something to call safe: the tab has not acted on it yet.
+  const unfinal = open.some((t) => t.pending !== null);
+  const safeToClose = engine.ready && backedUp && !unfinal && open.length > 0 && atRisk.length === 0 && sellOpen.length === 0 && blind.length === 0 && chainsSeen;
   return { atRisk, deadline, safeToClose, comeBackBefore, sellOpen, blind, open };
 }
 

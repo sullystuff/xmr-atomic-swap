@@ -9,6 +9,9 @@ import { href, useApp, useChainNow, useEngine, useObs, useVault } from '../ui/ho
 import { Countdown, Empty, SkeletonRows } from '../ui/kit.js';
 
 function describe(t: Tracked): string {
+  if (t.pending) return `A newer state is in a block; waiting for it to be final on ${t.chain === 'ethereum' ? 'Ethereum' : 'Solana'}${t.pending.etaSecs ? ` (about ${Math.ceil(t.pending.etaSecs / 60)} min)` : ''}.`;
+  if (t.proof.phase === 'checking') return "Verifying the maker's key proof.";
+  if (t.proof.phase === 'retrying') return `Retrying the maker's proof download: ${t.proof.error}.`;
   if (!t.view) return t.leg === 'swept' ? 'Complete. The swap account is closed.' : 'Refunded in full. The swap account is closed.';
   if (t.keys === null) return 'Opened with another recovery file: this tab cannot act for it.';
   if (t.lost) return t.lost;

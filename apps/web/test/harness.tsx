@@ -38,7 +38,7 @@ export interface Rig {
   backup(): void;
 }
 
-export function makeRig(o: { rows?: OfferRow[]; chain?: ModelChain; kv?: MemoryKV; upgrade?: UpgradeStatus; settings?: Partial<Settings>; wakeLock?: boolean } = {}): Rig {
+export function makeRig(o: { rows?: OfferRow[]; chain?: ModelChain; kv?: MemoryKV; upgrade?: UpgradeStatus; settings?: Partial<Settings>; wakeLock?: boolean; makerProof?: NonNullable<ConstructorParameters<typeof App>[0]['makerProof']> } = {}): Rig {
   const chain = o.chain ?? new ModelChain();
   const monero = new FakeMonero();
   const env = fakeGuardEnv(o.wakeLock === false ? { wakeLock: false } : {});
@@ -50,7 +50,8 @@ export function makeRig(o: { rows?: OfferRow[]; chain?: ModelChain; kv?: MemoryK
     kv,
     guardEnv: env,
     deployment: { solanaRpc: 'http://127.0.0.1:9', moneroNodes: ['http://node-a.test', 'http://node-b.test'], pollMs: 3_600_000, mode: 'onchain', ...o.settings },
-    ports: () => ({ solana: chain }),
+    ports: () => ({ [chain.chain]: chain }),
+    ...(o.makerProof ? { makerProof: o.makerProof } : {}),
     monero,
     readRegistry: async () => ({ makers: rows.map((r) => r.maker), rows, discarded: [], now: { solana: chain.now_, ethereum: null } }),
     upgrade: async () => ({ solana: o.upgrade ?? { frozen: false, authority: 'UpgradeAuthority1111' }, ethereum: { frozen: null, authority: null } }),
@@ -88,6 +89,7 @@ export function makeRig(o: { rows?: OfferRow[]; chain?: ModelChain; kv?: MemoryK
     async connect() {
       await act(async () => {
         app.setWallet('solana', { address: TAKER, signTransaction: async (tx) => tx });
+        if (chain.chain === 'ethereum') app.setWallet('ethereum', { address: TAKER as `0x${string}`, sendTransaction: async () => '0x' });
       });
     },
     backup() {

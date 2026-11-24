@@ -11,6 +11,7 @@ import {
   type SignedSolApproval,
   type SolanaClient,
   type SwapView,
+  TransportUnavailable,
   blobRouteAvailable,
   directEndpoint,
   ethQuoteProblem,
@@ -159,21 +160,29 @@ export async function ethereumSessionBudget(client: EthereumClient): Promise<big
   return ethSessionBudget(base * 2n + 2_000_000_000n);
 }
 
-/** Ethereum direction B: the maker's proof for the share it funded with (SPEC 6.4). `undefined` = the endpoint cannot be reached right now. */
-export async function checkFundedShare(s: SwapView, http: MakerHttp | null): Promise<boolean | undefined> {
-  if (!http) return undefined;
+/** The outcome of one attempt to check the maker's proof: verified, proven wrong, or not obtainable right now (and why). */
+export type ProofResult = { ok: true } | { ok: false } | { retry: string };
+
+/**
+ * Ethereum direction B: the maker's proof for the share it funded with (SPEC 6.4). A proof that
+ * does not verify is final for that swap; everything else (no route, not served yet, the relay
+ * or the maker not answering) is a condition to show and retry.
+ */
+export async function checkFundedShare(s: SwapView, http: MakerHttp | null): Promise<ProofResult> {
+  if (!http) return { retry: 'There is no route to the maker\'s proof endpoint in the current connection mode (a relay or the maker\'s HTTPS endpoint is needed)' };
   let blob: Uint8Array | null;
   try {
     blob = await http.getDleq(Array.from(s.makerSpendPub, (b) => b.toString(16).padStart(2, '0')).join(''));
-  } catch {
-    return undefined;
+  } catch (e) {
+    if (e instanceof TransportUnavailable) return { retry: e.relayError ? `The relay refused the proof download (${e.relayError})` : 'The relay or the maker\'s endpoint did not answer' };
+    return { retry: e instanceof Error ? e.message : String(e) };
   }
-  if (!blob) return undefined;
+  if (!blob) return { retry: 'The maker\'s endpoint is not serving the proof for this share yet' };
   try {
     verifyFundedShare(blob, s);
-    return true;
+    return { ok: true };
   } catch {
-    return false;
+    return { ok: false };
   }
 }
 

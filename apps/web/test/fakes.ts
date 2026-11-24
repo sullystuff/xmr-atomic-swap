@@ -75,17 +75,40 @@ export class ModelChain implements ChainPort {
   private check(): void {
     if (this.down) throw new Error('fetch failed: connection refused');
   }
+  /**
+   * Finality that trails the head, as on Ethereum: while `lagging`, reads answer from the state
+   * as of the last `finalize()`, and only `peek` sees the newest block.
+   */
+  lagging = false;
+  private final = new Map<string, SwapView>();
+  private finalizedAt = T0;
+  /** The finalized tag catches up with the head. */
+  finalize(): void {
+    this.final = new Map([...this.swaps].map(([k, v]) => [k, { ...v }]));
+    this.finalizedAt = this.now_;
+  }
+  private read(): Map<string, SwapView> {
+    return this.lagging ? this.final : this.swaps;
+  }
+  peekCalls = 0;
+  peek = async (ref: string): Promise<SwapView | null> => {
+    this.check();
+    this.peekCalls++;
+    const s = this.swaps.get(ref);
+    return s ? { ...s } : null;
+  };
+  finality = async (): Promise<{ latestTime: bigint; finalizedTime: bigint }> => ({ latestTime: this.now_, finalizedTime: this.lagging ? this.finalizedAt : this.now_ });
   async now(): Promise<bigint> {
     this.check();
     return this.now_;
   }
   async listSwaps(taker: string): Promise<SwapView[]> {
     this.check();
-    return [...this.swaps.values()].filter((s) => s.taker === taker).map((s) => ({ ...s }));
+    return [...this.read().values()].filter((s) => s.taker === taker).map((s) => ({ ...s }));
   }
   async getSwap(ref: string): Promise<SwapView | null> {
     this.check();
-    const s = this.swaps.get(ref);
+    const s = this.read().get(ref);
     return s ? { ...s } : null;
   }
   advance(secs: number | bigint): void {
@@ -104,7 +127,7 @@ export class ModelChain implements ChainPort {
     const amount = direction === 0 ? (xmr * price + XMR - 1n) / XMR : (xmr * price) / XMR;
     const nonce = o.nonce ?? new Uint8Array(16).fill(++this.counter);
     const keys = takerSwapKeys(o.seed ?? TAKER_SEED, this.chain, nonce);
-    const args = { xmr, offerMode: o.mode ?? 0, approval: false, amount, wA: o.wA ?? 60, wN: 600, dC: o.dC ?? 3600, wC: 1800, wF: 604_800, depth: o.depth ?? 2, depBps: o.depBps ?? 100 };
+    const args = { xmr, offerMode: o.mode ?? 0, approval: false, amount, ...(this.chain === 'ethereum' ? { wA: o.wA ?? 120, wN: 1800, dC: o.dC ?? 10_800, wC: 5400 } : { wA: o.wA ?? 60, wN: 600, dC: o.dC ?? 3600, wC: 1800 }), wF: 604_800, depth: o.depth ?? 2, depBps: o.depBps ?? 100 };
     const fx = apply(this.chain, NO_SWAP, { name: direction === 0 ? 'lock' : 'take', args }, 'taker', this.now_);
     const swapRef = new Uint8Array(32).fill(200 + this.counter);
     const share = fx.swap.state === SWAP_STATE.ACTIVE ? this.newShare() : null;

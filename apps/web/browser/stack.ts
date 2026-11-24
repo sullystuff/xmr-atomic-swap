@@ -278,7 +278,19 @@ export async function serveUi(config: Record<string, unknown>): Promise<{ url: s
 export async function startStack(makers: MakerOpts[] = [{ price: (150n * SOL) / 100n }]): Promise<Stack> {
   await init();
   if (!existsSync(SO)) throw new Error(`${SO} is missing; build it with \`cd solana/program && cargo build-sbf\``);
-  const svm = await startSvmRpc({ programs: [{ programId: DEV_PROGRAM_ID, soPath: SO }], unixTimestamp: T0 });
+  // svm-rpc binds a free port chosen by the OS. Now and then that is one of the ports `fetch` and
+  // Chromium refuse to talk to ("bad port", e.g. 6000 or 6667): start again on another one.
+  let svm = await startSvmRpc({ programs: [{ programId: DEV_PROGRAM_ID, soPath: SO }], unixTimestamp: T0 });
+  for (let i = 0; i < 5; i++) {
+    try {
+      await svm.call('getHealth');
+      break;
+    } catch (e) {
+      if (i === 4 || !/bad port/i.test(String((e as { cause?: unknown }).cause ?? e))) throw e;
+      await svm.stop();
+      svm = await startSvmRpc({ programs: [{ programId: DEV_PROGRAM_ID, soPath: SO }], unixTimestamp: T0 });
+    }
+  }
   const transport = connectionTransport(new Connection(svm.url, 'confirmed'), { subscriptions: false });
   const admin = seedSigner(seed(1));
   const taker = seedSigner(seed(5));

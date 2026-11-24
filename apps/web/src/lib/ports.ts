@@ -62,6 +62,14 @@ export interface ChainPort {
    * opens a wallet prompt by itself; the user clicks first. Resolves once the call is confirmed.
    */
   exec(s: SwapView, d: CallDecision, keys: DerivedKeys, m: CallMaterial, opts?: { wallet?: boolean }): Promise<string>;
+  /**
+   * Chains whose state is acted on only once final (Ethereum): the same swap as the newest block
+   * shows it, for display only. The engine never decides from it; it lets the page say "the
+   * maker's deposit is in a block, waiting for it to be final" instead of looking idle.
+   */
+  peek?(ref: string): Promise<SwapView | null>;
+  /** How far finality trails the head right now, on the chain's clock: the time of the newest block and of the finalized one. */
+  finality?(): Promise<{ latestTime: bigint; finalizedTime: bigint }>;
 }
 
 /** The display reference of a swap: the swap PDA in base58 (Solana) or the 0x swap id (Ethereum). */
@@ -144,6 +152,14 @@ export class EthereumPort implements ChainPort {
   }
   getSwap(ref: string): Promise<SwapView | null> {
     return this.client.getSwap(unhex(ref.replace(/^0x/, '')), undefined, true);
+  }
+
+  peek(ref: string): Promise<SwapView | null> {
+    return this.client.getSwap(unhex(ref.replace(/^0x/, '')), 'latest');
+  }
+  async finality(): Promise<{ latestTime: bigint; finalizedTime: bigint }> {
+    const [latestTime, finalizedTime] = await Promise.all([this.client.chainTime('latest'), this.client.chainTime('finalized')]);
+    return { latestTime, finalizedTime };
   }
 
   async sendWithWallet(call: EthCall): Promise<Hex> {

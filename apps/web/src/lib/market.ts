@@ -263,7 +263,7 @@ export function routerOffer(r: OfferRow): RouterOffer {
 
 // ------------------------------------------------------------------ warnings before locking (SPEC 8.5 item 10)
 
-export type OfferWarningId = 'approval-window' | 'claim-delay' | 'deposit' | 'usdc-freeze' | 'upgradable' | 'upgrade-unknown' | 'depth' | 'sell-terms';
+export type OfferWarningId = 'eth-finality' | 'approval-window' | 'claim-delay' | 'deposit' | 'usdc-freeze' | 'upgradable' | 'upgrade-unknown' | 'depth' | 'sell-terms';
 export interface OfferWarning {
   id: OfferWarningId;
   title: string;
@@ -293,6 +293,20 @@ export function offerWarnings(i: WarningInput): OfferWarning[] {
   const asset = ASSET_LABEL[i.row.market];
   const amount = `${formatAsset(i.pricing.amount, i.row.market)} ${asset}`;
   const chain = i.row.chain === 'solana' ? 'Solana program' : 'Ethereum contract';
+  if (i.row.chain === 'ethereum')
+    out.push(
+      i.row.direction === 1
+        ? {
+            id: 'eth-finality',
+            title: 'On Ethereum you wait 13 to 19 minutes before you can pay',
+            text: `After the maker funds the swap, this page waits until that deposit is final on Ethereum before it shows you where to send your XMR: normally 13 to 19 minutes on mainnet, longer if finality stalls. The wait is required: XMR sent against a deposit that a chain reorganisation could still remove could be lost. The maker's notice window of ${formatDuration(i.row.noticeWindow)} runs meanwhile, and the address is not shown with under 10 minutes of it left; if that happens, do not pay, and your deposit can be withheld. Keep the tab open through the wait.`,
+          }
+        : {
+            id: 'eth-finality',
+            title: 'Ethereum swaps take longer: finality is 13 to 19 minutes',
+            text: 'The maker sends its XMR only once your lock and its own notice are final on Ethereum, normally 13 to 19 minutes each on mainnet, and this tab acts only on final state too. Your payment stays locked and at risk for that whole time: keep the tab open, or you can lose your funds.',
+          },
+    );
   if (i.row.direction === 0) {
     if (i.row.startsPending && i.row.approvalWindow > 60)
       out.push({
@@ -339,7 +353,10 @@ export function offerWarnings(i: WarningInput): OfferWarning[] {
 }
 
 /** The rough duration of a swap, for display: approval, then (depth + 1) blocks of two minutes, as the router estimates it. */
-export const expectedSecs = (row: Pick<OfferRow, 'startsPending' | 'approvalWindow'>, depth: number): number => (row.startsPending ? row.approvalWindow : 0) + (depth + 1) * 120;
+export const expectedSecs = (row: Pick<OfferRow, 'startsPending' | 'approvalWindow'> & Partial<Pick<OfferRow, 'chain'>>, depth: number): number =>
+  (row.startsPending ? row.approvalWindow : 0) + (depth + 1) * 120 + (row.chain === 'ethereum' ? 2 * ETHEREUM_FINALITY_SECS : 0);
+/** What one wait for Ethereum finality is allowed for (SPEC 3.1 `F`); mainnet measures 12.8 to 19.2 minutes. */
+export const ETHEREUM_FINALITY_SECS = 1200;
 
 /** The latest time the maker's claim-without-ready can open if everything takes as long as allowed: the "deadline time" of the confirmation screen. */
 export function worstCaseClaimOpen(row: Pick<OfferRow, 'startsPending' | 'approvalWindow' | 'noticeWindow' | 'claimDelay'>, now: bigint): bigint {

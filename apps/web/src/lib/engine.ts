@@ -89,6 +89,16 @@ export type SweepPhase =
   /** Nothing was spent; the attempt is repeated. The keys can be exported at any time. */
   | { phase: 'failed'; error: string; attempts: number };
 
+export type ProofStatus =
+  | { phase: 'idle' }
+  /** Downloading (about 57 kB) and verifying. */
+  | { phase: 'checking'; attempts: number }
+  | { phase: 'ok' }
+  /** The proof does not verify: the address is never shown. */
+  | { phase: 'invalid' }
+  /** The last attempt failed for a reason that may pass; the next one is scheduled. */
+  | { phase: 'retrying'; error: string; attempts: number; nextAtMs: number };
+
 export interface Tracked {
   ref: string;
   chain: ChainName;
@@ -116,6 +126,13 @@ export interface Tracked {
   needsWallet: boolean;
   /** Plain statement of a loss or a missed deadline, when there is one. */
   lost: string | null;
+  /**
+   * A newer state of this swap is in a block but not final yet (Ethereum). The tab acts on final
+   * state only; this is what it is waiting for, and roughly how long finality still needs.
+   */
+  pending: { view: SwapView; etaSecs: number | null } | null;
+  /** Ethereum direction B: the check of the maker's key proof for the share it funded with. */
+  proof: ProofStatus;
   /** Why a request to get out (refund, cancel, abort) would be refused right now; `null` = it would be carried out. */
   exitRefusal: Refusal | null;
   note: SwapNote;
@@ -148,7 +165,9 @@ export interface EngineDeps {
   takers: () => Partial<Record<ChainName, string[]>>;
   network: () => Network;
   /** Ethereum direction B: fetch and verify the maker's proof for the funded share. `undefined` = could not be checked yet. */
-  makerProof?: (s: SwapView) => Promise<boolean | undefined>;
+  makerProof?: (s: SwapView) => Promise<{ ok: true } | { ok: false } | { retry: string }>;
+  /** Longest one proof attempt may take before it counts as failed and is retried. */
+  proofTimeoutMs?: number;
   /** Override of the sweep fee cap (regtest). */
   sweepMaxFee?: () => bigint | null;
   nowMs?: () => number;
@@ -295,8 +314,25 @@ export class Engine {
           this.setHealth(chain, message(e));
         }
       }
+      // Where state is acted on only once final, see what the newest block already shows, for display.
+      let fin: { latestTime: bigint; finalizedTime: bigint } | null = null;
+      if (port.peek && port.finality) {
+        try {
+          fin = await port.finality();
+        } catch {
+          fin = null;
+        }
+      }
       for (const t of this.tracked.values()) {
         if (t.chain !== chain) continue;
+        if (port.peek && fin && !t.note.closed && (t.view === null || t.view.state !== SWAP_STATE.DONE)) {
+          try {
+            const head = await port.peek(t.ref);
+            t.pending = head && (t.view === null || head.state !== t.view.state) ? { view: head, etaSecs: finalityEta(head, fin) } : null;
+          } catch {
+            t.pending = null;
+          }
+        } else t.pending = null;
         try {
           await this.advance(t, port, now);
         } catch (e) {
@@ -314,7 +350,7 @@ export class Engine {
   private track(ref: string, chain: ChainName): Tracked {
     let t = this.tracked.get(ref);
     if (!t) {
-      t = { ref, chain, view: null, keys: null, decision: null, leg: 'planned', atRisk: false, refundDeadline: null, noticeOpens: undefined, joint: null, lockTxid: null, lock: null, lockError: null, sweep: { phase: 'idle' }, busy: null, error: null, needsWallet: false, lost: null, exitRefusal: null, note: loadNote(ref) };
+      t = { ref, chain, view: null, keys: null, decision: null, leg: 'planned', atRisk: false, refundDeadline: null, noticeOpens: undefined, joint: null, lockTxid: null, lock: null, lockError: null, sweep: { phase: 'idle' }, busy: null, error: null, needsWallet: false, lost: null, pending: null, proof: { phase: 'idle' }, exitRefusal: null, note: loadNote(ref) };
       this.tracked.set(ref, t);
     }
     return t;
@@ -440,8 +476,15 @@ export class Engine {
           continue;
         }
         if (d.fact === 'dleq-proof' && this.deps.makerProof) {
-          makerProofOk = await this.deps.makerProof(s);
-          if (makerProofOk !== undefined) continue;
+          // Verified once per funded share (it is a fact about commitments fixed on-chain), in the
+          // background: a slow or dead proof endpoint must never hold up this pass or another swap's refund.
+          const known = this.proofs.get(`${t.ref}:${hex(s.makerSpendPub)}`);
+          if (known !== undefined) {
+            makerProofOk = known;
+            t.proof = known ? { phase: 'ok' } : { phase: 'invalid' };
+            continue;
+          }
+          this.checkProof(t, s);
         }
         return;
       }
@@ -488,6 +531,34 @@ export class Engine {
       if (t.joint && t.lockTxid && !swept && (s.state === SWAP_STATE.READY || (s.state === SWAP_STATE.NOTICED && report === undefined))) await this.verify(t, s.depth);
       return;
     }
+  }
+
+  private readonly proofs = new Map<string, boolean>();
+  private readonly proofRuns = new Set<string>();
+
+  /** One attempt at the maker's proof, off the pass. Failures are shown and retried with a growing pause (2 s to 15 s). */
+  private checkProof(t: Tracked, s: SwapView): void {
+    const key = `${t.ref}:${hex(s.makerSpendPub)}`;
+    if (this.proofRuns.has(key)) return;
+    if (t.proof.phase === 'retrying' && this.nowMs() < t.proof.nextAtMs) return;
+    const attempts = (t.proof.phase === 'retrying' || t.proof.phase === 'checking' ? t.proof.attempts : 0) + 1;
+    t.proof = { phase: 'checking', attempts };
+    this.proofRuns.add(key);
+    const limit = this.deps.proofTimeoutMs ?? 20_000;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<{ retry: string }>((resolve) => {
+      timer = setTimeout(() => resolve({ retry: `The proof download did not finish within ${Math.round(limit / 1000)} s` }), limit);
+    });
+    void Promise.race([this.deps.makerProof!(s).catch((e: unknown) => ({ retry: message(e) })), timeout]).then((r) => {
+      if (timer) clearTimeout(timer);
+      this.proofRuns.delete(key);
+      if ('ok' in r) {
+        this.proofs.set(key, r.ok);
+        t.proof = r.ok ? { phase: 'ok' } : { phase: 'invalid' };
+      } else t.proof = { phase: 'retrying', error: r.retry, attempts, nextAtMs: this.nowMs() + Math.min(15_000, 2000 * 2 ** (attempts - 1)) };
+      this.emit();
+      void this.poll();
+    });
   }
 
   /** Direction B: scan for the taker's own payment to the joint address. True once found. */
@@ -624,13 +695,27 @@ export class Engine {
   private describe(t: Tracked, now: bigint): void {
     const s = t.view;
     const swept = !!(t.note.sweepConfirmed || t.note.exported);
-    t.leg = s ? legState(s, swept) : swept || t.note.ended === 'claim' ? 'swept' : 'refunded';
+    // A swap whose own opening is in a block but not final yet is shown as what the head says, not as closed.
+    t.leg = s ? legState(s, swept) : t.pending ? legState(t.pending.view, false) : swept || t.note.ended === 'claim' ? 'swept' : 'refunded';
     t.atRisk = isAtRisk(t);
     t.refundDeadline = s && t.atRisk ? (s.state === SWAP_STATE.ACTIVE ? deadlinesOf(s.chain, s).tNote : takerRefundDeadline(s)) : null;
     t.lost = lossOf(t, now);
     // What the flow would answer to "get me out" now, so the page never offers an action that will be refused.
     t.exitRefusal = s && t.keys ? (takerStep({ swap: s, now, cancel: true, noticeOpens: t.noticeOpens ?? true, lock: t.lock ? lockReport(t.lock) : { state: 'not-found', ok: false, confirmations: 0 }, ...(t.note.paidTxid ? { paid: true } : {}), ...(swept ? { swept: true } : {}) }).refused ?? null) : null;
   }
+}
+
+/**
+ * Seconds until the state the newest block shows is final: how far finality trails the head, less
+ * how long ago the change happened (that is, how far the finalized tag still has to travel on the
+ * chain's clock). While finality is stalled the figure does not shrink, which is the truth.
+ */
+export function finalityEta(head: SwapView, fin: { latestTime: bigint; finalizedTime: bigint }): number | null {
+  const at = [head.tReady, head.tNotice, head.tActive, head.tLock].find((x) => x > 0n);
+  if (at === undefined) return null;
+  const lag = fin.latestTime - fin.finalizedTime;
+  const left = lag - (fin.latestTime - at);
+  return Number(left > 0n ? left : 0n);
 }
 
 const BUSY_TEXT: Partial<Record<string, string>> = {
