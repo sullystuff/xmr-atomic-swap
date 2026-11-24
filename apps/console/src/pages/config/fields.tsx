@@ -12,6 +12,8 @@ export interface FormState {
   set(path: string, value: unknown): void;
   errors: readonly ConfigIssue[];
   warnings: readonly ConfigIssue[];
+  /** Keys of the file this console has no control for. Kept untouched; the daemon judges them. */
+  unknown: readonly string[];
 }
 const FormContext = createContext<FormState | null>(null);
 export const FormProvider = FormContext.Provider;

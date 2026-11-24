@@ -26,8 +26,9 @@ import {
   levelSection,
   venueSection,
 } from '../../lib/config/schema.js';
-import { ConfigSyntaxError, diffConfig, getPath, isTable, parseToml, setPath, stringifyToml, type Toml } from '../../lib/config/toml.js';
-import { resolveOffers, validateConfig } from '../../lib/config/validate.js';
+import { editToml } from '../../lib/config/edit.js';
+import { ConfigSyntaxError, diffConfig, getPath, isTable, parseToml, renderValue, setPath, stringifyToml, type Toml } from '../../lib/config/toml.js';
+import { issuesAboutKey, resolveOffers, unknownKeys, validateConfig } from '../../lib/config/validate.js';
 import { costBasis, estimateCost } from '../../lib/cost.js';
 import type { FeesX, OffersX } from '../../api/extensions.js';
 import { MARKET_LABEL, fmtTime } from '../../lib/format.js';
@@ -44,6 +45,7 @@ const SECTIONS: { id: string; label: string }[] = [
   { id: 'cfg-guardrails', label: 'Guardrails' },
   { id: 'cfg-rebalance', label: 'Rebalancing' },
   { id: 'cfg-daemon', label: 'Daemon and connections' },
+  { id: 'cfg-other', label: 'Not editable here' },
   { id: 'cfg-file', label: 'Import and export' },
   { id: 'cfg-log', label: 'Change log' },
 ];
@@ -136,7 +138,8 @@ function Editor({
   );
   const changes = useMemo(() => diffConfig(saved, draft), [saved, draft]);
   const dirty = changes.length > 0;
-  const toml = useMemo(() => stringifyToml(draft), [draft]);
+  // Only the edited lines change: comments, layout and keys this console does not know are kept as they are.
+  const { toml, kept } = useMemo(() => editToml(base.toml, draft), [base.toml, draft]);
 
   // The daemon checks the draft too, a moment after the last keystroke.
   useEffect(() => {
@@ -164,8 +167,17 @@ function Editor({
   }, [client, toml, dirty]);
 
   const remoteNow = remote && remote.toml === toml ? remote.validation : dirty ? undefined : base.validation;
-  const errors = useMemo(() => merge(local.errors, remoteNow?.errors), [local.errors, remoteNow]);
-  const warnings = useMemo(() => merge(local.warnings, remoteNow?.warnings), [local.warnings, remoteNow]);
+  // The daemon is the judge. Until it has answered for this exact draft, the console's own checks
+  // stand in; once it has, an error is an error only if the daemon reports one there, and a local
+  // finding the daemon does not share is shown as a warning, never as a reason not to save.
+  const { errors, warnings } = useMemo(() => {
+    if (!remoteNow) return { errors: local.errors, warnings: local.warnings };
+    const related = (a: string, b: string): boolean => a === b || b === '' || a.startsWith(`${b}.`) || b.startsWith(`${a}.`);
+    const confirmed = local.errors.filter((l) => remoteNow.errors.some((r) => related(l.path, r.path)));
+    const unshared = local.errors.filter((l) => !confirmed.includes(l)).map((l) => ({ path: l.path, message: `${l.message} (This console’s own check; the daemon accepts the value.)` }));
+    return { errors: merge(confirmed, remoteNow.errors), warnings: [...merge(local.warnings, remoteNow.warnings), ...unshared] };
+  }, [local.errors, local.warnings, remoteNow]);
+  const unknown = useMemo(() => unknownKeys(draft), [draft]);
 
   const form: FormState = useMemo(
     () => ({
@@ -176,8 +188,9 @@ function Editor({
       },
       errors,
       warnings,
+      unknown,
     }),
-    [draft, errors, warnings],
+    [draft, errors, warnings, unknown],
   );
 
   const save = async (): Promise<void> => {
@@ -187,7 +200,8 @@ function Editor({
       // Validate first, with the daemon: nothing is saved while it reports an error.
       const validation = await client.call('configValidate', { body: { toml } });
       setRemote({ toml, validation });
-      if (!validation.ok || !local.ok) {
+      // Its verdict alone decides: a key or value this console has doubts about is saved if the daemon accepts it.
+      if (!validation.ok) {
         setBlocked(true);
         queueMicrotask(() => summaryRef.current?.focus());
         return;
@@ -234,6 +248,7 @@ function Editor({
         <GuardrailsSection />
         <RebalanceSection />
         <OperationSection />
+        <UnknownSection />
         <FileSection
           savedToml={base.toml}
           dirty={dirty}
@@ -256,6 +271,7 @@ function Editor({
             {dirty && !remoteNow && !remoteError ? ' · checking with the daemon…' : ''}
           </span>
           {remoteError ? <div className="msg warning">The daemon could not check this draft: {describeError(remoteError)}</div> : null}
+          {dirty && !kept ? <div className="msg warning">This file is laid out in a way the console cannot edit line by line, so saving rewrites it whole: values are kept, comments are not.</div> : null}
         </div>
         <Button small aria-expanded={review} disabled={!dirty && errors.length === 0 && warnings.length === 0} onClick={() => setReview((r) => !r)}>
           {review ? 'Hide review' : 'Review'}
@@ -593,6 +609,72 @@ function OperationSection() {
   );
 }
 
+/**
+ * Keys in the file that this console has no control for (the daemon's schema is ahead of the
+ * console's copy, or the key is a mistake). They are never dropped or rewritten by a save, and
+ * never block one: the daemon's validation says whether each is acceptable.
+ */
+function UnknownSection() {
+  const { draft, set, unknown, errors } = useForm();
+  return (
+    <Card id="cfg-other" title="Settings not editable here" note="Keys in your file that this console has no control for. They are kept exactly as they are when you save; the daemon decides whether each is valid." flush>
+      {unknown.length === 0 ? (
+        <Empty title="None">Every key in the file has a control on this page.</Empty>
+      ) : (
+        <div className="table-wrap">
+          <table className="tbl" aria-label="Settings not editable here">
+            <thead>
+              <tr>
+                <th scope="col">Key</th>
+                <th scope="col">Value</th>
+                <th scope="col">The daemon says</th>
+                <th scope="col">
+                  <span className="sr-only">Remove</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {unknown.map((key) => {
+                const about = issuesAboutKey(errors, key);
+                return (
+                  <tr key={key} className={about.length > 0 ? 'attention' : undefined}>
+                    <th scope="row" className="mono">
+                      {key}
+                    </th>
+                    <td className="mono" style={{ overflowWrap: 'anywhere' }}>
+                      {renderValue(getPath(draft, key))}
+                    </td>
+                    <td>
+                      {about.length === 0 ? (
+                        <span className="muted">accepted, or not checked yet</span>
+                      ) : (
+                        about.map((i, n) => (
+                          <p key={n} className="msg error">
+                            <b>Error:</b> {i.message}
+                          </p>
+                        ))
+                      )}
+                    </td>
+                    <td className="actions">
+                      {/\.\d+(\.|$)/.test(key) ? (
+                        <span className="muted">inside a list: edit the file to remove it</span>
+                      ) : (
+                        <ConfirmButton label="Remove" small variant="danger" onConfirm={() => set(key, undefined)}>
+                          Remove {key} from the file. Nothing is saved until you validate and save.
+                        </ConfirmButton>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 // ------------------------------------------------------------------ import and export
 
 function FileSection({ savedToml, dirty, blobEndpoint, onLoad, onImported }: { savedToml: string; dirty: boolean; blobEndpoint: boolean | null; onLoad: (cfg: Toml) => void; onImported: (res: ConfigResponse) => void }) {
@@ -678,7 +760,7 @@ function FileSection({ savedToml, dirty, blobEndpoint, onLoad, onImported }: { s
             <summary>Show the saved file</summary>
             <textarea aria-label="Saved configuration file" rows={14} readOnly value={savedToml} style={{ marginTop: 6 }} />
           </details>
-          <p className="muted">Saving from the form above rewrites the file, so comments in a hand-edited file are not kept. An import keeps the file exactly as given.</p>
+          <p className="muted">Saving from the form above changes only the lines you edited; comments, layout and keys this console does not know stay as they are. An import keeps the file exactly as given.</p>
         </div>
         <div className="stack">
           <h3 className="subhead">Import</h3>
@@ -713,6 +795,7 @@ function FileSection({ savedToml, dirty, blobEndpoint, onLoad, onImported }: { s
           {v ? (
             <div data-testid="import-check">
               <Notice tone={v.ok ? (v.warnings.length > 0 ? 'warn' : 'ok') : 'bad'} title={v.ok ? 'This file passes the check.' : `This file has ${v.errors.length === 1 ? '1 error' : `${v.errors.length} errors`} and cannot be imported.`}>
+                {checked?.cfg && unknownKeys(checked.cfg).length > 0 ? `This console does not know ${unknownKeys(checked.cfg).length === 1 ? 'one key' : `${unknownKeys(checked.cfg).length} keys`} in it (${unknownKeys(checked.cfg).join(', ')}); the daemon decides on import whether they are valid. ` : null}
                 {v.ok ? `${v.effective.length === 1 ? '1 offer' : `${v.effective.length} offers`} would run. ${v.warnings.length === 0 ? 'No warnings.' : `${v.warnings.length === 1 ? '1 warning' : `${v.warnings.length} warnings`}:`}` : null}
                 <IssueList issues={v.ok ? v.warnings : v.errors} />
               </Notice>

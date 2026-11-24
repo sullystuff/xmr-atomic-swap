@@ -51,7 +51,7 @@ import {
 } from '@xmrswap/protocol/daemon-api';
 import { VENUES } from '../lib/config/schema.js';
 import { ConfigSyntaxError, diffConfig, getPath, isTable, parseToml, revisionOf, type Toml } from '../lib/config/toml.js';
-import { resolveOffers, validateConfig, withDefaults, type ResolvedOffer } from '../lib/config/validate.js';
+import { resolveOffers, unknownKeys, validateConfig, withDefaults, type ResolvedOffer } from '../lib/config/validate.js';
 import { runwayDays } from '../lib/cost.js';
 import {
   ADDR,
@@ -81,6 +81,11 @@ export interface MockOptions {
   toml?: string;
   /** Start with no swaps, messages, refills or alerts (an unused daemon). */
   empty?: boolean;
+  /**
+   * Keys the daemon's schema defines that this console's copy of the schema does not (dotted paths).
+   * The two copies drift; tests use this to stand for a daemon that is ahead of the console.
+   */
+  daemonKnows?: readonly string[];
   /** Whether the registry lists a blob endpoint. */
   blobEndpoint?: boolean;
   /** `true`, `false` or `null` per chain: can the program or contract still be upgraded. */
@@ -168,6 +173,7 @@ export class MockDaemon {
   constructor(opts: MockOptions = {}) {
     this.clock = opts.now ?? (() => Math.floor(Date.now() / 1000));
     this.token = opts.token ?? MOCK_TOKEN;
+    this.daemonKnows = opts.daemonKnows ?? [];
     const now = this.now();
     this.startedAt = now - 6 * 86_400 - 4_000;
     this.toml = opts.toml ?? DEFAULT_TOML;
@@ -330,8 +336,21 @@ export class MockDaemon {
     return { chain, id, status: 'confirmed' };
   }
 
+  private readonly daemonKnows: readonly string[];
+  /**
+   * The daemon's verdict. Its schema is strict: a key it does not define is an error, reported
+   * as zod does, on the parent table ("Unrecognized key"). The daemon, not the console, knows
+   * which keys those are.
+   */
   private validation(toml: Toml = this.parsed): ConfigValidation {
-    return validateConfig(toml, { blobEndpoint: this.registration.blob_endpoint, solUsd: this.solUsd, expectedTriggeredPerDay: 310 });
+    const v = validateConfig(toml, { blobEndpoint: this.registration.blob_endpoint, solUsd: this.solUsd, expectedTriggeredPerDay: 310 });
+    const strange = unknownKeys(toml).filter((k) => !this.daemonKnows.some((p) => k === p || k.startsWith(`${p}.`)));
+    if (strange.length === 0) return v;
+    const errors = strange.map((k) => {
+      const dot = k.lastIndexOf('.');
+      return { path: dot < 0 ? '' : k.slice(0, dot), message: `Unrecognized key: "${k.slice(dot + 1)}"` };
+    });
+    return { ...v, ok: false, errors: [...errors, ...v.errors], effective: [], update_cost: null };
   }
   private configResponse(): ConfigResponse {
     return { toml: this.toml, parsed: withDefaults(this.parsed), validation: this.validation(), revision: revisionOf(this.toml) };

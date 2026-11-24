@@ -11,9 +11,9 @@ daemon (`src/mock/`, `server/`) standing in for WP8. Nothing outside `apps/conso
    component classes in `src/styles.css` carry the design; few utilities are used.
 3. **Light theme.** SPEC 8 names orange on near-black; the work order also asks for light. Dark is
    the default design, light follows the system setting or the top-bar choice.
-4. **Saving from the form rewrites the file.** The form serialises the parsed configuration, so
-   comments of a hand-edited file are lost on a form save. Import and export keep the file byte
-   for byte. The UI says so.
+4. **Saving changes only the edited lines** (`src/lib/config/edit.ts`): comments, layout and keys
+   the console does not know stay byte for byte. A file with multi-line values or arrays of
+   tables is written afresh instead (values kept, comments lost), and the save bar says so.
 5. **No Playwright test.** SPEC 9.1 lists Playwright "for the warning gates", which are taker-UI
    gates; the WP9 acceptance command is vitest plus build, and all console tests are vitest with
    Testing Library (jsdom), plus one loopback HTTP/WebSocket test of the mock server.
@@ -40,9 +40,14 @@ daemon (`src/mock/`, `server/`) standing in for WP8. Nothing outside `apps/conso
   `rebalance.routing.schedule` as free text, `liquidity.targets` as a table per asset.
 - **Dry run** exists twice in 7.2 (`[daemon].mode` and `[guardrails].dry_run`); the console shows
   both and treats either as dry run.
-- **Unknown keys are errors**, as in the daemon's strict schema; the keys it added
-  (`console_dir`, `cors_origins`, `maker_owner`, `subscriptions`, `from_block`, `sweep_max_fee`,
-  `eth_pool_size`, `ladder_headroom_pct`, `[registration].contacts`) are in the form.
+- **The daemon is the judge of the file** (fix for e2e BUG-2). The console's schema is a second
+  copy and will lag: a key it does not know is never an error locally. It is kept untouched,
+  listed under "Settings not editable here" with the daemon's verdict, and removable there. A
+  save is blocked only by the daemon's own validation; a local finding the daemon does not share
+  is shown as a warning. A test reads the daemon's and the rebalancer's schema sources and fails
+  when they define a key the console has no control for.
+- `[rebalance.venues.exchange.withdraw_keys]` (SPEC 7.2) is not in the rebalancer's schema, so the
+  form no longer offers it; a file that has it is refused by the daemon, not by the console.
 
 ## Brought in line with the real daemon (packages/daemon/DEVIATIONS.md, A1 to A10)
 

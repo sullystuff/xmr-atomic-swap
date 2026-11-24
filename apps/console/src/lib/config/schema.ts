@@ -251,6 +251,13 @@ export function offerFields(market: Market): FieldDef[] {
       defText: 'off',
       help: 'Extra deviation as the reference price moves. Off unless set.',
     },
+    {
+      key: 'without_ready',
+      label: 'When the taker never sets ready',
+      type: { t: 'select', options: [{ value: '', label: 'Default: claim' }, { value: 'claim', label: 'Claim once my own lock is confirmed' }, { value: 'abort', label: 'Always abort' }] },
+      defText: 'claim',
+      help: 'Selling XMR only. Claiming publishes your key half and takes the funds; aborting returns them when the taker collects.',
+    },
   ];
 }
 
@@ -285,7 +292,8 @@ const keyedSource = (name: 'coingecko' | 'coinmarketcap'): SectionDef => ({
   title: SOURCE_LABEL[name],
   fields: [
     { key: 'api_key_env', label: 'API key variable', type: { t: 'env' }, help: 'Name of the environment variable that holds the key. The key itself never goes in the file.' },
-    { key: 'min_interval_seconds', label: 'Minimum request interval', type: num({ min: 0 }), unit: 's', defText: 'the plan’s rate limit' },
+    { key: 'min_interval_seconds', label: 'Minimum request interval', type: num({ min: 0, exclusiveMin: true }), unit: 's', defText: 'the plan’s rate limit' },
+    { key: 'base_url', label: 'API base URL', type: { t: 'text' }, defText: 'the service’s public API', help: 'Only for a self-hosted mirror or a test endpoint.' },
   ],
 });
 export const SOURCE_SECTIONS: readonly SectionDef[] = [
@@ -297,8 +305,11 @@ export const SOURCE_SECTIONS: readonly SectionDef[] = [
     fields: [
       { key: 'token', label: 'Token address', type: { t: 'text' }, help: 'Pinned.' },
       { key: 'pool', label: 'Pool address', type: { t: 'text' }, help: 'Pinned.' },
-      { key: 'min_liquidity_usd', label: 'Minimum pool liquidity', type: num({ min: 0 }), unit: 'USD' },
-      { key: 'average_seconds', label: 'Averaging window', type: int({ min: 0 }), unit: 's' },
+      { key: 'base_vault', label: 'wXMR reserve account', type: { t: 'text' }, help: 'The pool’s token account on the wXMR side.' },
+      { key: 'quote_vault', label: 'Quote reserve account', type: { t: 'text' }, help: 'The pool’s token account on the quote side.' },
+      { key: 'quote', label: 'Quote asset', type: sel({ value: 'usdc', label: 'USDC' }, { value: 'sol', label: 'SOL' }), def: 'usdc' },
+      { key: 'min_liquidity_usd', label: 'Minimum pool liquidity', type: num({ min: 0 }), def: 0, unit: 'USD' },
+      { key: 'average_seconds', label: 'Averaging window', type: num({ min: 0 }), def: 300, unit: 's' },
     ],
   },
 ];
@@ -389,7 +400,7 @@ export const REBALANCE: SectionDef = {
     { key: 'mode', label: 'Mode', type: { t: 'select', options: MODE_OPTIONS }, def: 'alert' },
     { key: 'max_cost_pct', label: 'Largest total cost', type: num({ min: 0 }), unit: '%', defText: 'none', help: 'Against the reference price. A refill is skipped if every venue exceeds it.' },
     { key: 'max_in_transit_usd', label: 'In-transit cap', type: num({ min: 0 }), unit: 'USD', defText: 'none', help: 'Limit on the total value sitting with third parties at once.' },
-    { key: 'test_transfer_usd', label: 'Test transfer', type: num({ min: 0 }), unit: 'USD', defText: 'none', help: 'A small first transfer for any new venue or address.' },
+    { key: 'test_transfer_usd', label: 'Test transfer', type: num({ min: 0 }), def: 0, unit: 'USD', help: 'A small first transfer for any new venue or address.' },
   ],
 };
 export const levelSection = (asset: AssetId): SectionDef => ({
@@ -451,12 +462,12 @@ export function venueSection(venue: VenueId): SectionDef {
       title,
           fields: [
         ...VENUE_COMMON,
-        { key: 'max_piece_pct_of_pool', label: 'Piece size', type: num({ min: 0, max: 100 }), unit: '% of pool depth' },
+        { key: 'max_piece_pct_of_pool', label: 'Piece size', type: num({ min: 0, max: 100 }), def: 2.0, unit: '% of pool depth' },
         { key: 'max_wxmr_held', label: 'Most wXMR held at once', type: num({ min: 0 }), unit: 'wXMR' },
         { key: 'redeem_immediately', label: 'Redeem at once', type: { t: 'bool' }, def: true },
         { key: 'require_heartbeat', label: 'Check the heartbeat before each refill', type: { t: 'bool' }, def: true },
         { key: 'reserve_proof_check_above_xmr', label: 'Check the reserve proof above', type: num({ min: 0 }), unit: 'XMR', defText: 'never' },
-        { key: 'stalled_redeem_minutes', label: 'Cancel a stalled redemption after', type: num({ min: 5 }), unit: 'min' },
+        { key: 'stalled_redeem_minutes', label: 'Cancel a stalled redemption after', type: num({ min: 0, exclusiveMin: true }), def: 60, unit: 'min' },
       ],
     };
   }
@@ -464,14 +475,12 @@ export function venueSection(venue: VenueId): SectionDef {
     return {
       path,
       title,
-          children: ['withdraw_keys'],
       fields: [
         ...VENUE_COMMON,
         { key: 'name', label: 'Exchange', type: { t: 'text' }, help: 'The only driver in this version is "kraken".' },
         apiKey,
         apiSecret,
-        { key: 'withdraw_address_allowlist', label: 'Keys restricted to allow-listed withdrawal addresses', type: { t: 'bool' }, def: false },
-        { key: 'withdraw_keys', label: 'Withdrawal key names', type: { t: 'map' }, help: 'Payout address = the key name registered at the exchange. The driver refuses any other address.' },
+        { key: 'withdraw_address_allowlist', label: 'Keys restricted to allow-listed withdrawal addresses', type: { t: 'bool' }, def: true },
       ],
     };
   }

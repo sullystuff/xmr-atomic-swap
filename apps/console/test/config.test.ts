@@ -3,11 +3,18 @@ import type { ConfigValidation } from '@xmrswap/protocol/daemon-api';
 import { APPROVAL_WINDOW_REASON } from '../src/lib/config/schema.js';
 import { ConfigSyntaxError, diffConfig, getPath, parseToml, revisionOf, setPath, stringifyToml, type Toml } from '../src/lib/config/toml.js';
 import type { ValidateContext } from '../src/lib/config/validate.js';
+import { issuesAboutKey, unknownKeys } from '../src/lib/config/validate.js';
+import { MOCK_TOKEN, MockDaemon } from '../src/mock/daemon.js';
 import { autoClaimDelayMinutes, issuesAt, minClaimDelayMinutes, minClaimDelaySecs, resolveOffer, validateConfig, withDefaults } from '../src/lib/config/validate.js';
 import { DESIGN_BOTH_TOML, DESIGN_CONFIG_TOML, DESIGN_REBALANCE_TOML } from './design.js';
 
 const ctx = { blobEndpoint: true, solUsd: 187.42 };
 const check = (toml: string, c: ValidateContext = ctx): ConfigValidation => validateConfig(parseToml(toml), c);
+/** The (mock) daemon's verdict on a file: its errors. */
+const daemonSays = (toml: string): { path: string; message: string }[] => {
+  const res = new MockDaemon().handle({ method: 'POST', path: '/api/config/validate', body: { toml }, authorization: `Bearer ${MOCK_TOKEN}` });
+  return (res.body as ConfigValidation).errors;
+};
 const offer = (body: string, market = 'usdc_sol', dir = 'sell_xmr'): string => `[liquidity]\noutput_ladder = [{ size_xmr = 5, count = 4 }]\n[markets.${market}.${dir}]\nenabled = true\n${body}\n`;
 const messages = (list: { path: string; message: string }[], path: string): string => issuesAt(list, path).map((i) => i.message).join(' | ');
 
@@ -184,9 +191,13 @@ describe('offer settings', () => {
     const v = check(`${offer('')}\n[liquidity]\nmax_per_taker_xmr = 20\noutput_ladder = [{ size_xmr = 5, count = 4 }]`.replace('[liquidity]\noutput_ladder = [{ size_xmr = 5, count = 4 }]\n', ''));
     expect(messages(v.warnings, 'markets.usdc_sol.sell_xmr.approval_mode')).toMatch(/per-taker limit cannot be enforced before the fact/);
   });
-  it('rejects unknown markets and directions', () => {
-    expect(check('[markets.btc.sell_xmr]\nenabled = true').ok).toBe(false);
-    expect(check('[markets.sol.swap_xmr]\nenabled = true').ok).toBe(false);
+  it('leaves markets and directions it does not know to the daemon', () => {
+    // Not judged locally (the console's copy of the schema can lag the daemon's): listed, and the daemon refuses them.
+    expect(check('[markets.btc.sell_xmr]\nenabled = true').ok).toBe(true);
+    expect(unknownKeys(parseToml('[markets.btc.sell_xmr]\nenabled = true'))).toEqual(['markets.btc']);
+    expect(unknownKeys(parseToml('[markets.sol.swap_xmr]\nenabled = true'))).toEqual(['markets.sol.swap_xmr']);
+    expect(daemonSays('[markets.btc.sell_xmr]\nenabled = true')).toEqual([{ path: 'markets', message: 'Unrecognized key: "btc"' }]);
+    expect(daemonSays('[markets.sol.swap_xmr]\nenabled = true')).toEqual([{ path: 'markets.sol', message: 'Unrecognized key: "swap_xmr"' }]);
   });
 });
 
@@ -210,11 +221,11 @@ describe('the rest of the file', () => {
     expect(messages(v.errors, 'pricing.sources.coingecko.api_key_env')).toMatch(/name of an environment variable, not the value itself/);
   });
   it('rebalancing', () => {
-    expect(messages(check('[rebalance]\nmode = "approve"\nturbo = true').errors, 'rebalance.turbo')).toMatch(/Unknown key/);
+    expect(daemonSays('[rebalance]\nmode = "approve"\nturbo = true')).toEqual([{ path: 'rebalance', message: 'Unrecognized key: "turbo"' }]);
     expect(check('[rebalance]\nmode = "manual"').ok).toBe(false);
     expect(check('[rebalance.levels.xmr]\nlow = 500\ntarget = 400').ok).toBe(false);
-    expect(check('[rebalance.levels.btc]\nlow = 1').ok).toBe(false);
-    expect(check('[rebalance.venues.binance]\nenabled = true').ok).toBe(false);
+    expect(daemonSays('[rebalance.levels.btc]\nlow = 1')).toEqual([{ path: 'rebalance.levels', message: 'Unrecognized key: "btc"' }]);
+    expect(daemonSays('[rebalance.venues.binance]\nenabled = true')).toEqual([{ path: 'rebalance.venues', message: 'Unrecognized key: "binance"' }]);
     expect(check('[rebalance.routing]\npriority = ["wxmr_bridge", "binance"]').ok).toBe(false);
     expect(check('[rebalance.venues.exchange]\nenabled = true\nname = "binance"\napi_key_env = "K"').ok).toBe(false);
     expect(check('[rebalance.venues.exchange]\nenabled = true\nname = "kraken"\napi_key_env = "K"').ok).toBe(true);
@@ -234,9 +245,13 @@ describe('the rest of the file', () => {
     expect(check('[approvals]\nallow = ["A"]\ndeny = ["A"]').ok).toBe(false);
     expect(check('[rotation]\ninterval_hours = -1').ok).toBe(false);
     expect(check('[inbox]\npolicy = "swap_only"').ok).toBe(true);
-    // The daemon's schema is strict: a key or section it does not know is an error.
-    expect(messages(check('[mystery]\nx = 1').errors, 'mystery')).toMatch(/Unknown section/);
-    expect(messages(check('[offers]\nturbo = true').errors, 'offers.turbo')).toMatch(/Unknown key/);
+    // The daemon's schema is strict: a key or section it does not know is an error there.
+    expect(daemonSays('[mystery]\nx = 1')).toEqual([{ path: '', message: 'Unrecognized key: "mystery"' }]);
+    expect(daemonSays('[offers]\nturbo = true')).toEqual([{ path: 'offers', message: 'Unrecognized key: "turbo"' }]);
+    // The console itself does not call them errors; it lists them for the daemon to judge.
+    expect(check('[mystery]\nx = 1\n[offers]\nturbo = true').ok).toBe(true);
+    expect(unknownKeys(parseToml('[mystery]\nx = 1\n[offers]\nturbo = true\n[liquidity]\noutput_ladder = [{ size_xmr = 5, count = 1, colour = "red" }]'))).toEqual(['liquidity.output_ladder.0.colour', 'mystery', 'offers.turbo']);
+    expect(issuesAboutKey([{ path: 'offers', message: 'Unrecognized key: "turbo"' }, { path: 'offers', message: 'Unrecognized key: "other"' }], 'offers.turbo')).toHaveLength(1);
     expect(check('[daemon]\nconsole_dir = "./console"\ncors_origins = ["http://127.0.0.1:5183"]\n[ethereum]\nfrom_block = 100\n[registration]\ncontacts = [{ kind = 5, value = "https://blobs.example.org" }]').ok).toBe(true);
     expect(check('[guardrails]\nvolatility_pause = false\nprice_band_usd = false').ok).toBe(true);
   });

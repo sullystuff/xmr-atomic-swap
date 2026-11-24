@@ -254,7 +254,6 @@ function checkField(issues: Issues, path: string, f: FieldDef, v: unknown): void
             if (typeof cell !== 'string' || cell === '') issues.error(p, `${col.label} must be text.`);
           } else checkNumber(issues, p, cell, { int: col.type === 'int', ...(col.min !== undefined ? { min: col.min } : {}), ...(col.max !== undefined ? { max: col.max } : {}) }, col.label);
         }
-        for (const k of Object.keys(row)) if (!t.columns.some((c) => c.key === k)) issues.error(`${path}.${i}.${k}`, `Unknown key "${k}".`);
       });
       return;
     }
@@ -272,7 +271,6 @@ function checkField(issues: Issues, path: string, f: FieldDef, v: unknown): void
         }
         checkNumber(issues, `${path}.${col.key}`, cell, { int: col.type === 'int', ...(col.min !== undefined ? { min: col.min } : {}), ...(col.max !== undefined ? { max: col.max } : {}) }, `${f.label}: ${col.label.toLowerCase()}`);
       }
-      for (const k of Object.keys(v)) if (!t.keys.some((c) => c.key === k)) issues.error(`${path}.${k}`, `Unknown key "${k}".`);
       return;
     }
     case 'auto-number':
@@ -309,8 +307,8 @@ function checkSection(issues: Issues, cfg: Toml, section: SectionDef): void {
   for (const [key, value] of Object.entries(table)) {
     const f = section.fields.find((x) => x.key === key);
     const path = `${section.path}.${key}`;
+    // A key this console does not know is not judged here: the daemon decides (see `unknownKeys`).
     if (f) checkField(issues, path, f, value);
-    else if (!section.children?.includes(key)) issues.error(path, `Unknown key "${key}" in [${section.path}]. The daemon refuses keys it does not know.`);
   }
 }
 
@@ -320,8 +318,7 @@ export function validateConfig(cfg: Toml, ctx: ValidateContext): ConfigValidatio
   const issues = new Issues();
 
   for (const key of Object.keys(cfg)) {
-    if (!(TOP_LEVEL_TABLES as readonly string[]).includes(key)) issues.error(key, `Unknown section [${key}]. The daemon refuses sections it does not know.`);
-    else if (!isTable(cfg[key])) issues.error(key, `[${key}] must be a table.`);
+    if ((TOP_LEVEL_TABLES as readonly string[]).includes(key) && !isTable(cfg[key])) issues.error(key, `[${key}] must be a table.`);
   }
   for (const section of allSections()) checkSection(issues, cfg, section);
   checkPricing(issues, cfg);
@@ -344,7 +341,6 @@ export function validateConfig(cfg: Toml, ctx: ValidateContext): ConfigValidatio
 function checkPricing(issues: Issues, cfg: Toml): void {
   const sources = getPath(cfg, 'pricing.sources');
   if (isTable(sources)) {
-    for (const k of Object.keys(sources)) if (!(PRICE_SOURCES as readonly string[]).includes(k)) issues.error(`pricing.sources.${k}`, `Unknown price source "${k}".`);
   }
   const maxAge = getPath(cfg, 'pricing.max_age_seconds') ?? 60;
   const refresh = getPath(cfg, 'pricing.refresh_seconds') ?? 15;
@@ -372,8 +368,7 @@ function checkLiquidity(issues: Issues, cfg: Toml): void {
     if (!isTable(alloc)) issues.error('liquidity.allocation', 'Allocation must be "shared" or a table with an XMR amount per market.');
     else {
       for (const [k, v] of Object.entries(alloc)) {
-        if (!(MARKETS as readonly string[]).includes(k)) issues.error(`liquidity.allocation.${k}`, `"${k}" is not a market.`);
-        else checkNumber(issues, `liquidity.allocation.${k}`, v, { min: 0 }, `Allocation for ${k}`);
+        if ((MARKETS as readonly string[]).includes(k)) checkNumber(issues, `liquidity.allocation.${k}`, v, { min: 0 }, `Allocation for ${k}`);
       }
     }
   }
@@ -414,10 +409,7 @@ function checkRebalance(issues: Issues, cfg: Toml): void {
   const levels = getPath(cfg, 'rebalance.levels');
   if (isTable(levels)) {
     for (const [asset, lv] of Object.entries(levels)) {
-      if (!(ASSETS as readonly string[]).includes(asset)) {
-        issues.error(`rebalance.levels.${asset}`, `"${asset}" is not an asset. Use xmr, sol, eth, usdc_sol or usdc_eth.`);
-        continue;
-      }
+      if (!(ASSETS as readonly string[]).includes(asset)) continue;
       if (!isTable(lv)) continue;
       const { low, target, high } = lv as { low?: unknown; target?: unknown; high?: unknown };
       const order: [string, unknown][] = [
@@ -438,7 +430,6 @@ function checkRebalance(issues: Issues, cfg: Toml): void {
   if (isTable(venues)) {
     for (const [id, v] of Object.entries(venues)) {
       if (!(VENUES as readonly string[]).includes(id)) {
-        issues.error(`rebalance.venues.${id}`, `"${id}" is not a venue. Known venues: ${VENUES.join(', ')}.`);
         continue;
       }
       if (!isTable(v) || v.enabled !== true) continue;
@@ -486,17 +477,6 @@ function checkOperation(issues: Issues, cfg: Toml): void {
 }
 
 function checkMarkets(issues: Issues, cfg: Toml, ctx: ValidateContext): ResolvedOffer[] {
-  const markets = getPath(cfg, 'markets');
-  if (isTable(markets)) {
-    for (const [m, dirs] of Object.entries(markets)) {
-      if (!(MARKETS as readonly string[]).includes(m)) {
-        issues.error(`markets.${m}`, `"${m}" is not a market. Use usdc_sol, sol, usdc_eth or eth.`);
-        continue;
-      }
-      if (!isTable(dirs)) continue;
-      for (const d of Object.keys(dirs)) if (!(DIRECTIONS as readonly string[]).includes(d)) issues.error(`markets.${m}.${d}`, `"${d}" is not a direction. Use sell_xmr or buy_xmr.`);
-    }
-  }
   const perTaker = getPath(cfg, 'liquidity.max_per_taker_xmr');
   const offers: ResolvedOffer[] = [];
   for (const market of MARKETS) {
@@ -508,7 +488,6 @@ function checkMarkets(issues: Issues, cfg: Toml, ctx: ValidateContext): Resolved
         for (const [key, value] of Object.entries(table)) {
           const f = fields.find((x) => x.key === key);
           if (f) checkField(issues, `${base}.${key}`, f, value);
-          else issues.error(`${base}.${key}`, `Unknown key "${key}" in [${base}]. The daemon refuses keys it does not know.`);
         }
       }
       const o = resolveOffer(cfg, market, direction, ctx);
@@ -685,4 +664,63 @@ export function withDefaults(cfg: Toml): Toml {
     }
   }
   return out;
+}
+
+// ------------------------------------------------------------------ keys this console does not know
+
+/**
+ * Every key of the file that this console's schema does not define, as dotted paths (an unknown
+ * table counts once). The console keeps a copy of the daemon's schema for its form and that copy
+ * can lag: such keys are not errors here. They are kept untouched, listed as "not editable
+ * here", and judged by the daemon when it validates the file.
+ */
+export function unknownKeys(cfg: Toml): string[] {
+  const out: string[] = [];
+  const fieldsOf = (path: string, fields: readonly FieldDef[], children: readonly string[] = []): void => {
+    const table = getPath(cfg, path);
+    if (!isTable(table)) return;
+    for (const [key, value] of Object.entries(table)) {
+      const f = fields.find((x) => x.key === key);
+      if (!f) {
+        if (!children.includes(key)) out.push(`${path}.${key}`);
+        continue;
+      }
+      const t = f.type;
+      if (t.t === 'rows' && Array.isArray(value)) {
+        value.forEach((row, i) => {
+          if (isTable(row)) for (const k of Object.keys(row)) if (!t.columns.some((c) => c.key === k)) out.push(`${path}.${key}.${i}.${k}`);
+        });
+      } else if (t.t === 'record' && isTable(value)) {
+        for (const k of Object.keys(value)) if (!t.keys.some((c) => c.key === k)) out.push(`${path}.${key}.${k}`);
+      }
+    }
+  };
+  const namesOf = (path: string, names: readonly string[]): void => {
+    const table = getPath(cfg, path);
+    if (isTable(table)) for (const k of Object.keys(table)) if (!names.includes(k)) out.push(`${path}.${k}`);
+  };
+  for (const key of Object.keys(cfg)) if (!(TOP_LEVEL_TABLES as readonly string[]).includes(key)) out.push(key);
+  for (const s of allSections()) fieldsOf(s.path, s.fields, s.children);
+  namesOf('pricing.sources', PRICE_SOURCES);
+  namesOf('rebalance.levels', ASSETS);
+  namesOf('rebalance.venues', VENUES);
+  namesOf('markets', MARKETS);
+  for (const m of MARKETS) {
+    namesOf(`markets.${m}`, DIRECTIONS);
+    for (const d of DIRECTIONS) fieldsOf(`markets.${m}.${d}`, offerFields(m));
+  }
+  const reorg = getPath(cfg, 'guardrails.reorg_guard');
+  if (isTable(reorg)) for (const k of Object.keys(reorg)) if (k !== 'enabled' && k !== 'raise_depth_to') out.push(`guardrails.reorg_guard.${k}`);
+  const alloc = getPath(cfg, 'liquidity.allocation');
+  if (isTable(alloc)) for (const k of Object.keys(alloc)) if (!(MARKETS as readonly string[]).includes(k)) out.push(`liquidity.allocation.${k}`);
+  return [...new Set(out)].sort();
+}
+
+/** The daemon's issues that concern one unknown key: on the key itself, or its parent naming it ("Unrecognized key"). */
+export function issuesAboutKey(list: readonly ConfigIssue[], key: string): ConfigIssue[] {
+  const dot = key.lastIndexOf('.');
+  const parent = dot < 0 ? '' : key.slice(0, dot);
+  const leaf = key.slice(dot + 1);
+  const names = (m: string): boolean => m.includes(`"${leaf}"`) || m.includes(`'${leaf}'`);
+  return list.filter((i) => i.path === key || i.path.startsWith(`${key}.`) || (i.path === parent && names(i.message)) || (key.startsWith('rebalance.') && i.path === 'rebalance' && names(i.message)));
 }
