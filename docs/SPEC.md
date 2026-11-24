@@ -1,6 +1,6 @@
 # XMR atomic swaps: implementation specification
 
-2026-11-21. Status: frozen for implementation; **revised after milestone M1** to match what was built (core, interfaces, Solana program, Ethereum contract, `svm-rpc`, SDK unit part, relay, rebalancer). Nothing is audited or deployed. Implementation changes still owed by M1 packages are listed in `docs/research/m1-followups.md`; where this document and the code differ, that file says which one is to change.
+2026-11-23. Status: **all twelve work packages are merged and the end-to-end suite is green; this document describes what was built.** Nothing is audited, nothing has run on a live network, and several defaults await the owner's sign-off. `docs/STATUS.md` is the short honest summary; `docs/research/m1-followups.md` lists follow-ups (the M1 items are done; the open ones are under "Post-M4").
 
 This is the single document engineers build from. It turns `docs/DESIGN.md` (product design; its Decisions table wins) and `docs/research/*.md` (verified findings) into exact interfaces. You do not need to read the research to implement a work package, but each section names the research file that holds the working snippet to lift.
 
@@ -507,7 +507,7 @@ pub async fn sweep_joint<D: MoneroDaemonRpc>(daemon: &D, p: SweepParams) -> Resu
 | `payAmount(xmr, price)`, `receiveAmount(xmr, price)`, `depositOf(amount, bps)`, `feeOf(amount, bps)`, `deadlines(params)` | Section 3 arithmetic, so no client re-derives it |
 | `sweepJoint(params) → Promise<SweepOutcome>` | Section 2.11; uses the global `fetch` in both targets |
 | `init()`, `isReady()`, `coreVersion()`, `envelopeHeader(bytes)`, `ethSwapId(taker, swapNonce)`, `splitOf(deposit)` | Added by WP1. The web build needs `await init()` once. `payAmount`/`receiveAmount` take an optional `chain` (enforces that chain's amount width); `encodeEthQuoteCompact` an optional `sig`. Argument objects use camelCase keys. `deriveKeys` returns, on Solana, the 32-byte Ed25519 seed and public key as `sessionSecret`/`sessionPub`; on Ethereum the secp256k1 private key and the 20-byte address. |
-| `modelApply(state, call, caller, now, env, chain)`, `modelEnabled(state, now, chain)`, `tierValue(above, values, xmr)` | **Not exported yet** (follow-up for WP1). Until they are, `@xmrswap/sdk` carries a TypeScript port (`apply`, `enabled`, `tierValue`) held to the model by replaying every row and sequence of `transitions.json`. Callers use the SDK's exports either way. |
+| `modelApply(state, call, caller, now, env, chain)`, `modelEnabled(state, now, chain)`, `tierValue(above, values, xmr)` | The reference model and tier lookup, exported through wasm. The SDK's `apply`, `enabled`, `errorOf` and `tierValue` call these; there is one implementation of the state machine. |
 | `passphraseSeal(passphrase, plaintext) → Uint8Array`, `passphraseOpen(passphrase, sealed) → Uint8Array` | scrypt (N = 2^17, r = 8, p = 1, 16-byte salt) + XChaCha20-Poly1305; layout `0x01 ‖ salt[16] ‖ nonce[24] ‖ ciphertext`. Used for the daemon keystore and the encrypted recovery file. |
 
 **Reference model.** `swap_core::model` is a pure implementation of the state machine of section 3: `fn apply(state: SwapState, call: Call, caller: Role, now: i64, env: &Env, consts: &ChainConsts) -> Result<Effects, ModelError>`. It has no I/O. `ChainConsts` carries every constant of section 3.1 **and the three behavioural switches that differ by chain**: `explicit_approve`, `open_secret_calls` (anyone may call `claim`/`refund`; true on Ethereum) and `lapse_is_fault` (false on Ethereum). `Env` carries what the model cannot know: which payout destinations can receive (to exercise pay-or-park). `Effects` lists the new state, every `t_*` field, each payout split into paid and parked, and the counter moved.
@@ -534,7 +534,7 @@ The model is the only oracle, so it is itself tested two ways inside `cargo test
 | `notice.json`, `envelope.json` | Keys, plaintext, nonce → bytes; tamper cases; a ciphertext that does not open its commitment; the largest `approval_response` and `quote_response` against the 900-byte cap | Solana program and contract (commitment only), sdk, daemon |
 | `sol_signed.json` | Advance-approval bytes with Ed25519 signatures from a fixed test key; cases at `not_before − 1`, `not_before`, `expires_at`, `expires_at + 1`; the open hashes of section 3.12 | Solana program, sdk |
 | `eip712.json` | Typed-data JSON, digest, signature, compact form; cases at `validUntil` and `validUntil + 1` | Ethereum contract, sdk |
-| `terms.json`, `amounts.json`, `deadlines.json` | Terms hash; rounding of pay, receive, deposit, fee, split; tier lookup and malformed tiers; deadline derivation and bound checks per chain. Seven `amounts.json` cases exceed `u64` and apply to Ethereum only; each case is to carry a `chains` field saying so (follow-up). | Both contracts, sdk |
+| `terms.json`, `amounts.json`, `deadlines.json` | Terms hash; rounding of pay, receive, deposit, fee, split; tier lookup and malformed tiers; deadline derivation and bound checks per chain. Each `amounts.json` case carries a `chains` field; the seven that exceed `u64` are Ethereum-only. | Both contracts, sdk |
 | `transitions.json` | Two parts, both generated per chain from the model. `rows`: every row of sections 3.4 to 3.6 as `(chain, direction, mode, from_state, call, caller, time offset, expected result, new state, payouts paid and parked, counter)`, including the rejected case one second either side of every boundary and wrong-caller cases; `chain` is `solana` or `ethereum` (no row is identical on both, so `both` is never used; the file is about 3.5 MB, one element per line). `sequences`: multi-step scripts with absolute times, each step listing the expected state, every `t_*` field, payouts paid and parked, and all counters. | Each contract MUST replay every row and sequence whose `chain` matches, with no special cases (section 3.13 says what the Ethereum rows must expect) |
 | `monero_tx.json` | Raw regtest transactions with expected scan results, including a duplicate-output-key pair and a block with dust outputs to the joint address (recorded once from the harness; the duplicate-key pair is synthetic and marked so, because no wallet builds a transaction with a chosen tx key; scenario N-2 still needs a real one) | sdk, core (sweep selection) |
 
@@ -600,7 +600,7 @@ price(xmr) = price of the highest used tier with xmr >= tier threshold;  depth(x
 
 `price` is asset base units per 1 XMR. Tiers are well formed when `above[0] == 0`, tier 0 is used, used thresholds strictly increase and unused tiers trail; anything else is `TiersInvalid`, except a size with no used depth tier, which is `DepthInvalid`.
 
-**A swap whose `amount` or `xmr` is zero is refused on both chains** (`AmountOutOfRange`). Direction B rounds down, so a dust take can compute to zero; such a swap would lock the taker's XMR against nothing. The Ethereum contract already refuses it; the reference model and the Solana program are to follow (`m1-followups.md`).
+**A swap whose `amount` or `xmr` is zero is refused on both chains** (`AmountOutOfRange`). Direction B rounds down, so a dust take can compute to zero; such a swap would lock the taker's XMR against nothing. The reference model, the Solana program (`lock`, `take`, `post_quote`), the Ethereum contract and the SDK's pricing all refuse it.
 
 ### 3.2 Deadlines, invariants and the two rules that remove races
 
@@ -867,7 +867,7 @@ The vectors encode these, so both contracts and the SDK share them.
 - **Payouts of zero** are not listed or sent. B11 always parks the maker's `amount`.
 - **Treasury shares on Ethereum** appear as a payout to `treasury` that is "accrued", never parked.
 
-Caller rules that differ by chain, which the Ethereum vectors must express (today they do not; see `m1-followups.md`):
+Caller rules that differ by chain, which the regenerated vectors express (Solana 405 rows, Ethereum 399; both contracts replay theirs with no special cases):
 
 | Case | Solana | Ethereum |
 | --- | --- | --- |
@@ -1218,7 +1218,7 @@ Rules that follow:
 - A single `lock` or `take` is always a legacy transaction, with or without an approval or quote. `take` is 33 bytes smaller than `lock`.
 - Batches (the large-swap tool): **two SOL legs per legacy transaction; one USDC leg per legacy transaction.** Three legs never fit. A leg that uses an advance approval travels alone.
 - Optional optimisation, not required for correctness: two USDC legs fit a v0 transaction that loads `config`, the System program, the USDC mint and the Token program from a **protocol lookup table**. The table is created at deployment (an owner step) and its address pinned next to the program id; in tests `svm-rpc` creates one with `svm_createLookupTable`. v0 transactions and lookup tables were not run under LiteSVM 0.16.0; WP5 spikes this and falls back to one USDC leg per transaction if it does not work.
-- The byte counts above are now measured, not estimated: a program test executes each transaction and an SDK unit test builds each and asserts its serialised length. The v0 two-leg USDC message is built offline (1,156 bytes); running it is an M2 integration task.
+- The byte counts above are now measured, not estimated: a program test executes each transaction and an SDK unit test builds each and asserts its serialised length. The v0 two-leg USDC transaction (1,156 bytes, 14 static keys, a four-address lookup table) was run in `svm-rpc` by the SDK's integration suite. The taker UI still opens USDC legs one per transaction, because no protocol lookup-table address is pinned until a deployment exists.
 
 ---
 
@@ -1296,7 +1296,7 @@ address treasury;  address usdc;
 
 Swaps are never deleted; a settled swap costs nothing to keep and its `revealed` value, nonce, notice ciphertext and evidence stay readable with `eth_call`. Counter and volume updates saturate.
 
-**Storage layout is to be packed before any deployment.** As built, the stored `Swap` is the interface struct field for field: a `lock` writes 22 fresh slots and costs about 617,000 gas (673,000 with USDC). Ruling: the stored form becomes a packed internal struct of about 17 slots (`amount` and `deposit` as `uint128` sharing a slot, the small fields beside the addresses), saving roughly 110,000 gas per lock; `getSwap` keeps returning the interface struct, so the ABI and every client are unaffected. A layout cannot change under a live proxy, so this is done now (`m1-followups.md`).
+**Storage is packed, and the layout is recorded in `ethereum/STORAGE.md`; it must not change once a proxy is deployed** (an upgrade may only append). The stored swap is an internal struct of 24 slots (`amount`, `deposit` and `price` as `uint128`; anything above `2^128 − 1` is refused with `AmountOutOfRange`); `lock` writes 17 fresh slots, `take` 13. `getSwap` returns the interface struct, so the ABI is unchanged. Measured gas for a whole transaction, ETH / USDC: `lock` 528,905 / 564,646; `take` 432,390 / 468,119; `approve` 98,293; `fund` 176,819 / 203,498; `postNotice` about 221,000; `setReady` about 67,900; `claim` about 110,500 / 130,200; `refund` after `T_cd` 126,291 to 162,817.
 
 ### 5.3 Functions
 
@@ -1352,7 +1352,7 @@ function take(Quote calldata q, bytes calldata sig, uint64 xmr, uint256 minRecei
 
 `_payout(token, to, amount)`: ETH is sent with a 30,000 gas stipend; USDC with `SafeERC20.trySafeTransfer`. On failure, `owed[token][to] += amount` and `PayoutDeferred` is emitted. Parked payouts are keyed by the address the push would have gone to (the payout address for a direction-A claim, the current operator for a direction-B refund); B11 parks the maker's escrow for the maker's **owner** address. Because parking is per account, not per swap, `owedOf` is an account total. A transaction sent with too little gas for the stipend makes the push fail and the payout park; a third party can provoke that by front-running with a starved copy, which costs the recipient one `withdrawOwed` (a gas floor would instead turn it into a revert of a secret-bearing call). Fees and treasury halves only increment `treasuryAccrued`. Order inside `claim` and `refund`: verify the secret, write state, emit, then pay. A blacklisted recipient, a paused token or a recipient contract that rejects ETH therefore cannot make a secret-bearing call fail. If the escrow contract itself is blacklisted or USDC is paused, USDC swaps are stuck until the issuer acts; state stays consistent and the Monero leg still completes. The UI discloses this for USDC markets.
 
-The session key is an ordinary externally owned account derived in the page. `lock`/`take` forward `sessionBudget` to it; the client returns what is left to the taker with a plain transfer when the swap closes. The SDK sizes the budget for four calls at a capped gas price and shows it before locking.
+The session key is an ordinary externally owned account derived in the page. `lock`/`take` forward `sessionBudget` to it; the client returns what is left to the taker with a plain transfer when the swap closes. The SDK sizes the budget for four calls at `ETH_SESSION_GAS_PER_CALL = 271,000` (the dearest session call, `postNotice`, measured on anvil, plus 25%) at a capped gas price and shows it before locking; its integration suite re-measures on every run.
 
 ### 5.5 Events and errors
 
@@ -1485,7 +1485,7 @@ Supporting modules: `config/`, `store/` (SQLite), `keystore/`, `pricing/` (CoinG
 
 ### 7.2 Configuration
 
-One TOML file, validated with zod, hot-reloaded, with every change appended to a change log. `daemon config check <file>` validates without starting. **Both example files in `docs/DESIGN.md` MUST pass `config check` unchanged**, alone or concatenated; that is an acceptance test. To make that true:
+One TOML file, validated with zod, with every change appended to a change log. Changes apply without a restart **except endpoints and keys**: a change under `[solana]`, `[ethereum]`, `[monero]` or `[daemon]` (other than `mode`, the priority fee, finality and CORS) is saved, logged, raises an alert and takes effect at the next start. Unknown keys are errors. `daemon config check <file>` validates without starting. **Both example files in `docs/DESIGN.md` MUST pass `config check` unchanged**, alone or concatenated; that is an acceptance test. To make that true:
 
 - Every key has a default (shown in parentheses; where none is shown: `source` = `"coingecko"`, `deviation_pct` = 2.0, `max_xmr` = the largest ladder size, caps and limits = unlimited). Sections absent from the examples (below) are optional.
 - `config check` evaluates **every bound of section 3.1** for every enabled offer on its chain and prints the effective values (for example the claim delay chosen by `"auto"`). A violated bound is an error.
@@ -1535,7 +1535,7 @@ Sections this specification adds (all optional):
 ### 7.3 Keys and custody
 
 - `keystore.json` in `data_dir`, encrypted (scrypt + XChaCha20-Poly1305 through core-wasm) with the passphrase from `keystore_passphrase_env`: the key-share seed, the Solana operator key, the Ethereum operator key.
-- Encryption private keys are random per version, stored encrypted in the database, and deleted by the rotation module.
+- Encryption private keys are random per version, stored in the database sealed with AES-256-GCM under a key derived from the keystore seed by HKDF (not `passphraseSeal`: scrypt per message would cost seconds), and deleted by the rotation module.
 - The database is bound to the maker PDA and the inventory wallet's primary address at first start and refuses to open against others.
 - Keep the Ethereum and Solana operator balances capped (`paying_caps`): a stolen operator key can commit that balance in direction B.
 
@@ -1555,7 +1555,7 @@ SQLite (`better-sqlite3`, WAL mode), one file. State machines are rows. **Every 
 | `enc_keys` | Version, public key, encrypted private key, `expires_at`, `deleted_at` |
 | `quotes`, `approvals_issued` | Signed objects handed out, with ids and expiries; Ethereum key pools and roots |
 | `messages` | Inbox: envelope hash, direction, transport, swap reference, plaintext, read flag |
-| `refills` | Rebalancer runs: venue, legs, amounts, rate, fees, status, venue order id |
+| `kv` | The rebalancer's snapshot and the adapters' state (there is no `refills` table) |
 | `prices`, `fees_spent`, `config_log`, `alerts` | History for the dashboard and audit |
 
 ### 7.5 Swap handling
@@ -1711,11 +1711,33 @@ Decisions the flows make where sections 3.11 and 7.5 left room (the daemon and t
 - The maker relays its prepared lock only before `T_cut`; later it aborts. Without ready at `T_co` it claims if its own lock verifies as confirmed, otherwise aborts.
 - In direction B with no notice at `T_note` the maker refunds at once.
 - `close_swap` (Solana) is proposed once the caller has swept and nothing is owed.
-- Reputation is merged for pairs currently linked both ways, and for pairs a client-side `LinkMemory` has seen linked. A client with no memory does not yet see past links; replaying `LinkChanged` events is a follow-up.
+- Reputation is merged for pairs currently linked both ways and for pairs that were ever linked: `rememberPastLinks` rebuilds link history from `LinkChanged` events on both chains (`linkChanges`, `linkIntervals`) into a `LinkMemory`. An RPC node that has pruned the maker's transactions yields a shorter history.
+- **An explicit request wins.** A confirmed request from the user or the operator (refund, cancel, abort, reject, back out, withhold, release) takes precedence over every automatic step while the contract still accepts the call that carries it out (inside the broadcast margin for a secret). When it no longer can, the `Decision` carries `refused: <reason>` and says what happens instead. Reasons: `ready-already-set`, `refund-window-closed`, `abort-window-closed`, `already-settled`, `cannot-exit-after-funding`, `reject-not-available`, `hold-ended`, `no-deposit-held`. (Found as a bug by the end-to-end suite: a confirmed refund was once overtaken by `set_ready`.)
+- `solanaInstruction` / `ethereumCall` turn a decision into the instruction or calldata; `SolanaClient.sendAndConfirm` polls (no WebSocket); `EthereumClient.owedFor` names which address holds a parked balance.
 - Solana chain time is read from the Clock sysvar account. A transaction carrying an advance approval costs two signature fees.
 - On Ethereum `SwapView.owed*` are zero unless read with `withOwed`, and are then account totals that can include other swaps.
 
-Two SDK items are placeholders until M2 measures them against the built contract: the Ethereum session budget (`ethSessionBudget`, 150,000 gas per call × 4) and the integration suite (`test:integration` is a list of to-dos).
+The integration suite (`pnpm --filter @xmrswap/sdk test:integration`) runs the SDK against the built program in `svm-rpc`, the contract on anvil and the regtest; it found no bug in the program, the contract or the facade. Sweeps need a regtest chain of at least 720 blocks (decoy selection fails intermittently on a shorter one).
+
+### 7.10 The daemon as built
+
+Additions and decisions made while building and while fixing the bugs the end-to-end suite found (`packages/daemon/DEVIATIONS.md`, `tests/e2e/BUGS.md`).
+
+**Configuration keys added** (all optional): `[solana].maker_owner`, `[ethereum].maker_owner` (public owner keys, so the daemon knows which maker it is), `[solana].subscriptions`, `[ethereum].from_block`, `[monero].own_node`, `[monero].sweep_max_fee`, `[offers].eth_pool_size` (64), `[liquidity].ladder_headroom_pct` (1.0), `[registration].contacts`, `[daemon].console_dir` (serves the built console from the API's origin), `[daemon].cors_origins`, per offer `without_ready` (`"claim"` or `"abort"`), per keyed price source `base_url`, and for the pool source `base_vault`, `quote_vault`, `quote` (the pool is priced from its two reserve token accounts; without them the cross-check stays off). `claim_delay_minutes = "auto"` counts a depth tier as in use when its threshold is at or below `max_xmr`. `capacity_xmr` is capped at the largest unlocked output.
+
+**Intents and stuck transactions.** `planned` (written before the action) → `sent` (written with the transaction id after signing and before the bytes leave) → `confirmed` or `failed`. A `planned` row found after a crash was never signed: it is failed and re-planned from finalized state. A `sent` row is looked up: found is confirmed; a dead blockhash or consumed nonce is failed and re-planned; otherwise the swap waits. After 5 minutes (Solana) or 1 hour (Ethereum) unresolved it is parked `needs_review` with a critical alert, is never re-sent, and keeps being looked up so a late landing is picked up. Transfers to third parties found unresolved at start are parked and never re-sent. Transactions that belong to no swap (rotation, registry, pause, messages) are looked up every minute and failed with an alert if they did not land. The Ethereum operator's sends are serialised (two could otherwise sign one nonce); a byte-identical Solana transaction on the same blockhash is refused before it is recorded.
+
+**Monero inputs are exclusive.** Every wallet output is kept frozen in wallet-rpc. Every build (lock, split, payment) runs a freeze pass, reserves its inputs in the database before the wallet is asked, thaws only those, and refuses a result whose inputs are not exactly the reserved ones (dropped unstored and unrelayed; after three tries nothing is built). Reservations last until the wallet reports the output spent and survive restarts and reorgs. A relay the nodes refuse is journaled `failed`; only "accepted" or "already held" is `confirmed`. **Before the notice** the stored lock's inputs must be unspent in the chain and the pool on the nodes asked and reserved for that swap alone; otherwise the lock is discarded and rebuilt from another output, and if the nodes cannot be asked the notice waits. (The order of section 7.5 stands: the transaction is shown to a node only after the notice is final.) The lock and the sweep are each built once, stored, and re-published from the stored bytes.
+
+**Operator instructions.** An instruction (`approve`, `reject`, `abort`, `withhold`, `release`, `publish-evidence`) is written to the swap's row inside the swap's own serialised section before anything acts on it, so a pass already running finishes first and a restart honours it. It is one-shot, counts as carried out only when its transaction is confirmed, and is otherwise planned again. A pass may refuse it only after reading the chain with the instruction on record. Exposure limits, paying caps and unlocked outputs count a swap from the moment it is approved. While paused, a stored automatic approval is not acted on; an explicit one by the operator is. On Ethereum the operator cannot pause on-chain (`setPaused` is the owner's): the switch stops quoting, rejects new locks and bumps the epochs.
+
+**Ethereum key pool.** Generated in the background, one proof (about 0.2 s) per turn of the event loop, persisted as it goes; quoting continues on the current pool until its replacement is complete.
+
+**Other.** `[approvals].advance` entries are honoured when the taker asks, not issued ahead. Quotes on request use the offer limits and at most the largest unlocked output, and are answered only over the maker endpoint. The inbox reads Solana, Tor and Ethereum events but never posts through the Ethereum contract. A parked payout raises an alert; the daemon builds the unsigned withdrawal for the owner to sign. Opposite-side flow is an alert only, and the measured refill cost is exposed but not fed into the deviation automatically (follow-up). `tor.reachable` is always `null`: the daemon runs no Tor client.
+
+**Local API beyond the table of 7.8.** The WebSocket takes the token as `?token=` or a header. Swap actions answer 200 with `outcome: "carried_out" | "refused" | "pending"`, `refused: <reason>` (the SDK's reasons plus `not-available-in-state` and `dry-run`) and a `detail` sentence; `GET /api/swaps/:ref` carries `instruction`. New routes: `PUT /api/registration/published`, `GET /api/registration/links`, `POST /api/alerts/:id/ack`, `POST /api/rebalance/ack/:id`, `POST /api/swaps/:ref/withdraw-owed-tx`. `status.chains[]` carries the upgrade status of each deployment read from chain state (`upgradable`, `immutable` or `unknown`, the authority, a pending ownership transfer). A refused configuration carries `issues` and `warnings`. In dry run, actions that would send are refused with `409 dry_run`; pause works. There is no route to redeem held wXMR (declined until the bridge adapter is checked against the real program).
+
+Tests: `pnpm --filter @xmrswap/daemon test` (unit, on the SDK's fakes, including the crash matrix) and `test:integration` (four full swaps against `svm-rpc`, anvil and regtest).
 
 ---
 
@@ -1770,7 +1792,7 @@ Static files. Every operation that touches funds runs in the browser; the web se
 | Messages | Encrypted in the browser | Ciphertext through the relay |
 
 - Strict Content-Security-Policy, no third-party scripts, no analytics, wasm from the same origin only.
-- The session key and shares are derived from the recovery seed, which is held in memory and, encrypted under a user passphrase, in IndexedDB. A compromised page holds both the session key and the share; this cannot be solved in a browser and is listed under Open risks.
+- The session key and shares are derived from the recovery seed, which is held in memory, in `sessionStorage` for the life of the tab (so a reload resumes at once while a refund deadline runs), and, only if the user sets a device passphrase, sealed in IndexedDB. After the tab is closed the user loads the recovery file or types the passphrase; the page says funds are at risk until then. A compromised page holds both the session key and the share; this cannot be solved in a browser and is listed under Open risks.
 - The UI reads chain time from the chain, compares it with the local clock, and warns on a difference above 30 s.
 - Refund watchers: only software the taker runs (a second tab, the self-hosted bundle) may hold the seed. The hosted site offers none.
 
@@ -1849,7 +1871,26 @@ The order itself (plan, remainder, worst rate, destination address, deadline) is
 
 ### 8.8 Self-hosting
 
-`deploy/` holds two equivalent one-command starts, both bound to localhost: `pnpm --filter @xmrswap/deploy start` (a static file server for the web UI, the relay, and the system `tor` if one is on the PATH; needs only Node), and a compose file for people who use containers. Acceptance uses the first; Docker is never required to build or test anything. The UI and the relay are served from **one origin** (the static server proxies `/relay/` and `/monero/` to the relay), because the relay sends no CORS headers by default; a deployment that separates them sets the relay's `allowed_origins`. The relay's `program_id` has no default and must be set to the release's id. And `docs/self-hosting/` covers: quick start; configuration reference (Solana RPC URL, Ethereum RPC URL, relay URL, Monero nodes, Tor proxy `127.0.0.1:9050`, relay bind `127.0.0.1`, pinned program id and contract address); safe defaults and a separate page on exposing the relay publicly with the rules of section 6.5 as requirements; who sees what in each connection mode; verifying the download (checksums, and checking the program id against the published one); the status page; troubleshooting (Tor unreachable and the on-chain fallback, RPC rate limits and the `getProgramAccounts` requirement, a Monero node out of sync, `--rpc-access-control-origins` for people running their own node); backups and upgrades without losing an in-flight swap.
+`deploy/` holds two equivalent one-command starts, both bound to localhost: `pnpm --filter @xmrswap/deploy start` (a static file server for the web UI on `127.0.0.1:8780` and the relay; needs only Node; it **does not start Tor**: it probes the configured SOCKS port and prints how to start a client if nothing answers), and a compose file for people who use containers. Acceptance uses the first; Docker is never required to build or test anything. The UI and the relay are served from **one origin** (the static server proxies `/relay/` and `/monero/` to the relay), because the relay sends no CORS headers by default; a deployment that separates them sets the relay's `allowed_origins`. The relay's `program_id` has no default and must be set to the release's id. And `docs/self-hosting/` covers: quick start; configuration reference (Solana RPC URL, Ethereum RPC URL, relay URL, Monero nodes, Tor proxy `127.0.0.1:9050`, relay bind `127.0.0.1`, pinned program id and contract address); safe defaults and a separate page on exposing the relay publicly with the rules of section 6.5 as requirements; who sees what in each connection mode; verifying the download (checksums, and checking the program id against the published one); the status page; troubleshooting (Tor unreachable and the on-chain fallback, RPC rate limits and the `getProgramAccounts` requirement, a Monero node out of sync, `--rpc-access-control-origins` for people running their own node); backups and upgrades without losing an in-flight swap.
+
+### 8.9 The console, the taker UI and the bundle as built
+
+**Console.** The daemon is the judge of the configuration: the console's own schema is a second copy, so a key it does not know is never an error locally; it is kept untouched, listed under "Settings not editable here" with the daemon's verdict, and a save is blocked only by the daemon's validation. A save changes only the edited lines (comments and unknown keys stay byte for byte); a file with multi-line values or arrays of tables is written afresh and the save bar says so. Every operator action shows its outcome where it was given. Owner actions on Ethereum: common wallets refuse `eth_signTransaction`, so the console always offers a paste box for a transaction signed offline. "Withdraw parked payout" is offered on every swap page. A light theme follows the system setting. Tests are vitest (no Playwright); wallet signing was tested with fake wallets only.
+
+**Taker UI.**
+
+- Solana wallets are found through the **Wallet Standard only**; the vendor adapters of `@solana/wallet-adapter-wallets` are not imported (they pull in SDKs that fetch remote code or call third parties).
+- Settings: the page reads deployment defaults from `config.json` beside `index.html`; the browser stores **only the keys the user changed**, so an updated bundle reaches returning browsers. A Monero node may be a path on the same site (`/monero/0`).
+- The page decides only from `finalized` state. On Ethereum that means waiting 13 to 19 minutes after the maker funds before the pay address is shown when selling; the page reads the newest block for display only, says what it is waiting for and which deadline runs meanwhile, and states the wait before any Ethereum swap.
+- The maker's proof for a funded share is fetched and verified once, in the background, with retries, and cached; a proof that fails says "Do not send XMR".
+- A confirmed request to get out always ends in a visible result: carried out, or refused with the reason and what happens instead; a control that would be refused is disabled and relabelled.
+- The background loop never opens a wallet prompt by itself. After a refund the session key is swept, so collecting a held deposit later is a button ("Your deposit can be collected now"); anyone may also send that call.
+- No price feed is fetched: the reference rate is the user's own figures from Settings, else the median of listed offers, labelled as such. Offers are ranked within one market by the maker's volume in that asset.
+- Orders and inbox threads are sealed with AES-256-GCM under a seed-derived key. Advance approvals are requested from the page on Solana only. USDC legs of a large swap open one per transaction.
+- Content-Security-Policy: `default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src http: https:` (the endpoints are user settings).
+- Ethereum flows were first run in a browser by the end-to-end suite, not by this package's own browser tests (which cover Solana).
+
+**Self-hosting bundle.** One settings file, `deploy/xmrswap.toml`, with `[ui]` and `[relay]` (the relay's own keys and `RELAY_*` overrides). `config.json` is generated per request. The UI server answers only requests whose `Host` is its listen address or the configured public origin (DNS-rebinding guard), and counts as one proxy hop in front of the relay. **The bundle raises the relay's rate limits to 6,000 requests and 1 GiB per minute**, because the page reaches its Monero nodes through the relay and the relay's own default (60 requests) cannot carry one swap's lock checks; a public relay must set them back. `run status` checks UI, relay, Tor proxy, RPCs, Monero nodes and the pinned program id. A release is a directory with `SHA256SUMS` made by `run release` and checked by `scripts/verify.mjs`; there is no archive, no signature and no publication channel yet. The compose file and Dockerfiles are validated as YAML against the bundle's own schema and **have never been built or run**. The pinned program id is the development id and the contract address is unset: nothing is deployed.
 
 ---
 
@@ -1894,9 +1935,9 @@ If the owner rules that even this facade is too close to "a local validator", th
 Global setup starts, on loopback only:
 
 1. `svm-rpc` with the built program, `initialize`, a USDC mock mint.
-2. `anvil` (chain id 31337) with the contract deployed behind its proxy by a forge script that targets anvil only, and the USDC mock. Finality: the harness mines enough blocks for the `finalized` tag to pass the block in question.
+2. `anvil` (chain id 31337, `--slots-in-an-epoch 1 --block-time 1`, so `finalized` is two blocks behind the head) with the contract deployed behind its proxy by `DeployAnvil.s.sol`, and the USDC mock. Where a scenario needs a realistic finality delay the daemon or the page reads Ethereum through a JSON-RPC proxy that holds `finalized`/`safe` back.
 3. The Monero regtest (`tests/monero-regtest/start.sh --fresh`: two nodes and a wallet-rpc).
-4. The daemon in `live` mode against those three, with a test keystore; the relay with a stub SOCKS server that maps the test onion name to the daemon's endpoint.
+4. The real daemon as its own process in `live` mode against those three (registered through its own API with an owner key held outside it); the real relay process behind a fake SOCKS5 server that maps each maker's test onion name to its endpoint; the built taker UI and console in Chromium. Price sources are a loopback stand-in; venues and the rebalancer are not exercised here.
 
 Time is driven explicitly: `advance(seconds)` calls `svm_warp` and `evm_increaseTime` + `evm_mine`; `mine(n)` mines Monero blocks. No test sleeps to reach a deadline. Teardown always runs `stop.sh`.
 
@@ -1939,6 +1980,10 @@ Markets: `sol`, `usdc_sol`, `eth`, `usdc_eth`. "All" means each of the four.
 | T-1 | Relay: forward to a listed onion; a full-size DLEQ upload and a pool fetch pass; an oversize `/msg` body, an unlisted onion and a disallowed path are refused; a later inbox reply is read from the replies route after a reload; fallback to on-chain messaging when the relay is down | As stated |
 | L-1 | Large swap (UI): three makers, two waves, one maker stalls | Remainder re-planned; report lists filled and unfilled |
 | U-1 | UI gates: lock impossible without backup and checkbox; banner and leave prompt while at risk; "Safe to close" only when allowed; reload resumes and auto-refunds | As stated |
+
+### 9.5 What the end-to-end suite covers
+
+`pnpm --filter @xmrswap/e2e test` runs six scenario files against the real processes. `tests/e2e/COVERAGE.md` is the record: of the 31 scenario ids above, **19 are covered at system level, 9 partly, 2 only in package tests (M-4, B-y), and 1 (M-3, oversized quotes) not at all at system level**. Not covered anywhere at system level: a dishonest maker on Ethereum, a lock replaced by a fork, X-2 at depth 10, V-1 combined with two key rotations, and the console's owner-key, rotation, rebalancing and inventory-split actions in a browser. The suite found four bugs in other packages (one in the SDK, one in the console, two in the daemon); all are fixed and are ordinary scenarios now (`tests/e2e/BUGS.md`).
 
 ---
 
@@ -2007,7 +2052,7 @@ WP1's hand-over states that it ran these and records the versions. Each command 
 | --- | --- | --- | --- |
 | M0 Freeze | WP1 | Alone. Nothing else starts before `interfaces/` is merged. | WP1 acceptance |
 | M1 Chains and plumbing | WP2, WP3, WP4, WP5 (unit part), WP6, WP7 | All six in parallel. WP9 may start here against a mock of the frozen daemon API. | WP2, WP3, WP4, WP6, WP7 acceptance; WP5 unit |
-| M2 SDK integration | WP5 (integration part), plus the M1 follow-ups of `docs/research/m1-followups.md` | After WP2, WP3, WP4. **Not done when M1 merged**: the integration suite is a list of to-dos. It may run alongside M3, but M3 acceptance requires it green. | `test:integration` |
+| M2 SDK integration | WP5 (integration part), plus the M1 follow-ups of `docs/research/m1-followups.md` | After WP2, WP3, WP4. Done. | `test:integration` |
 | M3 Daemon and UIs | WP8, WP9, WP10 | All three in parallel | Their acceptance commands |
 | M4 System | WP11, WP12 | In parallel | End-to-end suite green |
 
@@ -2096,7 +2141,14 @@ Each is the research's recommended resolution, adopted as the default, and isola
 | 30 | Rebalancer package defaults when a key is absent: alert only, every venue off, floating rate, priority routing, empty allow-list unless the daemon supplies one | As built | `@xmrswap/rebalancer` settings |
 | 31 | The Ethereum contract is one proxy address backed by an implementation and two linked libraries (code-size limit); an upgrade replaces all three | As built | Section 5 |
 | 32 | The hosted relay sends no CORS headers unless an origin is allow-listed | Off | `allowed_origins` |
-| 33 | Not adopted, for the owner to decide whether to cost: verifying ed25519 directly in the EVM on the taker's refund path, which would remove the taker's DLEQ proof and allow true auto-accept on Ethereum | Not built | n/a |
+| 33 | The taker's recovery seed is kept in `sessionStorage` for the life of the tab, so a reload resumes without a prompt; sealed in IndexedDB only if the user sets a device passphrase | As built | `apps/web` |
+| 34 | The self-hosting start command does not launch Tor (DESIGN: "one command that starts the UI, relay and Tor together"); only the untested compose file brings its own | As built | `deploy` |
+| 35 | The bundle's relay rate limit is 6,000 requests and 1 GiB per minute, 100 times the relay's own default | As built | `deploy/xmrswap.toml` |
+| 36 | Changing an endpoint or key setting of the daemon needs a restart (DESIGN: edits "apply without a restart") | As built | Daemon `[solana]`, `[ethereum]`, `[monero]`, `[daemon]` |
+| 37 | A release is a directory with checksums; no signature, archive or publication channel | As built | `deploy` `run release` |
+| 38 | Solana wallets through the Wallet Standard only; no vendor adapters | As built | `apps/web` |
+| 39 | Opposite-side flow is an alert only, and measured refill cost is not fed into the offer deviation automatically | As built (listed as a follow-up) | Daemon |
+| 40 | Not adopted, for the owner to decide whether to cost: verifying ed25519 directly in the EVM on the taker's refund path, which would remove the taker's DLEQ proof and allow true auto-accept on Ethereum | Not built | n/a |
 
 ## Open risks
 
@@ -2104,12 +2156,13 @@ Unverified or not run here:
 
 - **The cross-curve DLEQ proof has no independent audit** (`sigma_fun` 0.9.0), and the two-address commitment (`keyAddr2`) is this project's own construction. Both are on the audit list. `curve25519-dalek-ng` sees little maintenance.
 - Closed by M1: the Ed25519-precompile path, EIP-712 fixed-size arrays (Rust, viem, `cast` and Solidity agree byte for byte), the `wasm-bindgen` + `getrandom/js` build in Node 22 and Chromium, the nodejs wasm target, a viem signing round trip, the IDL generated from the skeleton, and the transaction byte counts (now measured). The Schnorr proof of knowledge, the envelope scheme and pay-or-park are implemented and tested against the vectors; none is audited.
-- **The SDK has not been run against the built program, contract or regtest** (M2 is outstanding), and its Ethereum session budget is a placeholder. The SDK carries a TypeScript port of the state machine until the core exports the model; it is held to the vectors by a full replay.
-- The Ethereum vectors currently need eight special cases in the contract's replay, and the model and Solana program accept zero-amount swaps the contract refuses; both are to be fixed in the model and vectors (`m1-followups.md`).
-- The Ethereum contract's storage layout will change (packing) before any deployment; the linked-library split puts settlement logic behind DELEGATECALL, which belongs on the audit list together with the gas-starved-push case of section 5.4.
+- Closed since M1: the SDK runs against the built program, contract and regtest; the model is one implementation behind wasm; both contracts replay their vectors with no special cases; storage is packed; the session budget is measured; a real duplicate one-time key is produced on regtest; the v0 lookup-table transaction runs in `svm-rpc`.
+- **End-to-end gaps** (section 9.5): oversized quotes, a dishonest maker on Ethereum, a fork-replaced lock, X-2 at depth 10, and several console actions in a browser were not run at system level. The rebalancer and every venue adapter are outside the end-to-end suite.
+- **Nothing has touched a live network**: no devnet, Sepolia or mainnet deployment, no real Tor (the suite uses a fake SOCKS server), no real venue API, no stagenet or mainnet Monero, no real browser-wallet extension.
+- The linked-library split puts settlement logic behind DELEGATECALL; that and the gas-starved-push case of section 5.4 belong on the audit list. The storage layout is now frozen by `ethereum/STORAGE.md` and must not change after a deployment.
+- The compose file and Dockerfiles of the bundle have never been built. Release artifacts are unsigned.
+- The daemon found two fund-affecting bugs of its own only under the end-to-end suite (inputs shared between two locks; a refused relay journaled as confirmed). Both are fixed with regression scenarios, but they show the class of fault an audit should look for in the inventory and journal code.
 - Venue adapters are tested against hand-written fixtures only; no venue was contacted. The Kraken driver is unverified against the live API.
-- The duplicate-one-time-key vector is synthetic; a real one must be produced on regtest for scenario N-2.
-- v0 transactions with a lookup table were built offline only; they remain an optimisation (section 4.10).
 - The browser sweep was run only in Chromium and only on regtest.
 - The wXMR bridge IDL is outside this repository and has not been supplied; the adapter runs on documented assumptions.
 - Anchor optional accounts combined with `init` (the token vault in `lock`/`take`) were not prototyped; the fallback is manual account creation by CPI.
