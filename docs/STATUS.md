@@ -24,6 +24,26 @@ The repository records no per-package test totals, so none are given here; the f
 | `tests/e2e` | End-to-end suite | 31 scenario ids: 19 covered, 9 partly, 2 package-only, 1 not covered (`tests/e2e/COVERAGE.md`) |
 | `deploy`, `docs/self-hosting` | Self-hosting bundle and documentation | Acceptance test on loopback fakes, including the Status page in Chromium |
 
+## Test counts
+
+Counts from the integrator's own re-runs on 2026-11-23, after the last change to each package. Where a suite was not re-run by the integrator, the figure is the package author's and is marked so.
+
+| Package | Suite | Result |
+| --- | --- | --- |
+| `crates/swap-core` | `cargo test -p swap-core` | 118 pass (author's figure; 111 re-run before the follow-ups); 24 vector files reproducible (re-run) |
+| `solana` | in-process program tests | 99 pass |
+| `ethereum` | `forge test` | 156 pass |
+| `tools/svm-rpc` | TypeScript client tests | 13 pass; 26 Rust tests (author's figure) |
+| `packages/sdk` | unit | 228 pass |
+| `packages/sdk` | integration (program, anvil, regtest) | 28 pass (author's figure; 27 re-run before the last fix) |
+| `packages/relay` | unit | 73 pass |
+| `packages/rebalancer` | unit | 176 pass, 18 skipped (bridge IDL not supplied) |
+| `packages/daemon` | acceptance | 140 pass; integration 7 pass (author's figure) |
+| `apps/console` | unit and build | 286 pass |
+| `apps/web` | unit and build | 108 pass; browser 6 pass (author's figure; 5 re-run earlier) |
+| `deploy` | acceptance | 79 pass |
+| `tests/e2e` | full system | 74 pass in 19.0 min, no known failures |
+
 ## What is proven, and how
 
 - **Both contracts implement the same state machine.** Each replays the vectors generated from one reference model, row by row and in multi-step sequences, including the second either side of every deadline, parked payouts and zero deposits.
