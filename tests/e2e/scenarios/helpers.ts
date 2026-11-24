@@ -223,9 +223,7 @@ export function expectClean(w: World, tabs: TakerTab[] = []): void {
 
 /**
  * The address the sell-XMR page tells the user to pay, read from the page as soon as the panel is in the document.
- * (Three times in about thirty runs Playwright's own "wait until visible" on this panel ran into its limit although the
- * panel's text was on the page the moment the wait gave up: BUGS.md O3. The panel is therefore looked up by plain polling,
- * and a late appearance is written to the run's observations instead of being lost.)
+ * A late appearance (BUGS.md O3, closed) is written to the run's observations instead of being lost.
  */
 export async function payAddressOnPage(page: Page, label: string, timeoutMs = 240_000): Promise<string> {
   const panel = page.getByTestId('pay-xmr');
@@ -234,20 +232,4 @@ export async function payAddressOnPage(page: Page, label: string, timeoutMs = 24
   const secs = Math.round((Date.now() - t0) / 1000);
   if (secs > 60 && process.env['E2E_KNOWN_FAILURES_REPORT']) appendFileSync(`${process.env['E2E_KNOWN_FAILURES_REPORT']}.observations`, `O3 ${label}: the pay address appeared ${secs} s after the maker's funding was mined\n`);
   return address;
-}
-
-/**
- * Wait until every unspent output of each maker's inventory wallet is frozen, that is until the daemon's periodic inventory
- * pass has taken in whatever arrived since the last one (change, a swept joint address). While BUGS.md BUG-4 is open, a lock
- * prepared before that pass can pull such an output in as an extra input and the next lock can then try to spend it again;
- * ordinary scenarios start from a settled inventory so that they do not depend on that race.
- */
-export async function inventorySettled(w: World): Promise<void> {
-  for (const m of w.makers) {
-    if (!m.running) continue;
-    await waitFor(`maker ${m.o.n}'s inventory pass`, async () => {
-      const r = await m.wallet.call<{ transfers?: { spent: boolean; frozen: boolean }[] }>('incoming_transfers', { transfer_type: 'available', account_index: 0 });
-      return (r.transfers ?? []).every((t) => t.spent || t.frozen);
-    }, { timeoutMs: 90_000, intervalMs: 500 });
-  }
 }

@@ -3,9 +3,10 @@
 //     validator, not a cluster), initialised, with a mock USDC mint.
 //   - Ethereum: a local anvil (chain id 31337, never a fork) with the contract deployed behind its
 //     proxy by WP3's anvil-only forge script, and its mock USDC.
-// Time is driven explicitly with `advance`. svm-rpc's clock moves only on `svm_warp`. anvil mines a
-// block every second so that the `finalized` tag (two blocks behind the head here) keeps moving
-// without any test sleeping for it.
+// Time is driven explicitly with `advance`. svm-rpc's clock moves only on `svm_warp`. anvil is started
+// with `--block-time 1`: a block every second from the first, so the `finalized` tag (two blocks behind
+// the head here) keeps moving by itself. `startEthProxy` puts a JSON-RPC proxy in front of it that can
+// hold `finalized` back for one party, which is how a realistic finality delay is played.
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
@@ -142,7 +143,7 @@ export async function startEthereum(): Promise<EthWorld> {
   const url = `http://127.0.0.1:${port}`;
   // --slots-in-an-epoch 1: `safe` is one block and `finalized` two blocks behind the head, so finality
   // costs seconds, not the 64 blocks of the default. --block-time 1: blocks keep coming on their own.
-  const proc = startProc('anvil', process.env['ANVIL'] ?? 'anvil', ['--host', '127.0.0.1', '--port', String(port), '--chain-id', '31337', '--slots-in-an-epoch', '1', '--silent']);
+  const proc = startProc('anvil', process.env['ANVIL'] ?? 'anvil', ['--host', '127.0.0.1', '--port', String(port), '--chain-id', '31337', '--slots-in-an-epoch', '1', '--block-time', '1', '--silent']);
   const rpc = <T = unknown>(method: string, params: unknown[] = []): Promise<T> => jsonRpc<T>(url, method, params);
   await waitFor('anvil', async () => (await rpc<string>('eth_chainId')) === '0x7a69', { timeoutMs: 30_000, intervalMs: 100 });
   // XMRSWAP_DEPLOY_OUT=-: the script writes no file; the addresses are read from its output.
@@ -199,7 +200,59 @@ export async function startEthereum(): Promise<EthWorld> {
   };
   await w.fund(stranger.address);
   for (const a of [taker, taker2, taker3]) await w.fund(a.address, 1000n * 10n ** 18n, 1_000_000_000_000n);
-  // From here on a block every second (the deployment above ran with instant mining).
-  await rpc('evm_setIntervalMining', [1]);
   return w;
+}
+
+// ------------------------------------------------------------------ finality as one party sees it
+
+export interface EthProxy {
+  url: string;
+  /** While set, `finalized` and `safe` never name a block above this one for whoever reads through the proxy. */
+  heldAt: bigint | null;
+  /** Hold finality at the current head: nothing mined from now on becomes final for this reader until `release`. */
+  hold(): Promise<bigint>;
+  release(): void;
+  close(): Promise<void>;
+}
+
+/** A pass-through JSON-RPC proxy in front of anvil (with CORS, so a page can use it) that can hold the finality tags back. */
+export async function startEthProxy(target: string): Promise<EthProxy> {
+  const http = await import('node:http');
+  const p: EthProxy = { url: '', heldAt: null, hold: async () => 0n, release: () => undefined, close: async () => undefined };
+  const call = async (body: unknown): Promise<any> => (await fetch(target, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })).json();
+  const rewrite = async (req: { method?: string; params?: unknown[] }): Promise<void> => {
+    if (p.heldAt === null || !Array.isArray(req.params)) return;
+    const real = BigInt(((await call({ jsonrpc: '2.0', id: 0, method: 'eth_getBlockByNumber', params: ['finalized', false] })) as { result: { number: string } }).result.number);
+    const tag = `0x${(real < p.heldAt ? real : p.heldAt).toString(16)}`;
+    const swap = (v: unknown): unknown => (v === 'finalized' || v === 'safe' ? tag : v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => [k, k === 'toBlock' || k === 'fromBlock' || k === 'blockNumber' ? swap(x) : x])) : v);
+    req.params = req.params.map(swap);
+  };
+  const server = http.createServer((req, res) => {
+    const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': 'POST, OPTIONS' };
+    if (req.method === 'OPTIONS') return void res.writeHead(204, cors).end();
+    const chunks: Buffer[] = [];
+    req.on('data', (c: Buffer) => chunks.push(c));
+    req.on('end', () => {
+      void (async () => {
+        try {
+          const body = JSON.parse(Buffer.concat(chunks).toString() || '{}') as { method?: string; params?: unknown[] } | { method?: string; params?: unknown[] }[];
+          for (const r of Array.isArray(body) ? body : [body]) await rewrite(r);
+          const out = await call(body);
+          res.writeHead(200, { ...cors, 'content-type': 'application/json' });
+          res.end(JSON.stringify(out));
+        } catch {
+          res.writeHead(502, cors).end();
+        }
+      })();
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  p.url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  p.hold = async () => {
+    p.heldAt = BigInt(((await call({ jsonrpc: '2.0', id: 0, method: 'eth_blockNumber', params: [] })) as { result: string }).result);
+    return p.heldAt;
+  };
+  p.release = () => void (p.heldAt = null);
+  p.close = () => new Promise<void>((r) => (server.closeAllConnections(), server.close(() => r())));
+  return p;
 }

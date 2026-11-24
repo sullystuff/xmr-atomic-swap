@@ -3,11 +3,11 @@
 // real XMR on the Monero regtest. Loopback only. Every market, both directions.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Market } from '@xmrswap/protocol';
-import { REGTEST_MAX_FEE, isMined } from '../src/monero.js';
+import { REGTEST_MAX_FEE, isMined, poolTxids } from '../src/monero.js';
 import { type TakerTab, openTab, text } from '../src/ui.js';
 import { waitFor } from '../src/util.js';
 import { type World, startWorld, stopShared } from '../src/world.js';
-import { advanceTo, balances, chainOf, counterDelta, counters, deadlines, expectClean, holdings, pageNote, payAddressOnPage, readSwap, registerRecoverySecrets, scenario, track, uiLockBuy, uiTakeSell, untilPhase, untilState, inventorySettled } from './helpers.js';
+import { advanceTo, balances, chainOf, counterDelta, counters, deadlines, expectClean, holdings, pageNote, payAddressOnPage, readSwap, registerRecoverySecrets, scenario, track, uiLockBuy, uiTakeSell, untilPhase, untilState } from './helpers.js';
 
 let w: World;
 // One browser profile for the whole file: one user, one recovery file, eight swaps.
@@ -20,9 +20,6 @@ afterAll(async () => {
   await tab?.close().catch(() => undefined);
   await w?.stop();
   await stopShared();
-});
-beforeEach(async () => {
-  await inventorySettled(w);
 });
 
 const MARKETS: Market[] = ['sol', 'usdc_sol', 'eth', 'usdc_eth'];
@@ -327,6 +324,79 @@ describe('V-1 on Ethereum, direction B: a lost tab while selling XMR', () => {
     await waitFor('the daemon to sweep the XMR', async () => (await w.maker.swapDetail(ref)).sweep_txid, { timeoutMs: 180_000, context: () => w.maker.swapDetail(ref) });
     await w.mine(1);
     expectClean(w, [second]);
+  }));
+});
+
+describe('Ethereum finality as the page and the maker see it (O3, X-2)', () => {
+  it('eth sell: while the maker\'s funding is mined but not final the page says what it waits for and shows no address; once final the address appears promptly', scenario(() => w, async () => {
+    const { page } = tab;
+    const { ref } = await uiTakeSell(tab, w, { market: 'eth', xmr: '0.25' });
+    // From here on nothing new becomes final for the page.
+    await w.uiEth!.hold();
+    await untilState(w, ref, 'ACTIVE');
+    await text(page, /The maker has funded\. Waiting for its deposit to be final on Ethereum/).waitFor({ timeout: 60_000 });
+    await page.waitForTimeout(5000);
+    // Five seconds (five blocks) later: still waiting, still no address. The taker must not pay before the deposit is final.
+    expect(await page.getByTestId('pay-xmr').count()).toBe(0);
+    await text(page, /Waiting for its deposit to be final on Ethereum/).waitFor();
+    w.uiEth!.release();
+    const released = Date.now();
+    const address = await payAddressOnPage(page, 'finality eth', 30_000);
+    expect(Date.now() - released).toBeLessThan(20_000);
+    expect(address).toMatch(/^4[1-9A-HJ-NP-Za-km-z]{94}$/);
+    // The rest is the ordinary sale.
+    const funded = (await readSwap(w, ref))!;
+    await w.takerWallet.pay(address, funded.xmr);
+    await untilState(w, ref, 'NOTICED');
+    await w.mine(2);
+    const noticed = (await readSwap(w, ref))!;
+    await advanceTo(w, noticed, deadlines(noticed).tReadyMin!);
+    await untilState(w, ref, 'DONE');
+    await text(page, 'Complete').waitFor({ timeout: 90_000 });
+    await w.mine(10);
+    await waitFor('the daemon to sweep the XMR', async () => (await w.maker.swapDetail(ref)).sweep_txid, { timeoutMs: 180_000, context: () => w.maker.swapDetail(ref) });
+    await w.mine(1);
+    await page.goto(w.ui.url);
+    expectClean(w, [tab]);
+  }));
+
+  it('X-2, eth buy: the maker\'s notice takes a full finality delay (1,152 s) to become final; it sends no XMR before that, then Monero blocks come 120 s apart; the lock is at depth before T_cut and the tab sets ready instead of refunding', scenario(() => w, async () => {
+    const eth = w.eth!;
+    const { page } = tab;
+    const c0 = await counters(w.maker, 'ethereum');
+    const { ref } = await uiLockBuy(tab, w, { market: 'eth', xmr: '0.5' });
+    // The approval is the last thing that becomes final for the maker at the usual pace.
+    await untilState(w, ref, 'ACTIVE');
+    await waitFor('the approval final for the maker', async () => (await w.maker.swapDetail(ref)).state === 'ACTIVE', { timeoutMs: 60_000 });
+    await w.makerEth!.hold();
+    await untilState(w, ref, 'NOTICED');
+    const noticed = (await readSwap(w, ref))!;
+    const d = deadlines(noticed);
+    // 1,152 s of chain time pass; the notice is mined but not final for the maker, and no XMR has left its wallet.
+    await eth.advanceTo(noticed.tNotice + 1152n);
+    await new Promise((r) => setTimeout(r, 6000));
+    const waiting = await w.maker.swapDetail(ref);
+    expect(waiting.intents.filter((i: { kind: string }) => i.kind === 'xmr_relay')).toEqual([]);
+    expect(await poolTxids()).toEqual([]);
+    expect(await untilState(w, ref, 'NOTICED')).toBe('NOTICED');
+    w.makerEth!.release();
+    await untilPhase(w, ref, 'xmr_relayed');
+    // Two Monero blocks, 120 s apart.
+    for (let i = 0; i < 2; i++) {
+      await eth.advance(120);
+      await w.mine(1);
+    }
+    expect((await eth.now()) < d.tCut!).toBe(true);
+    // At depth before the cutoff: the tab sets ready (it does not refund), the maker claims once ready is final.
+    await untilState(w, ref, ['READY', 'DONE']);
+    await untilState(w, ref, 'DONE');
+    expect(counterDelta(c0, await counters(w.maker, 'ethereum'))).toEqual({ locks: 1, approvals: 1, notices: 1, readies: 1, completed: 1 });
+    await w.mine(10);
+    await text(page, /Sweep sent, waiting for a block/).waitFor({ timeout: 180_000 });
+    await w.mine(1);
+    await text(page, 'The XMR is in your wallet').waitFor({ timeout: 90_000 });
+    await page.goto(w.ui.url);
+    expectClean(w, [tab]);
   }));
 });
 

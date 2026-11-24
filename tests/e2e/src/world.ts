@@ -4,7 +4,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { init } from '@xmrswap/core-wasm';
-import { type EthWorld, type SolWorld, startEthereum, startSolana } from './chains.js';
+import { type EthProxy, type EthWorld, type SolWorld, startEthProxy, startEthereum, startSolana } from './chains.js';
 import { Maker, type MakerOpts, type PriceServer, startPriceServer } from './maker.js';
 import { NODE_A, NODE_B, type NodeProxy, REGTEST_MAX_FEE, WALLET_RPC_MAKER, Wallet, mine, startNodeProxy, startWalletRpc, tip } from './monero.js';
 import { type Proc, stopAll } from './procs.js';
@@ -37,6 +37,9 @@ export interface World {
   /** The second Monero node as the UI sees it, and as the daemons see it: each can be made to lie or vanish. */
   uiNodeB: NodeProxy;
   makerNodeB: NodeProxy;
+  /** Ethereum as the page reads it and as the daemons read it: finality can be held back for either. */
+  uiEth: EthProxy | null;
+  makerEth: EthProxy | null;
   /** The taker's own Monero wallet: pays in direction B, receives sweeps, and collects the block rewards. */
   takerWallet: Wallet;
   takerXmr: string;
@@ -78,6 +81,8 @@ export async function startWorld(o: WorldOpts = {}): Promise<World> {
 
   const sol = await startSolana();
   const eth = o.ethereum === false ? null : await startEthereum();
+  const uiEth = eth ? await startEthProxy(eth.url) : null;
+  const makerEth = eth ? await startEthProxy(eth.url) : null;
   const prices = await startPriceServer();
   const tor = await startFakeTor();
   const uiNodeB = await startNodeProxy(NODE_B);
@@ -94,7 +99,7 @@ export async function startWorld(o: WorldOpts = {}): Promise<World> {
       extraWalletRpcs[i - 1] ??= await startWalletRpc(`maker-${n}`, EXTRA_MAKER_WALLET_PORTS[i - 1]!);
       walletRpcUrl = extraWalletRpcs[i - 1]!.url;
     }
-    const m = new Maker({ ...spec, n, walletRpcUrl, moneroNodes: [NODE_A, makerNodeB.url], priceUrl: prices.url, onion: testOnion(n), ...(o.ethereum === false ? { ethereum: false } : {}) }, sol, eth);
+    const m = new Maker({ ...spec, n, walletRpcUrl, moneroNodes: [NODE_A, makerNodeB.url], priceUrl: prices.url, onion: testOnion(n), ...(makerEth ? { ethRpcUrl: makerEth.url } : {}), ...(o.ethereum === false ? { ethereum: false } : {}) }, sol, eth);
     await m.prepare(o.inventoryBlocks ?? 24, mine, takerXmr);
     makers.push(m);
   }
@@ -117,14 +122,14 @@ export async function startWorld(o: WorldOpts = {}): Promise<World> {
   const relay = await makeRelay({ solanaRpc: sol.url, programId: sol.client.programId, torPort: tor.port, moneroNodes: [NODE_A, NODE_B], allowedOrigins: [uiOrigin] });
   await relay.start();
   const ui = await serveWeb(uiPort, {
-    solanaRpc: sol.url, ...(eth ? { ethereumRpc: eth.url, ethereumChainId: 31337, contract: eth.contract } : {}), moneroNodes: [NODE_A, uiNodeB.url], moneroNetwork: 'regtest',
+    solanaRpc: sol.url, ...(eth ? { ethereumRpc: uiEth!.url, ethereumChainId: 31337, contract: eth.contract } : {}), moneroNodes: [NODE_A, uiNodeB.url], moneroNetwork: 'regtest',
     programId: sol.client.programId, relayUrl: relay.url, mode: o.uiMode ?? 'self-hosted', pollMs: 700, sweepMaxFee: REGTEST_MAX_FEE.toString(),
   });
 
   const secrets = new Map<string, string>();
   const takerSeed = fill(44);
   const w: World = {
-    sol, eth, makers, maker: makers[0]!, prices, tor, relay, ui, uiNodeB, makerNodeB, takerWallet, takerXmr, takerSeed, secrets,
+    sol, eth, makers, maker: makers[0]!, prices, tor, relay, ui, uiNodeB, makerNodeB, uiEth, makerEth, takerWallet, takerXmr, takerSeed, secrets,
     async advance(secs) {
       await sol.warp(secs);
       if (eth) await eth.advance(secs);
@@ -153,6 +158,8 @@ export async function startWorld(o: WorldOpts = {}): Promise<World> {
       await prices.close().catch(() => undefined);
       await uiNodeB.close().catch(() => undefined);
       await makerNodeB.close().catch(() => undefined);
+      await uiEth?.close().catch(() => undefined);
+      await makerEth?.close().catch(() => undefined);
       await sol.stop().catch(() => undefined);
       await eth?.stop().catch(() => undefined);
     },

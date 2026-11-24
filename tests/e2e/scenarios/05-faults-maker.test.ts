@@ -12,7 +12,7 @@ import { NODE_A, NODE_B, REGTEST_MAX_FEE, isMined, nodeOther, nodeRpc, poolTxids
 import { type Opened, SdkTaker } from '../src/taker.js';
 import { XMR, e2eRoot, stateRoot, waitFor } from '../src/util.js';
 import { type World, startWorld, stopShared } from '../src/world.js';
-import { balances, counterDelta, counters, deadlines, expectClean, holdings, scenario, stateName, untilPhase, untilState, inventorySettled } from './helpers.js';
+import { balances, counterDelta, counters, deadlines, expectClean, holdings, scenario, stateName, untilPhase, untilState } from './helpers.js';
 
 let w: World;
 let taker: SdkTaker;
@@ -27,7 +27,6 @@ afterAll(async () => {
 beforeEach(async () => {
   if (!w.maker.running) await w.maker.start();
   w.makerNodeB.mode = 'honest';
-  await inventorySettled(w);
 });
 
 const HALF = XMR / 2n;
@@ -392,6 +391,62 @@ describe('E-1: Ethereum specifics the daemon enforces', () => {
     await untilPhase(w, first.ref, 'xmr_relayed');
     await w.mine(2);
     await finishA(first);
+  }));
+});
+
+describe('regressions for bugs this suite found in the daemon (BUGS.md BUG-3, BUG-4; both fixed)', () => {
+  it('an operator instruction that arrives while the daemon\'s own pass over the swap is in flight is carried out, not refused', scenario(() => w, async () => {
+    const c0 = await counters(w.maker, 'solana');
+    const o = await taker.open('sol', 0, QUARTER);
+    await untilPhase(w, o.ref, 'xmr_relayed');
+    await taker.refund(o);
+    await waitFor('the hold in the daemon\'s view', async () => (await w.maker.swapDetail(o.ref)).state === 'HOLD', { timeoutMs: 60_000 });
+    // One of the daemon's Monero nodes answers slowly, so each pass over this swap (it looks for its lock to take the XMR
+    // back) lasts seconds; the instruction is sent while such a pass is provably in flight.
+    w.makerNodeB.delayMs = 4000;
+    try {
+      await waitFor('a pass in flight', () => w.makerNodeB.pending > 0, { intervalMs: 20, timeoutMs: 60_000 });
+      const r = await w.maker.instruct(o.ref, 'release');
+      expect(r.refused).toBeUndefined();
+      await waitFor('the release on-chain', async () => counterDelta(c0, await counters(w.maker, 'solana'))['deposits_returned'] === 1, { timeoutMs: 90_000, context: () => w.maker.swapDetail(o.ref) });
+      await waitFor('the instruction answered', async () => (await w.maker.swapDetail(o.ref)).instruction?.status === 'carried_out', { timeoutMs: 60_000, context: () => w.maker.swapDetail(o.ref) });
+    } finally {
+      w.makerNodeB.delayMs = 0;
+    }
+  }));
+
+  it('back-to-back locks from a wallet that holds an unfrozen extra output both go out, spend distinct outputs, and nothing is aborted', scenario(() => w, async () => {
+    const c0 = await counters(w.maker, 'solana');
+    const alerts0 = (await w.maker.status()).alerts.filter((a) => a.kind === 'lock_double_spend').length;
+    const inputsOf = async (txid: string): Promise<string[]> => {
+      const r = await nodeOther<{ txs: { as_hex: string; pruned_as_hex?: string; prunable_as_hex?: string }[] }>(NODE_A, 'get_transactions', { txs_hashes: [txid] });
+      const t = r.txs[0]!;
+      return moneroTx.parseTx(t.as_hex || `${t.pruned_as_hex ?? ''}${t.prunable_as_hex ?? ''}`).inputs.map((i) => i.keyImage!).filter(Boolean);
+    };
+    for (let round = 0; round < 3; round++) {
+      // An output arrives in the inventory wallet (as a swept joint address or change does), unlocks, and the wallet has
+      // seen it before the daemon's next inventory pass: exactly the situation in which two locks once shared an input.
+      await w.takerWallet.pay(w.maker.xmrAddress, (3n * XMR) / 10n);
+      await w.mine(11);
+      await w.maker.wallet.refresh();
+      const first = await taker.open('sol', 0, QUARTER);
+      const d1 = await untilPhase(w, first.ref, 'xmr_relayed');
+      await w.mine(1);
+      const second = await taker.open('sol', 0, QUARTER);
+      const d2 = await untilPhase(w, second.ref, 'xmr_relayed');
+      await w.mine(2);
+      const [k1, k2] = [await inputsOf(d1.lock_txid), await inputsOf(d2.lock_txid)];
+      expect(k1.length).toBeGreaterThan(0);
+      expect(k2.length).toBeGreaterThan(0);
+      expect(k1.filter((k) => k2.includes(k))).toEqual([]);
+      // Both locks are real and at depth for the taker; the swaps are then wound up by the taker's refund.
+      expect((await taker.verify(first)).ok).toBe(true);
+      expect((await taker.verify(second)).ok).toBe(true);
+      await taker.refund(first);
+      await taker.refund(second);
+    }
+    expect((await w.maker.status()).alerts.filter((a) => a.kind === 'lock_double_spend').length).toBe(alerts0);
+    expect(counterDelta(c0, await counters(w.maker, 'solana'))).toEqual({ locks: 6, notices: 6, taker_refunds_noticed: 6 });
   }));
 });
 

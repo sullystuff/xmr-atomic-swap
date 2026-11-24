@@ -9,7 +9,7 @@ import { type Lie, RogueMaker } from '../src/rogue.js';
 import { type TakerTab, openTab, text } from '../src/ui.js';
 import { SOL, XMR, waitFor } from '../src/util.js';
 import { type World, startWorld, stopShared } from '../src/world.js';
-import { advanceTo, balances, connect, counterDelta, counters, deadlines, dump, expectClean, holdings, pageNote, readSwap, registerRecoverySecrets, scenario, swapState, track, uiLockBuy, untilPhase, untilState, inventorySettled } from './helpers.js';
+import { advanceTo, balances, connect, counterDelta, counters, deadlines, dump, expectClean, holdings, pageNote, readSwap, registerRecoverySecrets, scenario, swapState, track, uiLockBuy, untilPhase, untilState } from './helpers.js';
 
 let w: World;
 let rogue: RogueMaker;
@@ -32,7 +32,6 @@ beforeEach(async () => {
   if (!w.relay.proc) await w.relay.start();
   w.uiNodeB.mode = 'honest';
   await rogue.refresh(ROGUE_PRICE);
-  await inventorySettled(w);
 });
 
 describe('F-1: a maker announces a false XMR lock', () => {

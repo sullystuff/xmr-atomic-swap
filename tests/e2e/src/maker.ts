@@ -68,6 +68,8 @@ export interface MakerOpts {
   priceUrl: string;
   /** The fake onion name the relay maps to this daemon's endpoint. */
   onion: string;
+  /** The Ethereum endpoint the daemon is given (the harness's finality proxy); default: anvil itself. */
+  ethRpcUrl?: string;
   markets?: Partial<Record<MarketName, Partial<Record<DirName, OfferCfg>>>>;
   /** Extra TOML appended verbatim (top-level tables not written by the harness). */
   extraToml?: string;
@@ -202,7 +204,7 @@ ${o.extraToml ?? ''}`;
     // A minimal environment: nothing of the developer's shell (wallet paths, RPC URLs, API keys) reaches the daemon.
     return {
       PATH: process.env['PATH'], HOME: path.join(this.dir, 'home'), NODE_ENV: 'production',
-      XMRSWAP_KEYSTORE_PASSPHRASE: PASSPHRASE, E2E_SOL: this.sol.url, ...(this.eth ? { E2E_ETH: this.eth.url } : {}),
+      XMRSWAP_KEYSTORE_PASSPHRASE: PASSPHRASE, E2E_SOL: this.sol.url, ...(this.eth ? { E2E_ETH: this.o.ethRpcUrl ?? this.eth.url } : {}),
       E2E_XMR_A: this.o.moneroNodes[0], E2E_XMR_B: this.o.moneroNodes[1], E2E_XMR_WALLET: this.o.walletRpcUrl,
     };
   }
@@ -265,20 +267,9 @@ ${o.extraToml ?? ''}`;
     return j as T;
   }
 
-  /**
-   * An operator instruction through the daemon's API, as the console sends it. While BUG-3 (tests/e2e/BUGS.md) is open, an
-   * instruction that lands during one of the daemon's own passes over the swap can come back refused as
-   * `not-available-in-state` although the state accepts it; an operator would press the button again, and so does this.
-   * Any other refusal is returned as it is.
-   */
-  async instruct(ref: string, action: 'approve' | 'reject' | 'abort' | 'withhold' | 'release', body: unknown = {}): Promise<{ ok: boolean; outcome?: string; refused?: string; detail?: string }> {
-    let last: { ok: boolean; outcome?: string; refused?: string; detail?: string } = { ok: false };
-    for (let attempt = 0; attempt < 4; attempt++) {
-      last = await this.api('POST', `/api/swaps/${encodeURIComponent(ref)}/${action}`, body);
-      const stillOffered = ((await this.swapDetail(ref).catch(() => null))?.actions ?? []).includes(action);
-      if (!(last.outcome === 'refused' && last.refused === 'not-available-in-state' && stillOffered)) break;
-    }
-    return last;
+  /** An operator instruction through the daemon's API, exactly as the console sends it: one request, the daemon's answer. */
+  instruct(ref: string, action: 'approve' | 'reject' | 'abort' | 'withhold' | 'release', body: unknown = {}): Promise<{ ok: boolean; outcome?: string; refused?: string; detail?: string }> {
+    return this.api('POST', `/api/swaps/${encodeURIComponent(ref)}/${action}`, body);
   }
 
   /** Register on Solana, then Ethereum, then link the two, each signed by the owner key outside the daemon. */

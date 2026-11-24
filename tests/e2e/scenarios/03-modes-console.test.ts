@@ -11,7 +11,7 @@ import { SdkTaker } from '../src/taker.js';
 import { type TakerTab, openTab, text } from '../src/ui.js';
 import { XMR, fill, waitFor } from '../src/util.js';
 import { type World, startWorld, stopShared } from '../src/world.js';
-import { advanceTo, balances, connect, counterDelta, counters, deadlines, dump, expectClean, openOffer, pageNote, readSwap, registerRecoverySecrets, scenario, swapState, track, uiLockBuy, untilPhase, untilState, inventorySettled } from './helpers.js';
+import { advanceTo, balances, connect, counterDelta, counters, deadlines, dump, expectClean, openOffer, pageNote, readSwap, registerRecoverySecrets, scenario, swapState, track, uiLockBuy, untilPhase, untilState } from './helpers.js';
 
 let w: World;
 let taker: SdkTaker;
@@ -51,7 +51,6 @@ afterAll(async () => {
 });
 beforeEach(async () => {
   if (!w.maker.running) await w.maker.start();
-  await inventorySettled(w);
 });
 
 /** Open a page of the console, served by the daemon itself, signing in with the API token on first use. */
@@ -70,28 +69,14 @@ async function consolePage(route: string): Promise<Page> {
 }
 const HALF = XMR / 2n;
 
-/**
- * Press a deposit action in the console (and its confirmation) and wait for its effect on-chain. While BUG-3
- * (tests/e2e/BUGS.md) is open the daemon can answer a valid instruction "not carried out … no longer in a state that
- * accepts this" when it lands during one of its own passes over the swap; the row then still offers the action, and an
- * operator presses it again. Nothing else is retried, and the effect itself is always asserted by the caller.
- */
+/** Press a deposit action in the console (and its confirmation) once, and wait for its effect on-chain. */
 async function pressUntil(page: Page, row: ReturnType<Page['locator']>, name: RegExp, done: () => Promise<boolean>): Promise<void> {
-  for (let attempt = 0; attempt < 4; attempt++) {
-    await row.getByRole('button', { name }).first().click();
-    const confirm = page.getByRole('alertdialog').getByRole('button', { name: new RegExp(name.source.replace('^', '').split(' ')[0]!) });
-    if (await confirm.count()) await confirm.click();
-    const end = Date.now() + 30_000;
-    while (Date.now() < end) {
-      if (await done()) return;
-      if (await page.locator('[data-outcome="refused"][data-reason="not-available-in-state"]').count()) break;
-      await page.waitForTimeout(300);
-    }
-    if (await done()) return;
-    await page.reload();
-    await row.waitFor({ timeout: 30_000 });
-  }
-  throw new Error(`the console's "${name.source}" was never carried out`);
+  await row.getByRole('button', { name }).first().click();
+  const confirm = page.getByRole('alertdialog').getByRole('button', { name: new RegExp(name.source.replace('^', '').split(' ')[0]!) });
+  if (await confirm.count()) await confirm.click();
+  await waitFor(`the console's "${name.source}" to take effect`, done, { timeoutMs: 60_000, context: () => page.locator('main').innerText() });
+  // The daemon answered "carried out"; a refusal here would be shown in place.
+  expect(await page.locator('[data-outcome="refused"]').count()).toBe(0);
 }
 
 describe('window mode (offer mode 1): a lock above the automatic limit waits for the maker', () => {
@@ -333,18 +318,21 @@ describe('the console against the live daemon', () => {
     expectClean(w, [tab, consoleTab]);
   }));
 
-  it('Configuration: an offer setting changed through the daemon\'s configuration API (what the console\'s save sends) is applied without a restart and the taker\'s page shows the new terms', scenario(() => w, async () => {
-    // (The console's own "Validate and save" refuses this harness's configuration before it reaches the daemon: BUGS.md BUG-2,
-    // kept as a known failure in 99-known-failures. The console's page is still opened here and must show the live values.)
+  it('Configuration: the maker changes an offer setting in the console and saves; the daemon applies it without a restart; the rest of the file is kept; the taker\'s page shows the new terms (formerly BUG-2)', scenario(() => w, async () => {
     const before = (await taker.offer(w.maker, 'sol', 1)).prices[0]!;
     expect(before).toBe(1_470_000_000n); // 150 / 100 SOL per XMR, less the 2% deviation
     const cp = await consolePage('config');
     await cp.getByRole('button', { name: /^Edit SOL.*buy/i }).click();
-    await cp.getByRole('region', { name: /SOL.*buy.*settings/i }).getByLabel(/^Deviation from reference/).first().waitFor();
-    await w.maker.setMarkets({ sol: { buy_xmr: { deviation_pct: 5 } } });
+    const section = cp.getByRole('region', { name: /SOL.*buy.*settings/i });
+    const dev = section.getByLabel(/^Deviation from reference/).first();
+    await dev.fill('5');
+    await dev.blur();
+    await cp.getByRole('button', { name: 'Validate and save' }).click();
     // Applied without a restart: the next refresh publishes the new price; the file on disk carries the edit.
     await waitFor('the new price on-chain', async () => (await w.sol.client.getOffer(w.maker.makerPda, 0, 1))?.prices[0] === 1_425_000_000n, { timeoutMs: 60_000, context: async () => (await w.sol.client.getOffer(w.maker.makerPda, 0, 1))?.prices[0] });
     expect(readFileSync(w.maker.configPath, 'utf8')).toMatch(/deviation_pct = 5/);
+    // The file still carries the loopback price source this harness runs on (the key the console once refused): the save patched one line.
+    expect(readFileSync(w.maker.configPath, 'utf8')).toMatch(/base_url = "http:\/\/127\.0\.0\.1:\d+"/);
     expect(w.maker.starts).toBe(1);
     const log = await w.maker.api<{ entries: { source: string; changes: { path: string }[] }[] }>('GET', '/api/config/log');
     expect(log.entries.some((e) => e.changes.some((c) => c.path === 'markets.sol.buy_xmr.deviation_pct'))).toBe(true);
