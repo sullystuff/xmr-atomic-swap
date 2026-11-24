@@ -3,8 +3,8 @@
  * HAND-WRITTEN fixtures (see fixtures/README.md).
  */
 import { describe, expect, it } from 'vitest';
-import { type AssetId, ExchangeAdapter, type ExchangeDriver, KrakenDriver, MemoryStore, type RefillRequest, VenueError, krakenSign } from '../src/index.js';
-import { ETH_ADDR, FixtureHttp, SOL_ADDR, XMR_ADDR, everythingSeen, fakeCtx, fixture, prices } from './helpers.js';
+import { type AssetId, ExchangeAdapter, type ExchangeDriver, KrakenDriver, MemoryStore, type RefillRequest, VenueError, createAdapters, krakenSign, parseRebalanceSettings, parseRebalanceToml } from '../src/index.js';
+import { ALLOW, ETH_ADDR, FixtureHttp, SOL_ADDR, XMR_ADDR, XMR_ADDR_2, everythingSeen, fakeCtx, fixture, prices } from './helpers.js';
 
 const NOW = 1_800_000_000;
 const req = (over: Partial<RefillRequest> = {}): RefillRequest => ({ from: 'usdc_sol', to: 'xmr', amountIn: 2_000_000_000n, rate: 'float', payoutAddress: XMR_ADDR, refundAddress: SOL_ADDR, ...over });
@@ -155,7 +155,7 @@ describe('Kraken driver', () => {
   const make = (routes: ConstructorParameters<typeof FixtureHttp>[0]) => {
     const http = new FixtureHttp(routes);
     let n = 1_800_000_000_000;
-    return { http, d: new KrakenDriver({ http, apiKeyEnv: 'EXCHANGE_KEY', apiSecretEnv: 'EXCHANGE_SECRET', env, nonce: () => n++, withdrawKeys: { [XMR_ADDR]: 'maker-xmr' } }) };
+    return { http, d: new KrakenDriver({ http, apiKeyEnv: 'EXCHANGE_KEY', apiSecretEnv: 'EXCHANGE_SECRET', env, nonce: () => n++, withdrawKeys: { [XMR_ADDR]: 'maker-xmr' }, allowlist: ALLOW }) };
   };
 
   it('reproduces the API-Sign of the worked example in Kraken\'s documentation', () => {
@@ -261,7 +261,142 @@ describe('Kraken driver', () => {
     const { d } = make([{ method: 'POST', path: '/0/private/Balance', body: f.error_key }]);
     const err = await d.balance('xmr').catch((e) => e);
     expect(err.message).toBe('POST https://api.kraken.com/0/private/Balance -> 200: EAPI:Invalid key');
-    const none = new KrakenDriver({ http: new FixtureHttp([]), apiKeyEnv: 'EXCHANGE_KEY', apiSecretEnv: 'EXCHANGE_SECRET', env: () => undefined, withdrawKeys: {} });
+    const none = new KrakenDriver({ http: new FixtureHttp([]), apiKeyEnv: 'EXCHANGE_KEY', apiSecretEnv: 'EXCHANGE_SECRET', env: () => undefined, withdrawKeys: {}, allowlist: ALLOW });
     expect(none.ready()).toEqual({ ok: false, reason: 'kraken: environment variable EXCHANGE_KEY (API key) is not set' });
+  });
+});
+
+describe('[rebalance.venues.exchange.withdraw_keys] (SPEC 7.2)', () => {
+  const f = fixture('kraken.json');
+  const env = (n: string) => ({ EXCHANGE_KEY: 'kraken-key-DDDD4444', EXCHANGE_SECRET: Buffer.from('kraken-test-secret-not-real').toString('base64') })[n];
+  const toml = (keys: string) => `
+[rebalance]
+mode = "auto"
+
+[rebalance.allowlist]
+xmr = ["${XMR_ADDR}"]
+sol = ["${SOL_ADDR}"]
+eth = ["${ETH_ADDR}"]
+
+[rebalance.venues.exchange]
+enabled = true
+name = "kraken"
+api_key_env = "EXCHANGE_KEY"
+api_secret_env = "EXCHANGE_SECRET"
+
+[rebalance.venues.exchange.withdraw_keys]
+${keys}
+`;
+  const routes = () => [
+    { method: 'GET' as const, path: '/0/public/Ticker', when: 'pair=USDCUSD', body: f.ticker_usdc },
+    { method: 'GET' as const, path: '/0/public/Ticker', when: 'pair=XMRUSD', body: f.ticker_xmr },
+    { method: 'POST' as const, path: '/0/private/WithdrawInfo', body: f.withdraw_info },
+    { method: 'POST' as const, path: '/0/private/Withdraw', body: f.withdraw },
+    { method: 'POST' as const, path: '/0/private/DepositAddresses', body: f.deposit_addresses },
+  ];
+  const build = (keys: string, allowlist?: { xmr: string[]; sol: string[]; eth: string[] }) => {
+    const { settings } = parseRebalanceToml(toml(keys));
+    const http = new FixtureHttp(routes());
+    const built = createAdapters({ settings, http, prices: prices(), env, now: () => NOW, ...(allowlist ? { allowlist } : {}) });
+    return { settings, http, built, exchange: built.adapters.exchange! };
+  };
+
+  it('parses the table: address = key name', () => {
+    const { settings } = parseRebalanceToml(toml(`"${XMR_ADDR}" = "maker-xmr"\n"${ETH_ADDR}" = "maker-eth"`));
+    expect(settings.venues.exchange.withdraw_keys).toEqual({ [XMR_ADDR]: 'maker-xmr', [ETH_ADDR]: 'maker-eth' });
+    expect(settings.venues.exchange.enabled).toBe(true);
+    expect(parseRebalanceSettings({}).settings.venues.exchange.withdraw_keys).toEqual({});
+    expect(() => parseRebalanceSettings({ venues: { exchange: { withdraw_keys: { [XMR_ADDR]: 5 } } } })).toThrow(/exchange\.withdraw_keys/);
+    expect(() => parseRebalanceSettings({ venues: { exchange: { withdraw_keys: { [XMR_ADDR]: '' } } } })).toThrow(/exchange\.withdraw_keys/);
+  });
+
+  it('the Kraken driver built from the settings withdraws under the configured key name', async () => {
+    const { http, exchange } = build(`"${XMR_ADDR}" = "maker-xmr"`);
+    const q = await exchange.quote({ from: 'usdc_sol', to: 'xmr', amountIn: 2_000_000_000n, rate: 'float', payoutAddress: XMR_ADDR, refundAddress: SOL_ADDR });
+    expect(q.amountOut).toBe(4_947_610_723_192n);
+    expect(Object.fromEntries(new URLSearchParams(http.last('/WithdrawInfo').body!))).toMatchObject({ asset: 'XMR', key: 'maker-xmr' });
+  });
+
+  it('passes the key name to Withdraw, and finds an EVM address whatever its letter case', async () => {
+    const http = new FixtureHttp(routes());
+    const d = new KrakenDriver({ http, apiKeyEnv: 'EXCHANGE_KEY', apiSecretEnv: 'EXCHANGE_SECRET', env, withdrawKeys: { [XMR_ADDR]: 'maker-xmr', [ETH_ADDR.toLowerCase()]: 'maker-eth' }, allowlist: ALLOW });
+    await d.withdraw({ asset: 'xmr', address: XMR_ADDR, amount: 1_000_000_000_000n });
+    expect(new URLSearchParams(http.last('/Withdraw').body!).get('key')).toBe('maker-xmr');
+    await d.withdraw({ asset: 'usdc_eth', address: ETH_ADDR, amount: 1_000_000n });
+    expect(Object.fromEntries(new URLSearchParams(http.last('/Withdraw').body!))).toMatchObject({ asset: 'USDC', key: 'maker-eth' });
+    expect(d.withdrawKey('xmr', XMR_ADDR)).toBe('maker-xmr');
+    // Monero addresses are case-sensitive: a different case is a different address.
+    expect(() => d.withdrawKey('xmr', XMR_ADDR.toLowerCase())).toThrow(/not registered as a withdrawal key/);
+  });
+
+  it('an address with a key that is NOT on the allow-list is refused before any API call', async () => {
+    // The key map names a second address; the maker's allow-list does not.
+    const http = new FixtureHttp(routes());
+    const d = new KrakenDriver({ http, apiKeyEnv: 'EXCHANGE_KEY', apiSecretEnv: 'EXCHANGE_SECRET', env, withdrawKeys: { [XMR_ADDR]: 'maker-xmr', [XMR_ADDR_2]: 'someone-else' }, allowlist: ALLOW });
+    await expect(d.withdraw({ asset: 'xmr', address: XMR_ADDR_2, amount: 1_000_000_000_000n })).rejects.toThrow(/has a withdrawal key \("someone-else"\) but is not on the maker's xmr allow-list/);
+    await expect(d.withdrawFee('xmr', XMR_ADDR_2, 1n)).rejects.toThrow(/allow-list/);
+    expect(http.requests).toEqual([]);
+
+    // Through the adapter alone (no rebalancer, no guard): quote and execute refuse, nothing is asked of the exchange, nothing is sent.
+    const a = new ExchangeAdapter({ driver: d, prices: prices(), now: () => NOW });
+    const bad = { from: 'usdc_sol' as const, to: 'xmr' as const, amountIn: 2_000_000_000n, rate: 'float' as const, payoutAddress: XMR_ADDR_2, refundAddress: SOL_ADDR };
+    await expect(a.quote(bad)).rejects.toThrow(/allow-list/);
+    const good = await a.quote({ ...bad, payoutAddress: XMR_ADDR });
+    const before = http.requests.length;
+    const ctx = fakeCtx(NOW);
+    await expect(a.execute({ ...good, request: bad }, ctx)).rejects.toThrow(/allow-list/);
+    expect(http.requests.length).toBe(before);
+    expect(ctx.sol).toEqual([]);
+
+    // Built from settings, the same address is refused and the stray key is reported.
+    const { built, exchange, http: h2 } = build(`"${XMR_ADDR}" = "maker-xmr"\n"${XMR_ADDR_2}" = "someone-else"`);
+    expect(built.warnings).toEqual(['rebalance.venues.exchange.withdraw_keys has an address that is not on the allow-list (key "someone-else"); withdrawals to it are refused']);
+    await expect(exchange.quote(bad)).rejects.toThrow(/allow-list/);
+    expect(h2.requests).toEqual([]);
+  });
+
+  it('an allow-listed address with no key is refused with a clear message, before any API call', async () => {
+    const { exchange, http, built } = build(`"${ETH_ADDR}" = "maker-eth"`);
+    expect(built.warnings).toEqual([]);
+    const req: RefillRequest = { from: 'usdc_sol', to: 'xmr', amountIn: 2_000_000_000n, rate: 'float', payoutAddress: XMR_ADDR, refundAddress: SOL_ADDR };
+    const err = await exchange.quote(req).catch((e: Error) => e);
+    expect(err).toBeInstanceOf(VenueError);
+    expect((err as Error).message).toBe('exchange: kraken: the payout address is not registered as a withdrawal key on the account; register it at the exchange and add it to [rebalance.venues.exchange.withdraw_keys]');
+    expect((err as VenueError).fundsMoved).toBe(false);
+    expect(http.requests).toEqual([]);
+
+    const none = build('');
+    expect(none.built.warnings).toEqual(['rebalance.venues.exchange.withdraw_keys is empty: the exchange cannot withdraw to any address']);
+    await expect(none.exchange.quote(req)).rejects.toThrow(/withdraw_keys/);
+  });
+
+  it('is re-checked before the withdrawal: a key or allow-list entry removed mid-refill holds it with no Withdraw call', async () => {
+    const keys: Record<string, string> = { [XMR_ADDR]: 'maker-xmr' };
+    const http = new FixtureHttp([
+      ...routes(),
+      { method: 'POST', path: '/0/private/DepositStatus', body: f.deposit_status_success },
+      { method: 'POST', path: '/0/private/AddOrder', when: 'type=sell', body: f.add_order_sell },
+      { method: 'POST', path: '/0/private/AddOrder', when: 'type=buy', body: f.add_order_buy },
+      { method: 'POST', path: '/0/private/QueryOrders', when: 'OSELL', body: f.query_sell_closed },
+      { method: 'POST', path: '/0/private/QueryOrders', when: 'OBUY', body: f.query_buy_closed },
+      { method: 'POST', path: '/0/private/OpenOrders', body: f.open_orders_none },
+      { method: 'POST', path: '/0/private/ClosedOrders', body: f.closed_orders_sell_only },
+    ]);
+    const d = new KrakenDriver({ http, apiKeyEnv: 'EXCHANGE_KEY', apiSecretEnv: 'EXCHANGE_SECRET', env, withdrawKeys: keys, allowlist: ALLOW });
+    const a = new ExchangeAdapter({ driver: d, prices: prices(), now: () => NOW });
+    const ctx = fakeCtx(NOW);
+    const { handle } = await a.execute(await a.quote({ from: 'usdc_sol', to: 'xmr', amountIn: 2_000_000_000n, rate: 'float', payoutAddress: XMR_ADDR, refundAddress: SOL_ADDR }), ctx);
+    delete keys[XMR_ADDR];
+    const st = await a.advance(handle, ctx);
+    expect(st).toMatchObject({ state: 'held', detail: expect.stringContaining('no withdrawal was requested') });
+    expect(http.count('/Withdraw')).toBe(0);
+  });
+
+  it('the deprecated out-of-band map still works, and the settings table wins over it', async () => {
+    const { settings } = parseRebalanceToml(toml(`"${XMR_ADDR}" = "from-settings"`));
+    const http = new FixtureHttp(routes());
+    const { adapters } = createAdapters({ settings, http, prices: prices(), env, now: () => NOW, exchangeWithdrawKeys: { [XMR_ADDR]: 'from-daemon', [ETH_ADDR]: 'eth-from-daemon' } });
+    await adapters.exchange!.quote({ from: 'usdc_sol', to: 'xmr', amountIn: 2_000_000_000n, rate: 'float', payoutAddress: XMR_ADDR, refundAddress: SOL_ADDR });
+    expect(new URLSearchParams(http.last('/WithdrawInfo').body!).get('key')).toBe('from-settings');
   });
 });

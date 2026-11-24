@@ -35,6 +35,8 @@ export interface ExchangeDriver {
   limits(from: AssetId, to: AssetId): Promise<{ min: bigint; max: bigint | null }>;
   /** Whether the two assets need a trade (false for USDC moving between networks). */
   needsTrade(from: AssetId, to: AssetId): boolean;
+  /** Throws, without making a request, when the exchange account may not withdraw this asset to this address. Checked before a quote, before the deposit and before the withdrawal. */
+  assertPayoutAllowed?(asset: AssetId, address: string): void;
 }
 
 export interface ExchangeDeps {
@@ -87,6 +89,7 @@ export class ExchangeAdapter implements VenueAdapter {
   async quote(req: RefillRequest): Promise<VenueQuote> {
     if (req.from === req.to) throw new VenueError(this.id, 'from and to are the same asset');
     if ((req.amountIn === undefined) === (req.amountOut === undefined)) throw new VenueError(this.id, 'exactly one of amountIn and amountOut must be set');
+    this.checkPayout(req.to, req.payoutAddress);
     let amountIn: bigint;
     if (req.amountIn !== undefined) amountIn = req.amountIn;
     else {
@@ -102,6 +105,11 @@ export class ExchangeAdapter implements VenueAdapter {
     return { venue: this.id, request: req, amountIn, amountOut, feesUsd: cost.feesUsd, costPct: cost.costPct, expiresAt: this.now() + 60, raw: { exchange: this.driver.name, estimate: true } };
   }
 
+  /** Refuses a payout the driver would not be allowed to make, before any API call and before any funds move. */
+  private checkPayout(asset: AssetId, address: string): void {
+    try { this.driver.assertPayoutAllowed?.(asset, address); } catch (e) { throw new VenueError(this.id, (e as Error).message); }
+  }
+
   private async load(handle: string): Promise<Rec> {
     const s = await this.store.get(handle);
     if (!s) throw new VenueError(this.id, `unknown handle ${handle}`);
@@ -113,6 +121,7 @@ export class ExchangeAdapter implements VenueAdapter {
     if (quote.venue !== this.id) throw new VenueError(this.id, `quote belongs to ${quote.venue}`);
     if (ctx.now() >= quote.expiresAt) throw new VenueError(this.id, 'quote has expired');
     const req = quote.request;
+    this.checkPayout(req.to, req.payoutAddress);
     const dep = await this.driver.depositAddress(req.from);
     if (dep.memo) throw new VenueError(this.id, 'the deposit address requires a memo, which is not supported; nothing was sent');
     const handle = `exchange:${this.driver.name}:${ctx.now()}-${++this.seq}`;
@@ -188,6 +197,8 @@ export class ExchangeAdapter implements VenueAdapter {
 
     if (rec.phase === 'traded') {
       const amount = BigInt(rec.traded!);
+      // The key map or the allow-list may have changed since the deposit: check again before asking for the withdrawal.
+      try { this.checkPayout(rec.to, rec.payoutAddress); } catch (e) { return hold(`${(e as Error).message}. The funds are on the exchange account; no withdrawal was requested.`); }
       rec.withdrawAmount = amount.toString();
       rec.phase = 'withdraw_intent';
       await this.save(handle, rec);

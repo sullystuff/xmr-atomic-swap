@@ -33,6 +33,7 @@ describe("DESIGN's example [rebalance] settings", () => {
     expect(s.venues.changenow).toMatchObject({ enabled: true, rate: 'fixed', api_key_env: 'CHANGENOW_KEY' });
     expect(s.venues.fixedfloat).toMatchObject({ enabled: true, rate: 'float', api_key_env: 'FF_KEY' });
     expect(s.venues.exchange).toMatchObject({ name: '<exchange>', api_key_env: 'EXCHANGE_KEY', withdraw_address_allowlist: true });
+    expect(s.venues.exchange.withdraw_keys).toEqual({});
     expect(s.venues.stealthex.enabled).toBe(false);
     expect(s.venues.houdiniswap.enabled).toBe(false);
   });

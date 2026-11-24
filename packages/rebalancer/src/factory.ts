@@ -34,7 +34,7 @@ export interface AdapterDeps {
   poolDepth?: PoolDepthReader;
   execContext?: ExecContext;
   jupiterBaseUrl?: string;
-  /** Exchange: payout address -> the name it is registered under on the exchange account. */
+  /** @deprecated Set `[rebalance.venues.exchange.withdraw_keys]` instead; entries there take precedence over these. */
   exchangeWithdrawKeys?: Record<string, string>;
   /** Overrides the built-in driver lookup by `name`. */
   exchangeDriver?: ExchangeDriver;
@@ -63,7 +63,13 @@ export function createAdapters(d: AdapterDeps): BuiltAdapters {
   if (v.exchange.enabled) {
     let driver = d.exchangeDriver;
     if (!driver && v.exchange.name?.toLowerCase() === 'kraken') {
-      driver = new KrakenDriver({ http: d.http, apiKeyEnv: v.exchange.api_key_env, apiSecretEnv: v.exchange.api_secret_env, withdrawKeys: d.exchangeWithdrawKeys ?? {}, ...(d.env ? { env: d.env } : {}) });
+      const withdrawKeys = { ...(d.exchangeWithdrawKeys ?? {}), ...v.exchange.withdraw_keys };
+      for (const address of Object.keys(withdrawKeys)) {
+        const onList = allow.xmr.includes(address) || allow.sol.includes(address) || allow.eth.some((a) => a.toLowerCase() === address.toLowerCase());
+        if (!onList) warnings.push(`rebalance.venues.exchange.withdraw_keys has an address that is not on the allow-list (key "${withdrawKeys[address]}"); withdrawals to it are refused`);
+      }
+      if (Object.keys(withdrawKeys).length === 0) warnings.push('rebalance.venues.exchange.withdraw_keys is empty: the exchange cannot withdraw to any address');
+      driver = new KrakenDriver({ http: d.http, apiKeyEnv: v.exchange.api_key_env, apiSecretEnv: v.exchange.api_secret_env, withdrawKeys, allowlist: allow, ...(d.env ? { env: d.env } : {}) });
     }
     if (!driver) warnings.push(`rebalance.venues.exchange.name "${v.exchange.name ?? ''}" has no driver; the exchange venue is off`);
     else adapters.exchange = guardAdapter(new ExchangeAdapter({ driver, prices: d.prices, ...(d.store ? { store: d.store } : {}), ...(d.now ? { now: d.now } : {}), ...(d.depositFeeUsd ? { depositFeeUsd: d.depositFeeUsd } : {}) }), allow);

@@ -12,6 +12,8 @@
 import { createHash, createHmac } from 'node:crypto';
 import { formatUnits, parseUnits, DECIMALS } from '../assets.js';
 import { type EnvReader, type HttpClient, HttpError, obj, optDec, optStr, processEnv, query, str } from '../http.js';
+import { type Allowlist, isAllowed } from '../allowlist.js';
+import { ADDRESS_FAMILY } from '../assets.js';
 import type { AssetId } from '../types.js';
 import type { ExchangeDriver } from './exchange.js';
 
@@ -25,8 +27,10 @@ export interface KrakenOptions {
   baseUrl?: string;
   /** Milliseconds; nonces must increase. */
   nonce?: () => number;
-  /** Payout address -> the key name it is registered under on the Kraken account. Withdrawals to any other address are refused. */
+  /** Payout address -> the key name it is registered under on the Kraken account (`[rebalance.venues.exchange.withdraw_keys]`). */
   withdrawKeys: Record<string, string>;
+  /** The maker's own addresses. A withdrawal goes only to an address that is on this list AND has a key name above. */
+  allowlist: Allowlist;
   /** Taker fee applied to estimates, in basis points (default 40; the real fee depends on the account's volume tier). */
   takerFeeBps?: number;
   assets?: Partial<Record<AssetId, { code: string; depositMethod: string; pair: string }>>;
@@ -205,19 +209,29 @@ export class KrakenDriver implements ExchangeDriver {
     return { state: 'filled', received: parseUnits(buy.volExec, DECIMALS[to]) };
   }
 
-  private key(address: string): string {
-    const k = this.o.withdrawKeys[address];
-    if (!k) throw new Error('kraken: the payout address is not registered as a withdrawal key on the account; register it and add it to withdraw_keys');
+  /**
+   * The key name for a payout address. Throws, before any request is made, unless the address
+   * both has a key in `withdraw_keys` and is on the maker's own-address allow-list.
+   */
+  withdrawKey(asset: AssetId, address: string): string {
+    const keys = this.o.withdrawKeys;
+    // EVM addresses compare without case, like the allow-list; the others are case-sensitive.
+    const k = Object.hasOwn(keys, address) ? keys[address]
+      : ADDRESS_FAMILY[asset] === 'eth' ? Object.entries(keys).find(([a]) => a.toLowerCase() === address.toLowerCase())?.[1] : undefined;
+    if (!k) throw new Error('kraken: the payout address is not registered as a withdrawal key on the account; register it at the exchange and add it to [rebalance.venues.exchange.withdraw_keys]');
+    if (!isAllowed(this.o.allowlist, asset, address)) throw new Error(`kraken: the payout address has a withdrawal key ("${k}") but is not on the maker's ${ADDRESS_FAMILY[asset]} allow-list; withdrawals go only to the maker's own addresses`);
     return k;
   }
 
+  assertPayoutAllowed(asset: AssetId, address: string): void { this.withdrawKey(asset, address); }
+
   async withdrawFee(asset: AssetId, address: string, amount: bigint): Promise<bigint> {
-    const r = obj(await this.priv('WithdrawInfo', { asset: this.assets[asset].code, key: this.key(address), amount: formatUnits(amount, DECIMALS[asset]) }), 'kraken WithdrawInfo');
+    const r = obj(await this.priv('WithdrawInfo', { asset: this.assets[asset].code, key: this.withdrawKey(asset, address), amount: formatUnits(amount, DECIMALS[asset]) }), 'kraken WithdrawInfo');
     return parseUnits(optDec(r['fee']) ?? '0', DECIMALS[asset]);
   }
 
   async withdraw(w: { asset: AssetId; address: string; amount: bigint }): Promise<{ withdrawalId: string }> {
-    const r = obj(await this.priv('Withdraw', { asset: this.assets[w.asset].code, key: this.key(w.address), amount: formatUnits(w.amount, DECIMALS[w.asset]) }), 'kraken Withdraw');
+    const r = obj(await this.priv('Withdraw', { asset: this.assets[w.asset].code, key: this.withdrawKey(w.asset, w.address), amount: formatUnits(w.amount, DECIMALS[w.asset]) }), 'kraken Withdraw');
     return { withdrawalId: str(r['refid'], 'kraken refid') };
   }
 

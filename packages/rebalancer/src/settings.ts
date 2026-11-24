@@ -54,6 +54,8 @@ const exchangeVenue = z.strictObject({
   api_key_env: envName.optional(),
   api_secret_env: envName.optional(),
   withdraw_address_allowlist: z.boolean().default(true),
+  /** SPEC 7.2: the maker's own withdrawal address = the key name it is registered under at the exchange. */
+  withdraw_keys: z.record(z.string().min(1), z.string().min(1)).default({}),
 });
 
 const venues = z.strictObject({
