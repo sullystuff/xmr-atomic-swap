@@ -481,6 +481,12 @@ export function venueSection(venue: VenueId): SectionDef {
         apiKey,
         apiSecret,
         { key: 'withdraw_address_allowlist', label: 'Keys restricted to allow-listed withdrawal addresses', type: { t: 'bool' }, def: true },
+        {
+          key: 'withdraw_keys',
+          label: 'Withdrawal keys',
+          type: { t: 'map' },
+          help: 'Your own withdrawal address = the key name registered for it at the exchange. A withdrawal needs both an allow-list entry and a key.',
+        },
       ],
     };
   }

@@ -46,8 +46,10 @@ daemon (`src/mock/`, `server/`) standing in for WP8. Nothing outside `apps/conso
   save is blocked only by the daemon's own validation; a local finding the daemon does not share
   is shown as a warning. A test reads the daemon's and the rebalancer's schema sources and fails
   when they define a key the console has no control for.
-- `[rebalance.venues.exchange.withdraw_keys]` (SPEC 7.2) is not in the rebalancer's schema, so the
-  form no longer offers it; a file that has it is refused by the daemon, not by the console.
+- `[rebalance.venues.exchange.withdraw_keys]` is editable on the Rebalancing page (beside the
+  allow-list) and on Configuration. A key without an allow-list entry, or an allow-listed address
+  without a key while the exchange is enabled, is a warning. With no allow-list in the file the
+  daemon's default list applies, which the console cannot see, so nothing is flagged then.
 
 ## Brought in line with the real daemon (packages/daemon/DEVIATIONS.md, A1 to A10)
 

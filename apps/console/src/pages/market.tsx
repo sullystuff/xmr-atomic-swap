@@ -5,7 +5,9 @@ import type { AssetId, OfferView, RebalanceResponse, RefillView, VenueId } from 
 import type { RefillViewX } from '../api/extensions.js';
 import { useAction, useClient, useQuery } from '../api/hooks.js';
 import { ASSETS, DIRECTION_LABEL, MODE_OPTIONS, VENUE_LABEL, chainLabel } from '../lib/config/schema.js';
-import { getPath, isTable } from '../lib/config/toml.js';
+import { patchConfig } from '../lib/config/patch.js';
+import { getPath, isTable, setPath, type Toml } from '../lib/config/toml.js';
+import { allowlisted, withdrawKeyProblems, withdrawKeys } from '../lib/config/validate.js';
 import { BASE_FEE_LAMPORTS, costBasis, estimateCost } from '../lib/cost.js';
 import { ASSET_DECIMALS, ASSET_LABEL, ASSET_UNIT, MARKET_LABEL, MARKET_ORDER, fmtAsset, fmtDuration, fmtMarketAmount, fmtPct, fmtTime, fmtUnits, fmtUsd, fmtXmr, parseUnits } from '../lib/format.js';
 import { CostPanel } from '../ui/cost-panel.js';
@@ -641,6 +643,7 @@ export function RebalancingPage() {
                     </p>
                   )}
                 </Card>
+                {parsed ? <WithdrawKeysCard key={config.data?.revision} cfg={parsed} onSaved={config.reload} /> : null}
                 <ManualForms venues={r.venues.filter((v) => v.enabled).map((v) => v.id)} onDone={reb.reload} />
               </div>
             </div>
@@ -759,6 +762,127 @@ function ManualForms({ venues, onDone }: { venues: VenueId[]; onDone: () => void
       <p className="muted" style={{ marginTop: 8 }}>
         {kind === 'run' ? 'A manual run still obeys the cost limit, the caps, the allow-list and the test transfer.' : 'Nothing is sent: this only keeps inventory and cost tracking correct.'}
       </p>
+    </Card>
+  );
+}
+
+/**
+ * `[rebalance.venues.exchange.withdraw_keys]`: your own withdrawal address and the key name the
+ * exchange has registered for it. The rebalancer withdraws only to an address that is both
+ * allow-listed and has a key.
+ */
+function WithdrawKeysCard({ cfg, onSaved }: { cfg: Toml; onSaved: () => void }) {
+  const client = useClient();
+  const { busy, run } = useAction();
+  const id = useId();
+  const [rows, setRows] = useState<Record<string, string>>(() => withdrawKeys(cfg));
+  const [address, setAddress] = useState('');
+  const [name, setName] = useState('');
+  const saved = withdrawKeys(cfg);
+  const dirty = JSON.stringify(rows) !== JSON.stringify(saved);
+  const draft = setPath(cfg, 'rebalance.venues.exchange.withdraw_keys', Object.keys(rows).length === 0 ? undefined : rows);
+  const problems = withdrawKeyProblems(draft);
+  const noList = allowlisted(cfg).length === 0;
+  const missing = problems.filter((p) => p.problem === 'no_key');
+  const add = (a: string, k: string): void => {
+    if (a.trim() === '' || k.trim() === '') return;
+    setRows((r) => ({ ...r, [a.trim()]: k.trim() }));
+    setAddress('');
+    setName('');
+  };
+  const save = async (): Promise<void> => {
+    const res = await run('keys', () => patchConfig(client, (c) => setPath(c, 'rebalance.venues.exchange.withdraw_keys', Object.keys(rows).length === 0 ? undefined : rows)), 'Withdrawal keys saved and applied without a restart.');
+    if (res) onSaved();
+  };
+  return (
+    <Card title="Exchange withdrawal keys" note="Your own withdrawal address and the key name registered for it at the exchange. A withdrawal needs both an allow-list entry and a key.">
+      {Object.keys(rows).length === 0 && missing.length === 0 ? (
+        <p className="muted">No keys. The exchange cannot withdraw to any address until one is added.</p>
+      ) : (
+        <div className="table-wrap">
+          <table className="tbl" aria-label="Exchange withdrawal keys">
+            <thead>
+              <tr>
+                <th scope="col">Withdrawal address</th>
+                <th scope="col">Key name at the exchange</th>
+                <th scope="col">
+                  <span className="sr-only">Remove</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {Object.entries(rows).map(([a, k]) => {
+                const bad = problems.some((p) => p.address === a && p.problem === 'not_allowlisted');
+                return (
+                  <tr key={a} className={bad ? 'attention' : undefined}>
+                    <th scope="row">
+                      <code style={{ overflowWrap: 'anywhere' }}>{a}</code>
+                      {bad ? (
+                        <p className="msg warning">
+                          <b>Warning:</b> not on the address allow-list. The rebalancer refuses withdrawals to it until it is listed.
+                        </p>
+                      ) : null}
+                    </th>
+                    <td>
+                      <input type="text" aria-label={`Key name for ${a}`} value={k} onChange={(e) => setRows((r) => ({ ...r, [a]: e.target.value }))} />
+                    </td>
+                    <td className="actions">
+                      <Button small variant="ghost" aria-label={`Remove the key for ${a}`} onClick={() => setRows((r) => Object.fromEntries(Object.entries(r).filter(([x]) => x !== a)))}>
+                        Remove
+                      </Button>
+                    </td>
+                  </tr>
+                );
+              })}
+              {missing.map((p) => (
+                <tr key={`missing-${p.address}`} className="attention">
+                  <th scope="row">
+                    <code style={{ overflowWrap: 'anywhere' }}>{p.address}</code>
+                    <p className="msg warning">
+                      <b>Warning:</b> allow-listed, but it has no withdrawal key. The exchange cannot withdraw to it.
+                    </p>
+                  </th>
+                  <td className="muted">no key</td>
+                  <td className="actions">
+                    <Button small onClick={() => setAddress(p.address)} aria-label={`Add a key for ${p.address}`}>
+                      Add a key
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {noList && Object.keys(rows).length > 0 ? <p className="muted">No allow-list is set in the configuration, so the daemon’s default list applies (inventory wallet, operator and payout addresses); these addresses cannot be checked against it here.</p> : null}
+      <form
+        className="row"
+        style={{ alignItems: 'flex-end', gap: '8px 12px', marginTop: 10 }}
+        onSubmit={(e) => {
+          e.preventDefault();
+          add(address, name);
+        }}
+      >
+        <div className="field" style={{ flex: 1, minWidth: 200 }}>
+          <label htmlFor={`${id}-a`}>Withdrawal address</label>
+          <input id={`${id}-a`} type="text" className="w-wide" spellCheck={false} value={address} onChange={(e) => setAddress(e.target.value)} />
+        </div>
+        <div className="field">
+          <label htmlFor={`${id}-k`}>Key name</label>
+          <input id={`${id}-k`} type="text" spellCheck={false} value={name} onChange={(e) => setName(e.target.value)} />
+        </div>
+        <button type="submit" className="btn" disabled={address.trim() === '' || name.trim() === ''}>
+          Add key
+        </button>
+      </form>
+      <div className="row" style={{ marginTop: 10 }}>
+        <Button variant="primary" disabled={!dirty || Object.values(rows).some((k) => k.trim() === '')} busy={busy === 'keys'} onClick={() => void save()}>
+          Save withdrawal keys
+        </Button>
+        <Button disabled={!dirty} onClick={() => setRows(saved)}>
+          Discard
+        </Button>
+      </div>
     </Card>
   );
 }

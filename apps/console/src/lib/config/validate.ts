@@ -445,6 +445,14 @@ function checkRebalance(issues: Issues, cfg: Toml): void {
       }
     }
   }
+  for (const p of withdrawKeyProblems(cfg)) {
+    issues.warn(
+      'rebalance.venues.exchange.withdraw_keys',
+      p.problem === 'not_allowlisted'
+        ? `${p.address} has a withdrawal key ("${p.key}") but is not on the address allow-list; the rebalancer refuses withdrawals to it.`
+        : `${p.address} is on the address allow-list but has no withdrawal key; the exchange cannot withdraw to it.`,
+    );
+  }
   const cross = getPath(cfg, 'rebalance.cross_chain');
   if (isTable(cross) && cross.enabled === true) {
     if (typeof cross.venue !== 'string' || cross.venue === '') issues.error('rebalance.cross_chain.venue', 'Cross-chain moves need a venue.');
@@ -723,4 +731,42 @@ export function issuesAboutKey(list: readonly ConfigIssue[], key: string): Confi
   const leaf = key.slice(dot + 1);
   const names = (m: string): boolean => m.includes(`"${leaf}"`) || m.includes(`'${leaf}'`);
   return list.filter((i) => i.path === key || i.path.startsWith(`${key}.`) || (i.path === parent && names(i.message)) || (key.startsWith('rebalance.') && i.path === 'rebalance' && names(i.message)));
+}
+
+// ------------------------------------------------------------------ exchange withdrawal keys
+
+export interface WithdrawKeyProblem {
+  address: string;
+  key: string | null;
+  /** A key without an allow-list entry, or an allow-list entry without a key: the rebalancer refuses both. */
+  problem: 'not_allowlisted' | 'no_key';
+}
+/** The addresses the file allow-lists for refills, across XMR, SOL and ETH. */
+export function allowlisted(cfg: Toml): string[] {
+  const out: string[] = [];
+  for (const k of ['xmr', 'sol', 'eth']) {
+    const list = getPath(cfg, `rebalance.allowlist.${k}`);
+    if (Array.isArray(list)) for (const a of list) if (typeof a === 'string') out.push(a);
+  }
+  return out;
+}
+export function withdrawKeys(cfg: Toml): Record<string, string> {
+  const t = getPath(cfg, 'rebalance.venues.exchange.withdraw_keys');
+  const out: Record<string, string> = {};
+  if (isTable(t)) for (const [a, k] of Object.entries(t)) if (typeof k === 'string') out[a] = k;
+  return out;
+}
+/**
+ * A withdrawal from the exchange needs both an allow-list entry and a key. With no allow-list in
+ * the file the daemon's default list applies (inventory wallet, operator and payout addresses),
+ * which the console cannot see, so nothing is flagged then.
+ */
+export function withdrawKeyProblems(cfg: Toml): WithdrawKeyProblem[] {
+  const allow = allowlisted(cfg);
+  const keys = withdrawKeys(cfg);
+  if (allow.length === 0) return [];
+  const out: WithdrawKeyProblem[] = [];
+  for (const [address, key] of Object.entries(keys)) if (!allow.includes(address)) out.push({ address, key, problem: 'not_allowlisted' });
+  if (getPath(cfg, 'rebalance.venues.exchange.enabled') === true) for (const address of allow) if (!(address in keys)) out.push({ address, key: null, problem: 'no_key' });
+  return out;
 }

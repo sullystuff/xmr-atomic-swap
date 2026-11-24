@@ -151,6 +151,11 @@ api_key_env = "EXCHANGE_KEY"
 api_secret_env = "EXCHANGE_SECRET"
 withdraw_address_allowlist = true
 
+[rebalance.venues.exchange.withdraw_keys]
+4OwnInventoryAddressExample = "xmr-main"
+OwnSolAddressExample = "sol-main"
+"0x00000000000000000000000000000000000000ee" = "eth-main"
+
 ${(['changenow', 'stealthex', 'houdiniswap', 'fixedfloat'] as const)
   .map((v) => `[rebalance.venues.${v}]\nenabled = ${v === 'changenow'}\nmode = "alert"\nmax_cost_pct = 1\nmax_per_tx_usd = 10000\nmax_per_day_usd = 50000\nmax_share_pct = 50\nrate = "fixed"\napi_key_env = "${v.toUpperCase()}_KEY"\napi_secret_env = "${v.toUpperCase()}_SECRET"\n`)
   .join('\n')}
