@@ -461,6 +461,8 @@ export class OfferEngine {
         market: c.offer.market, direction: c.offer.direction, live: live && c.enabled && (on !== undefined || eth !== undefined), enabled: c.enabled, ...(c.reason ? { disabled_reason: c.reason } : {}),
         reference_price: c.ref.xmrUsd === null || c.ref.assetUsd === null ? null : BigInt(Math.round((c.ref.xmrUsd / c.ref.assetUsd) * 10 ** c.offer.decimals)).toString(),
         price_tiers: tiers, deviation_pct: c.priced.deviationPct, min_xmr: c.offer.minXmr.toString(), max_xmr: c.offer.maxXmr.toString(), capacity_xmr: c.capacityXmr.toString(), terms: effectiveTerms(c.offer), key_pool: pool,
+        // Additions to the frozen shape: the price sources as the file names them (what runs), and the one pricing it right now.
+        ...({ source: c.offer.source, fallbacks: c.offer.fallbacks, cross_check: c.offer.crossCheck, priced_by: c.ref.source, price_unit: c.ref.unit } as object),
         seq_or_quote_id: on ? on.seq.toString() : eth ? eth.quoteId.toString() : null, updated_at: on?.updatedAt ?? null, valid_until: on ? on.updatedAt + on.validSecs : (eth?.validUntil ?? null),
       };
     });

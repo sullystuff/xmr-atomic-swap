@@ -37,6 +37,8 @@ export interface RebalanceOptions {
   ethereum: () => EthereumChain | null;
   /** The raw connection the bridge adapter reads through (absent: the bridge venue stays off). */
   connection?: () => Connection | null;
+  /** The bridge adapter's chain reads, when not through `connection` (tests). */
+  bridgeRpc?: import('@xmrswap/rebalancer').SolanaRpc;
   /** Venue HTTP: injectable; tests use fixtures and no venue is ever contacted from them. */
   http: HttpClient;
   env: (name: string) => string | undefined;
@@ -197,7 +199,7 @@ export class Rebalance {
     const conn = this.o.connection?.() ?? null;
     const built = createAdapters({
       settings, allowlist, http: this.o.http, prices: this.prices, env: this.o.env, store: this.adapterStore, now: () => this.o.store.now(), reserveVerifier: this.reserveVerifier, execContext: this.ctx,
-      ...(sol && conn ? { solanaRpc: connectionRpc(conn), solanaWallet: sol.operator } : {}),
+      ...(sol && (conn || this.o.bridgeRpc) ? { solanaRpc: this.o.bridgeRpc ?? connectionRpc(conn!), solanaWallet: sol.operator } : {}),
       exchangeWithdrawKeys: (settings.venues.exchange as { withdraw_keys?: Record<string, string> }).withdraw_keys ?? {},
     });
     this.adapters = built.adapters;

@@ -44,15 +44,18 @@ describe('DESIGN.md example files', () => {
     expect(usdcSol).toMatchObject({ enabled: true, source: 'coingecko', fallbacks: ['coinmarketcap'], deviationPct: 1.5, validSecs: 60, claimDelaySecs: 101 * 60, minClaimDelaySecs: 6015, noticeSecs: 600, claimWindowSecs: 1800, mode: 'auto' });
     expect(usdcSol.sizeTiers).toEqual([{ aboveXmr: 50_000_000_000_000n, extraPct: 0.5 }]);
     expect(usdcSol.minXmr).toBe(100_000_000_000n);
-    // The pool is a cross-check only: the first fallback is promoted (the pool itself is a placeholder here, so the global cross-check stays).
+    // `source = "wxmr_pool"` means what it says: the pool is this market's primary and CoinGecko its fallback. The
+    // example's pool addresses are placeholders, so the pool cannot be read yet and the market runs on the fallback.
     const sol = c.offers.find((o) => o.market === 'sol' && o.direction === 'sell_xmr')!;
-    expect(sol).toMatchObject({ enabled: true, source: 'coingecko', fallbacks: [], crossCheck: 'coinmarketcap', maxXmr: 50_000_000_000_000n });
+    expect(sol).toMatchObject({ enabled: true, source: 'wxmr_pool', fallbacks: ['coingecko'], crossCheck: 'coinmarketcap', maxXmr: 50_000_000_000_000n });
     // An Ethereum market without a blob endpoint is a warning that keeps it off.
     const usdcEth = c.offers.find((o) => o.market === 'usdc_eth' && o.direction === 'sell_xmr')!;
     expect(usdcEth).toMatchObject({ configured: true, enabled: false, validSecs: 150, noticeSecs: 1800, approvalWindowSecs: 120 });
     expect(usdcEth.disabledReason).toMatch(/blob endpoint/);
     const warned = (path: string) => r.validation.warnings.filter((w) => w.path === path).map((w) => w.message).join(' ');
-    expect(warned('markets.sol.sell_xmr.source')).toMatch(/cross-check only/);
+    expect(warned('markets.sol.sell_xmr.source')).toBe('wxmr_pool cannot be read yet: its addresses are placeholders or missing (base_vault and quote_vault are needed); it is skipped until they are set');
+    // The old rule is gone: nothing demotes, nothing says "cross-check only".
+    expect(JSON.stringify(r.validation)).not.toMatch(/cross-check only|promot/i);
     expect(warned('markets.usdc_eth.sell_xmr.enabled')).toMatch(/blob endpoint/);
     expect(warned('pricing.sources.wxmr_pool.token')).toMatch(/placeholder/);
     expect(warned('rebalance.venues.exchange.name')).toMatch(/placeholder/);
@@ -137,14 +140,11 @@ describe('validation', () => {
   });
 
   it('defaults follow the chain; warnings name what stays off', () => {
-    const r = loadConfig('[tor]\nenabled = true\n[liquidity]\nmax_per_taker_xmr = 5\noutput_ladder = [{ size_xmr = 5, count = 2 }]\n[markets.eth.sell_xmr]\nenabled = true\n[markets.sol.sell_xmr]\nenabled = true\nsource = "wxmr_pool"\n[markets.usdc_sol.sell_xmr]\nenabled = true\napproval_mode = "window"\napproval_window_seconds = 90\n');
+    const r = loadConfig('[tor]\nenabled = true\n[liquidity]\nmax_per_taker_xmr = 5\noutput_ladder = [{ size_xmr = 5, count = 2 }]\n[markets.eth.sell_xmr]\nenabled = true\n[markets.sol.sell_xmr]\nenabled = true\n[markets.usdc_sol.sell_xmr]\nenabled = true\napproval_mode = "window"\napproval_window_seconds = 90\n');
     expect(r.validation.errors).toEqual([]);
     const eth = r.config!.offers.find((o) => o.market === 'eth' && o.direction === 'sell_xmr')!;
     // With a blob endpoint the Ethereum market is on; depth 10 is the deepest tier in use at 5 XMR, so auto is 180 minutes.
     expect(eth).toMatchObject({ enabled: true, claimDelaySecs: 180 * 60, claimWindowSecs: 90 * 60, approvalWindowSecs: 120, validSecs: 150, deviationPct: 2.0, source: 'coingecko' });
-    const sol = r.config!.offers.find((o) => o.market === 'sol' && o.direction === 'sell_xmr')!;
-    expect(sol.enabled).toBe(false);
-    expect(sol.disabledReason).toMatch(/cross-check only/);
     const messages = r.validation.warnings.map((w) => `${w.path}: ${w.message}`).join(' | ');
     expect(messages).toMatch(/markets\.eth\.sell_xmr\.approval_window_seconds: an approval window of 120 s/);
     expect(messages).toMatch(/markets\.usdc_sol\.sell_xmr\.approval_window_seconds: an approval window of 90 s/);

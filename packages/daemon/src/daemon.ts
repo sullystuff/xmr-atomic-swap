@@ -62,6 +62,8 @@ export interface DaemonOptions {
   priceHttp?: PriceHttp;
   priceSources?: Partial<Record<SourceName, PriceSourceClient>>;
   venueHttp?: HttpClient;
+  /** The bridge adapter's chain reads (tests); defaults to the Solana connection. */
+  bridgeRpc?: import('@xmrswap/rebalancer').SolanaRpc;
   crash?: CrashHook;
   /** Current Solana block height (to tell an expired blockhash from a slow transaction); defaults to the connection's. */
   solanaBlockHeight?: () => Promise<number>;
@@ -127,6 +129,8 @@ export class Daemon {
   private moneroStatus: { nodes: StatusResponse['monero']['nodes']; agree: boolean } = { nodes: [], agree: false };
   private walletOk = false;
   private stopped = false;
+  /** The Solana connection the bridge adapter reads through (the first configured endpoint). */
+  private connection: Connection | null = null;
   /** Upgrade status per chain, read from chain state and refreshed periodically. */
   readonly upgrade = new Map<ChainName, UpgradeStatus>();
 
@@ -255,7 +259,7 @@ export class Daemon {
     });
     this.rebalance = new Rebalance({
       store: this.store, journal: this.journal, alerts: this.alerts, keystore: this.keystore, inventory: this.inventory, wallet: this.wallet, settings: () => this.config.rebalance, usd: (asset) => this.prices.usd(asset),
-      solana: () => this.sol, ethereum: () => this.eth, connection: () => this.o.connection ?? null, http: this.o.venueHttp ?? fetchHttpClient(), env: this.env, live: () => this.live,
+      solana: () => this.sol, ethereum: () => this.eth, connection: () => this.connection, ...(this.o.bridgeRpc ? { bridgeRpc: this.o.bridgeRpc } : {}), http: this.o.venueHttp ?? fetchHttpClient(), env: this.env, live: () => this.live,
       payouts: async () => {
         const sol = this.sol ? (await this.sol.maker().catch(() => null))?.payout : undefined;
         const eth: string | undefined = this.eth ? (await this.eth.maker().catch(() => null))?.payout : undefined;
@@ -264,27 +268,53 @@ export class Daemon {
     });
   }
 
+  /**
+   * The sources the configuration actually uses, and nothing else: a maker who quotes off the wXMR pool alone never
+   * calls CoinGecko or CoinMarketCap.
+   */
   private buildPriceSources(): void {
     const raw = this.config.raw;
-    const http = this.o.priceHttp ?? fetchPriceHttp();
-    const next: Partial<Record<SourceName, PriceSourceClient>> = this.o.priceSources ?? {
-      coingecko: coingecko({ http, env: this.env, ...(raw.pricing.sources.coingecko.api_key_env ? { apiKeyEnv: raw.pricing.sources.coingecko.api_key_env } : {}), ...(raw.pricing.sources.coingecko.base_url ? { baseUrl: raw.pricing.sources.coingecko.base_url } : {}) }),
-      coinmarketcap: coinmarketcap({ http, env: this.env, ...(raw.pricing.sources.coinmarketcap.api_key_env ? { apiKeyEnv: raw.pricing.sources.coinmarketcap.api_key_env } : {}), ...(raw.pricing.sources.coinmarketcap.base_url ? { baseUrl: raw.pricing.sources.coinmarketcap.base_url } : {}) }),
-    };
-    const pool = raw.pricing.sources.wxmr_pool;
-    if (!this.o.priceSources && pool && poolSourceUsable(raw) && this.sol) {
-      const sol = this.sol;
-      next.wxmr_pool = wxmrPool({
+    const used = new Set<SourceName>();
+    for (const o of this.config.offers) {
+      if (!o.configured) continue;
+      for (const s of [o.source, ...o.fallbacks, ...(o.crossCheck ? [o.crossCheck] : [])]) used.add(s);
+    }
+    const next: Partial<Record<SourceName, PriceSourceClient>> = {};
+    if (this.o.priceSources) Object.assign(next, this.o.priceSources);
+    else {
+      const http = this.o.priceHttp ?? fetchPriceHttp();
+      const keyed = (name: 'coingecko' | 'coinmarketcap') => {
+        const c = raw.pricing.sources[name];
+        return { http, env: this.env, ...(c.api_key_env ? { apiKeyEnv: c.api_key_env } : {}), ...(c.base_url ? { baseUrl: c.base_url } : {}) };
+      };
+      if (used.has('coingecko')) next.coingecko = coingecko(keyed('coingecko'));
+      if (used.has('coinmarketcap')) next.coinmarketcap = coinmarketcap(keyed('coinmarketcap'));
+    }
+    // Pools are read from chain state through the daemon's own Solana endpoint, whoever else is injected.
+    const sol = this.sol;
+    const vol = raw.guardrails.volatility_pause || null;
+    for (const name of ['wxmr_pool', 'wxmr_pool_sol'] as const) {
+      const pool = raw.pricing.sources[name];
+      if (next[name] || !used.has(name) || !pool || !poolSourceUsable(raw, name) || !sol) continue;
+      next[name] = wxmrPool({
+        name,
         read: async (account) => {
           const a = await sol.client.transport.getAccount(account);
           return a && a.data.length >= 72 ? new DataView(a.data.buffer, a.data.byteOffset).getBigUint64(64, true) : null;
         },
-        baseVault: pool.base_vault!, quoteVault: pool.quote_vault!, quote: pool.quote, minLiquidityUsd: pool.min_liquidity_usd, averageSeconds: pool.average_seconds, now: () => this.now(),
+        baseVault: pool.base_vault!, quoteVault: pool.quote_vault!, quote: pool.quote, minLiquidityUsd: pool.min_liquidity_usd, averageSeconds: pool.average_seconds, maxJumpPct: vol ? vol.move_pct : null, now: () => this.now(),
       });
     }
-    for (const k of Object.keys(this.priceSources) as SourceName[]) delete this.priceSources[k];
+    // A pool keeps its samples across a configuration change that does not touch it (its averaging window must not restart).
+    for (const k of Object.keys(this.priceSources) as SourceName[]) {
+      const keep = (k === 'wxmr_pool' || k === 'wxmr_pool_sol') && next[k] && this.poolFingerprint.get(k) === JSON.stringify([raw.pricing.sources[k], vol]);
+      if (keep) next[k] = this.priceSources[k]!;
+      delete this.priceSources[k];
+    }
+    for (const k of ['wxmr_pool', 'wxmr_pool_sol'] as const) this.poolFingerprint.set(k, JSON.stringify([raw.pricing.sources[k], vol]));
     Object.assign(this.priceSources, next);
   }
+  private poolFingerprint = new Map<string, string>();
 
   private async connectSolana(): Promise<void> {
     const c = this.config.raw.solana;
@@ -313,6 +343,7 @@ export class Daemon {
     const config = await client.getConfig('finalized');
     if (config) client = client.withUsdcMint(config.usdcMint);
     const conn = this.o.connection ?? connections[0];
+    this.connection = conn ?? null;
     this.sol = new SolanaChain({ client, operator: this.keystore.solana, makerPda: client.program.makerPda(c.maker_owner).toBase58(), ...(this.o.solanaBlockHeight ? { blockHeight: this.o.solanaBlockHeight } : conn ? { blockHeight: () => conn.getBlockHeight('finalized') } : {}) });
     this.chainErrors.delete('solana');
   }

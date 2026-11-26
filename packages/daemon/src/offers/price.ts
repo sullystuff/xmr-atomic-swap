@@ -62,7 +62,8 @@ export function priceOffer(o: ResolvedOffer, ref: Reference, ctx: { inventoryXmr
   for (let i = 0; i < tiers.length; i++) {
     // A size tier is extra deviation above a swap size; it worsens the taker's price in both directions.
     const usd = offerPriceUsd(ref.xmrUsd, o.direction, { deviationPct: o.deviationPct, tierPct: tiers[i]!.extraPct, skewPct, widenPct });
-    if (ctx.band && (usd < ctx.band.min || usd > ctx.band.max)) return { ...none, blocked: `guardrail: price_band (${usd.toFixed(2)} USD per XMR is outside ${ctx.band.min}..${ctx.band.max})` };
+    // The band is in USD per XMR; a reference in the asset itself (a SOL-quoted pool alone) has no USD figure, and the loader refuses a band there.
+    if (ctx.band && ref.unit !== 'asset' && (usd < ctx.band.min || usd > ctx.band.max)) return { ...none, blocked: `guardrail: price_band (${usd.toFixed(2)} USD per XMR is outside ${ctx.band.min}..${ctx.band.max})` };
     const units = toAssetUnits(usd, ref.assetUsd, o.decimals, o.direction);
     if (units <= 0n) return { ...none, blocked: 'the computed price is not positive' };
     tierAbove[i] = tiers[i]!.aboveXmr;

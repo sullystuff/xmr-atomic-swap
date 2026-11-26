@@ -17,8 +17,11 @@ export const fetchPriceHttp = (timeoutMs = 15_000): PriceHttp => ({
 });
 
 export type PricedAsset = 'xmr' | 'sol' | 'eth';
-/** USD prices of one read. A source that cannot price an asset leaves it out. */
-export type UsdPrices = Partial<Record<PricedAsset, number>>;
+/**
+ * What one read gives. `xmr`, `sol`, `eth`: USD per unit. `xmr_sol`: SOL per XMR, straight from a
+ * SOL-quoted pool (no USD price involved). A source that cannot price something leaves it out.
+ */
+export type UsdPrices = Partial<Record<PricedAsset | 'xmr_sol', number>>;
 export interface PriceSourceClient {
   readonly name: SourceName;
   /** `others`: prices already known this round (the pool needs SOL/USD when it is quoted in SOL). */
@@ -88,28 +91,73 @@ export function coinmarketcap(o: { http: PriceHttp; env: Env; apiKeyEnv?: string
 export type TokenBalanceReader = (tokenAccount: string) => Promise<bigint | null>;
 
 /**
- * The wXMR pool on Solana, read from its two reserve token accounts: price = quote reserve ÷
- * wXMR reserve. A cross-check only (DESIGN Decisions). Refuses to price below the minimum
- * liquidity and averages over the configured window, because a thin pool can be pushed
- * off-market cheaply by someone who then takes the maker's quote.
+ * A wXMR pool on Solana, read from its two reserve token accounts: price = quote reserve ÷ wXMR
+ * reserve. The maker may use it as a primary source, a fallback or a cross-check; its own
+ * protections are then what stands between the maker and a pool pushed off-market:
+ *
+ * - `minLiquidityUsd`: below it the source is unavailable (the market falls back, or pauses).
+ * - `averageSeconds`: the price is the TIME-WEIGHTED average over that window, never the last
+ *   read, and the source is unavailable until its samples span the whole window (a daemon that
+ *   has just started does not quote off one sample). `0` = the last read.
+ * - `maxJumpPct` (the volatility guardrail's `move_pct`): a read that moved further than that
+ *   from the last accepted one is set aside, and only joins the average once reads have stayed
+ *   at the new level for a whole window. One off-market read moves nothing.
+ *
+ * A USDC-quoted pool gives XMR/USD. A SOL-quoted pool gives XMR/SOL (`xmr_sol`), and XMR/USD
+ * too when another source supplies SOL/USD.
  */
-export function wxmrPool(o: { read: TokenBalanceReader; baseVault: string; quoteVault: string; quote: 'usdc' | 'sol'; minLiquidityUsd: number; averageSeconds: number; now: () => number }): PriceSourceClient {
-  const samples: { at: number; usd: number }[] = [];
+export function wxmrPool(o: { name?: 'wxmr_pool' | 'wxmr_pool_sol'; read: TokenBalanceReader; baseVault: string; quoteVault: string; quote: 'usdc' | 'sol'; minLiquidityUsd: number; averageSeconds: number; maxJumpPct?: number | null; now: () => number }): PriceSourceClient {
+  const name = o.name ?? 'wxmr_pool';
+  /** Accepted reads, in quote units per XMR, oldest first. */
+  const samples: { at: number; value: number }[] = [];
+  let pending: { value: number; since: number } | null = null;
+  const jumped = (a: number, b: number): boolean => o.maxJumpPct != null && o.maxJumpPct > 0 && (Math.abs(a - b) / b) * 100 > o.maxJumpPct;
   return {
-    name: 'wxmr_pool',
+    name,
     async fetch(others = {}) {
       const [base, quote] = await Promise.all([o.read(o.baseVault), o.read(o.quoteVault)]);
-      if (base === null || quote === null || base === 0n) throw new SourceError('wxmr_pool', 'a pool reserve account is missing or empty');
-      const quoteUsd = o.quote === 'usdc' ? 1 : others.sol;
-      if (!positive(quoteUsd)) throw new SourceError('wxmr_pool', 'a SOL-quoted pool needs a SOL/USD price from another source');
+      if (base === null || quote === null || base === 0n) throw new SourceError(name, 'a pool reserve account is missing or empty');
       const baseXmr = Number(base) / 1e12; // wXMR has 12 decimals
       const quoteUnits = Number(quote) / (o.quote === 'usdc' ? 1e6 : 1e9);
-      const liquidityUsd = 2 * quoteUnits * quoteUsd;
-      if (liquidityUsd < o.minLiquidityUsd) throw new SourceError('wxmr_pool', `pool liquidity $${Math.round(liquidityUsd)} is under the minimum $${o.minLiquidityUsd}`);
+      const quoteUsd = o.quote === 'usdc' ? 1 : positive(others.sol) ? others.sol : null;
+      // The liquidity floor is in USD; a SOL-quoted pool with no SOL/USD price at hand cannot be measured against it.
+      if (o.minLiquidityUsd > 0) {
+        if (quoteUsd === null) throw new SourceError(name, 'min_liquidity_usd needs a SOL/USD price from another source for a SOL-quoted pool');
+        const liquidityUsd = 2 * quoteUnits * quoteUsd;
+        if (liquidityUsd < o.minLiquidityUsd) throw new SourceError(name, 'pool liquidity $' + Math.round(liquidityUsd) + ' is under the minimum $' + o.minLiquidityUsd);
+      }
       const t = o.now();
-      samples.push({ at: t, usd: (quoteUnits / baseXmr) * quoteUsd });
-      while (samples.length > 0 && samples[0]!.at < t - o.averageSeconds) samples.shift();
-      return { xmr: samples.reduce((a, s) => a + s.usd, 0) / samples.length };
+      const value = quoteUnits / baseXmr;
+      const last = samples[samples.length - 1];
+      if (last && jumped(value, last.value)) {
+        // Set aside. It counts only once the pool has stayed there for a whole window.
+        if (!pending || jumped(value, pending.value)) pending = { value, since: t };
+        if (t - pending.since >= o.averageSeconds) {
+          samples.push({ at: t, value });
+          pending = null;
+        } else if (last.at < t) samples.push({ at: t, value: last.value }); // the accepted level carries on meanwhile
+      } else {
+        pending = null;
+        samples.push({ at: t, value });
+      }
+      // Keep the window, plus the one sample before it (it is the price at the window's start).
+      const start = t - o.averageSeconds;
+      while (samples.length > 1 && samples[1]!.at <= start) samples.shift();
+      let price: number;
+      if (o.averageSeconds <= 0) price = samples[samples.length - 1]!.value;
+      else {
+        if (samples[0]!.at > start) throw new SourceError(name, 'the averaging window is not filled yet (' + (t - samples[0]!.at) + ' of ' + o.averageSeconds + ' s)');
+        // Time-weighted: each sample holds from its own time (or the window's start) until the next one.
+        let area = 0;
+        for (let i = 0; i < samples.length; i++) {
+          const from = Math.max(samples[i]!.at, start);
+          const to = i + 1 < samples.length ? samples[i + 1]!.at : t;
+          if (to > from) area += samples[i]!.value * (to - from);
+        }
+        price = area / o.averageSeconds;
+      }
+      if (o.quote === 'usdc') return { xmr: price };
+      return { xmr_sol: price, ...(quoteUsd !== null ? { xmr: price * quoteUsd } : {}) };
     },
   };
 }

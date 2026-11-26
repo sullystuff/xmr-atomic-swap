@@ -7,7 +7,8 @@ import { z } from 'zod';
 
 export const MARKET_NAMES = ['usdc_sol', 'sol', 'usdc_eth', 'eth'] as const;
 export const DIRECTIONS = ['sell_xmr', 'buy_xmr'] as const;
-export const SOURCE_NAMES = ['coingecko', 'coinmarketcap', 'wxmr_pool'] as const;
+/** `wxmr_pool` is USDC-quoted unless its `quote` says otherwise; `wxmr_pool_sol` is a second pool, SOL-quoted by default (XMR/SOL directly). */
+export const SOURCE_NAMES = ['coingecko', 'coinmarketcap', 'wxmr_pool', 'wxmr_pool_sol'] as const;
 
 const pct = z.number().finite();
 const posNum = z.number().finite().nonnegative();
@@ -30,10 +31,14 @@ const poolSource = z.strictObject({
   average_seconds: posNum.default(300),
 });
 
+const poolSourceSol = poolSource.extend({ quote: z.enum(['usdc', 'sol']).default('sol') });
+const crossCheck = z.union([sourceName, z.literal('none')]);
+
 const pricing = z.strictObject({
   refresh_seconds: z.number().positive().default(15),
   max_age_seconds: z.number().positive().default(60),
-  cross_check: sourceName.optional(),
+  /** A source every market's reference is checked against, or `"none"` (the same as leaving it out). A market may name its own. */
+  cross_check: crossCheck.optional(),
   max_disagreement_pct: pct.nonnegative().default(1.0),
   on_failure: z.enum(['pause', 'widen']).default('pause'),
   widen_pct: pct.nonnegative().default(0.5),
@@ -42,6 +47,7 @@ const pricing = z.strictObject({
       coingecko: keyedSource.default(() => keyedSource.parse({})),
       coinmarketcap: keyedSource.default(() => keyedSource.parse({})),
       wxmr_pool: poolSource.optional(),
+      wxmr_pool_sol: poolSourceSol.optional(),
     })
     .default(() => ({ coingecko: keyedSource.parse({}), coinmarketcap: keyedSource.parse({}) })),
 });
@@ -50,6 +56,8 @@ const offer = z.strictObject({
   enabled: z.boolean().default(false),
   source: sourceName.default('coingecko'),
   fallbacks: z.array(sourceName).default([]),
+  /** This market's own cross-check: a source, or `"none"`. Absent = the global `[pricing].cross_check`. */
+  cross_check: crossCheck.optional(),
   deviation_pct: pct.default(2.0),
   size_tiers: z.array(z.strictObject({ above_xmr: xmrAmount, extra_pct: pct })).max(2).default([]),
   inventory_skew_max_pct: pct.nonnegative().default(0),

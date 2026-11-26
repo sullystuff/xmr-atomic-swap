@@ -156,6 +156,9 @@ describe('console contract', () => {
     expect(o.offers).toHaveLength(8);
     const sol = o.offers.find((x: { market: string; direction: string }) => x.market === 'sol' && x.direction === 'sell_xmr');
     expect(sol).toMatchObject({ live: true, enabled: true, reference_price: '1500000000', price_tiers: [{ above_xmr: '0', price: '1530000000' }], min_xmr: '100000000000', max_xmr: '20000000000000', key_pool: { size: 16, available: 16 }, terms: { approval_mode: 'window', deposit_bps: 200 } });
+    // The price sources as the file names them (no demotion, no "effective" source), and the one pricing it right now.
+    expect(sol).toMatchObject({ source: 'coingecko', fallbacks: [], cross_check: null, priced_by: 'coingecko', price_unit: 'usd' });
+    expect(sol).not.toHaveProperty('demoted');
     expect(o.offers.find((x: { market: string }) => x.market === 'eth')).toMatchObject({ enabled: false, live: false, disabled_reason: 'switched off' });
     expect(o).toMatchObject({ update_cost: { daily_lamports: '28800000' }, spent_24h_lamports: expect.stringMatching(/^\d+$/), sol_usd: 100, compute_units_per_update: 24_120 });
     expect(o.occasional.map((x: { kind: string }) => x.kind)).toEqual(['key_refill', 'key_rotation', 'quote_on_request', 'eth_registry']);

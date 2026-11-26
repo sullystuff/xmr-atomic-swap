@@ -120,10 +120,46 @@ function findPlaceholders(v: unknown, path: string[], out: ConfigIssue[]): void 
 
 const usable = (v: string | undefined): v is string => typeof v === 'string' && v !== '' && !isPlaceholder(v);
 
-export function poolSourceUsable(raw: RawConfig): boolean {
-  const p = raw.pricing.sources.wxmr_pool;
-  return !!p && usable(p.token) && usable(p.pool) && usable(p.base_vault) && usable(p.quote_vault);
+export type PoolName = 'wxmr_pool' | 'wxmr_pool_sol';
+export const isPool = (s: SourceName): s is PoolName => s === 'wxmr_pool' || s === 'wxmr_pool_sol';
+/** A pool can be read once its two reserve accounts are named and no address is a placeholder. */
+export function poolSourceUsable(raw: RawConfig, name: PoolName = 'wxmr_pool'): boolean {
+  const p = raw.pricing.sources[name];
+  return !!p && usable(p.base_vault) && usable(p.quote_vault) && !isPlaceholder(p.token) && !isPlaceholder(p.pool);
 }
+/** Whether a source can be read at all with this file: the keyed APIs always, a pool when its section is complete. */
+export const sourceUsable = (raw: RawConfig, s: SourceName): boolean => !isPool(s) || poolSourceUsable(raw, s);
+
+type Gives = 'XMR/USD' | 'SOL/USD' | 'ETH/USD' | 'XMR/SOL';
+/** What a source can supply on its own. A SOL-quoted pool gives XMR/SOL; XMR/USD only together with SOL/USD from elsewhere. */
+export function sourceGives(raw: RawConfig, s: SourceName): Gives[] {
+  if (!isPool(s)) return ['XMR/USD', 'SOL/USD', 'ETH/USD'];
+  return (raw.pricing.sources[s]?.quote ?? (s === 'wxmr_pool' ? 'usdc' : 'sol')) === 'usdc' ? ['XMR/USD'] : ['XMR/SOL'];
+}
+/**
+ * Why `primary` cannot price a market with the help of the market's other sources, or `null`
+ * when it can. USDC markets need XMR/USD; the SOL market needs XMR/SOL, directly or as XMR/USD
+ * with SOL/USD; the ETH markets need XMR/USD with ETH/USD.
+ */
+export function missingPrice(raw: RawConfig, market: MarketName, primary: SourceName, all: SourceName[]): { needs: Gives; has: Gives; lacks: Gives } | { needs: Gives; has: null; lacks: Gives } | null {
+  const own = sourceGives(raw, primary);
+  const any = (g: Gives) => all.some((s) => sourceGives(raw, s).includes(g));
+  const xmrUsd = own.includes('XMR/USD') || (own.includes('XMR/SOL') && any('SOL/USD'));
+  if (market === 'sol') {
+    if (own.includes('XMR/SOL') || (own.includes('XMR/USD') && any('SOL/USD'))) return null;
+    return { needs: 'XMR/SOL', has: 'XMR/USD', lacks: 'SOL/USD' };
+  }
+  if (!xmrUsd) return { needs: 'XMR/USD', has: 'XMR/SOL', lacks: 'SOL/USD' };
+  if (market === 'eth' && !any('ETH/USD')) return { needs: 'ETH/USD', has: null, lacks: 'ETH/USD' };
+  return null;
+}
+
+/** The three warnings that replace the old "cross-check only" rule: the risk is stated, the choice is the maker's. */
+export const RISK = {
+  poolPrimary: 'a thin pool can be pushed off-market cheaply by someone who then takes your quote',
+  noCrossCheck: 'nothing checks this price against a second source',
+  noFallback: 'quoting pauses whenever this source is unavailable',
+} as const;
 
 function resolveOffer(raw: RawConfig, market: MarketName, direction: DirectionName, o: OfferSettings, largestLadder: bigint, blobEndpoint: boolean, errors: ConfigIssue[], warnings: ConfigIssue[]): ResolvedOffer {
   const chain = MARKET_CHAIN[market];
@@ -133,28 +169,51 @@ function resolveOffer(raw: RawConfig, market: MarketName, direction: DirectionNa
   const warn = (key: string, message: string) => warnings.push({ path: key ? `${path}.${key}` : path, message });
   let disabledReason: string | null = o.enabled ? null : 'switched off';
 
-  // SPEC 7.2: the pool is a cross-check only. Promote the first fallback, keep the pool as this market's cross-check.
-  let source = o.source;
-  let fallbacks = o.fallbacks.filter((f) => f !== 'wxmr_pool');
-  let crossCheck: SourceName | null = raw.pricing.cross_check ?? null;
-  if (o.fallbacks.includes('wxmr_pool')) warn('fallbacks', 'a wXMR pool is a cross-check only; it is dropped from the fallbacks');
-  if (source === 'wxmr_pool') {
-    const promoted = fallbacks[0];
-    if (promoted) {
-      source = promoted;
-      fallbacks = fallbacks.slice(1);
-      crossCheck = poolSourceUsable(raw) ? 'wxmr_pool' : crossCheck;
-      warn('source', `a wXMR pool is a cross-check only (DESIGN Decisions): "${promoted}" is used as the primary source and the pool as this market's cross-check`);
-    } else {
-      source = 'coingecko';
-      if (o.enabled) {
-        disabledReason = 'its only price source is a wXMR pool, which is a cross-check only';
-        warn('source', 'a wXMR pool is a cross-check only and no fallback is listed: this market stays off');
+  // The maker chooses its price sources freely: any configured source may be the primary, a fallback or the
+  // cross-check, and a single source with no cross-check is valid. What the file says is what runs; the risks are
+  // stated as warnings, never enforced.
+  const source = o.source;
+  const fallbacks = o.fallbacks.filter((f, i) => f !== source && o.fallbacks.indexOf(f) === i);
+  const wanted = o.cross_check ?? raw.pricing.cross_check ?? 'none';
+  let crossCheck: SourceName | null = wanted === 'none' ? null : wanted;
+  if (o.enabled) {
+    const named = [source, ...fallbacks, ...(crossCheck ? [crossCheck] : [])];
+    for (const s of new Set(named)) {
+      if (!isPool(s)) continue;
+      if (!raw.pricing.sources[s]) err(s === source ? 'source' : fallbacks.includes(s) ? 'fallbacks' : 'cross_check', `${s} is named but [pricing.sources.${s}] is not in the file`);
+      else if (!poolSourceUsable(raw, s)) warn(s === source ? 'source' : fallbacks.includes(s) ? 'fallbacks' : 'cross_check', `${s} cannot be read yet: its addresses are placeholders or missing (base_vault and quote_vault are needed); it is skipped until they are set`);
+    }
+    if (crossCheck === source) {
+      warn('cross_check', `the cross-check is the primary source itself (${source}); it is treated as none: ${RISK.noCrossCheck}`);
+      crossCheck = null;
+    } else if (crossCheck && !sourceUsable(raw, crossCheck)) crossCheck = null;
+    else if (!crossCheck) warn('cross_check', RISK.noCrossCheck);
+    // What can actually be read decides what prices the market. Unreadable sources (placeholder addresses) are skipped.
+    const readable = [source, ...fallbacks].filter((s) => sourceUsable(raw, s));
+    const where = market + ' ' + direction;
+    if (readable.length === 0) {
+      if ([source, ...fallbacks].every((s) => !isPool(s) || raw.pricing.sources[s] !== undefined)) {
+        disabledReason = 'none of its price sources can be read yet (placeholder addresses)';
+        warn('source', 'none of this market\'s price sources can be read yet: it stays off until the pool addresses are set');
       }
+    } else {
+      const primary = readable[0]!;
+      const miss = missingPrice(raw, market, primary, readable);
+      if (miss) {
+        if (miss.has === null) err('source', `${where} needs ${miss.needs}; ${primary} cannot supply it — add coingecko or coinmarketcap as this market's source for ${miss.lacks}, or disable the market`);
+        else err('source', `${where} needs ${miss.needs}; ${primary} supplies ${miss.has} and nothing here supplies ${miss.lacks} — add coingecko or coinmarketcap as this market's source for ${miss.lacks}, use a ${miss.needs === 'XMR/SOL' ? 'SOL-quoted pool (wxmr_pool_sol)' : 'USDC-quoted pool (wxmr_pool)'}, or disable the market`);
+      } else {
+        for (const f of readable.slice(1)) if (missingPrice(raw, market, f, readable)) warn('fallbacks', `${f} cannot price this market by itself and is skipped as a fallback`);
+        // A market priced in SOL straight from a SOL-quoted pool has no USD figure: guardrails stated in USD cannot be applied.
+        const usdKnown = readable.some((s) => sourceGives(raw, s).includes('XMR/USD')) || readable.some((s) => sourceGives(raw, s).includes('SOL/USD'));
+        if (!usdKnown && raw.guardrails.price_band_usd) err('source', `${where} has a hard price band in USD; ${primary} gives XMR/SOL and nothing here supplies SOL/USD — add coingecko or coinmarketcap as this market's source for SOL/USD, or remove guardrails.price_band_usd`);
+        const pool = isPool(primary) ? raw.pricing.sources[primary] : undefined;
+        if (pool && !usdKnown && pool.min_liquidity_usd > 0) err('source', `${primary} has min_liquidity_usd in USD; it is SOL-quoted and nothing here supplies SOL/USD — add coingecko or coinmarketcap as this market's source for SOL/USD, or set min_liquidity_usd = 0`);
+      }
+      if (isPool(primary)) warn('source', `${primary} is this market's primary price source: ${RISK.poolPrimary}`);
+      if (readable.length === 1) warn('fallbacks', RISK.noFallback);
     }
   }
-  if (crossCheck === source) crossCheck = null;
-  if (crossCheck === 'wxmr_pool' && !poolSourceUsable(raw)) crossCheck = null;
 
   const maxXmr = o.max_xmr !== undefined ? xmrToPico(o.max_xmr) : largestLadder;
   const minXmr = xmrToPico(o.min_xmr);
