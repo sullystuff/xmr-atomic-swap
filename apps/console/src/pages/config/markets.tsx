@@ -4,7 +4,7 @@ import { CHAIN_CONSTS, MARKET_CHAIN, type Market } from '@xmrswap/protocol';
 import type { MarketDirection } from '@xmrswap/protocol/daemon-api';
 import { APPROVAL_WINDOW_REASON, DIRECTIONS, DIRECTION_LABEL, MARKETS, RECOMMENDED_APPROVAL_SECS, SOURCE_SECTIONS, chainLabel, fieldOf, isPool, offerFields, type FieldDef, type SectionDef } from '../../lib/config/schema.js';
 import { getPath } from '../../lib/config/toml.js';
-import { canBePending, issuesAt, resolveOffer, type ResolvedOffer } from '../../lib/config/validate.js';
+import { POOL_RISK, canBePending, issuesAt, resolveOffer, type ResolvedOffer } from '../../lib/config/validate.js';
 import { MARKET_LABEL } from '../../lib/format.js';
 import { Badge, Button, Card, Notice, Switch } from '../../ui/kit.js';
 import { Field, Messages, useForm } from './fields.js';
@@ -164,7 +164,7 @@ function OfferEditor({ market, direction, blobEndpoint, onClose }: { market: Mar
           <Messages path={base} exact />
           {isPool(o.source) ? (
             <div className="notice warn" role="group" aria-label="Pool protections" style={{ marginTop: 6 }}>
-              <strong>The controls that matter most when the pool sets your price.</strong> They apply to every market that uses the pool.
+              <strong>The controls that matter most when the pool sets your price.</strong> {POOL_RISK} They apply to every market that uses this pool.
               <div className="fields" style={{ marginTop: 8 }}>
                 <Field base={poolSectionOf(o.source).path} def={fieldOf(poolSectionOf(o.source), 'min_liquidity_usd')} />
                 <Field base={poolSectionOf(o.source).path} def={fieldOf(poolSectionOf(o.source), 'average_seconds')} />

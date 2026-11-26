@@ -177,7 +177,10 @@ describe('mock daemon: offers and fees', () => {
     expect(v.ok).toBe(true);
     expect(v.effective.map((e) => `${e.market}.${e.direction}`)).toContain('sol.sell_xmr');
     expect([...v.warnings, ...v.errors].map((i) => i.message).join(' ')).not.toMatch(/cross-check only|may only be a cross-check|promoted/i);
-    expect(v.warnings.filter((w) => w.path === 'markets.sol.sell_xmr.source').map((w) => w.message).join(' ')).toContain('this market is priced from the wXMR pool');
+    // In the mock's file the pool's addresses are placeholders: it is the chosen primary, and CoinGecko prices the market until it can be read.
+    expect(v.warnings.filter((w) => w.path === 'markets.sol.sell_xmr.source').map((w) => w.message)).toEqual(['wxmr_pool cannot be read yet: its addresses are placeholders or missing (base_vault and quote_vault are needed); it is skipped until they are set']);
+    expect(sol).toMatchObject({ source: 'wxmr_pool', fallbacks: ['coingecko'], cross_check: 'coinmarketcap', priced_by: 'coingecko', price_unit: 'usd' });
+    expect(r.offers.find((o) => o.market === 'usdc_sol' && o.direction === 'sell_xmr')).toMatchObject({ source: 'coingecko', priced_by: 'coingecko' });
     expect(r.update_cost?.daily_lamports).toBe('28800000');
     expect(r.occasional.map((o) => o.kind)).toEqual(['key_refill', 'key_rotation', 'quote_on_request', 'eth_registry']);
     expect(r.occasional.find((o) => o.kind === 'eth_registry')?.asset).toBe('eth');

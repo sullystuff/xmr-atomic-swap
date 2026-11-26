@@ -17,7 +17,10 @@ export function WxmrOnlyPreset({ blobEndpoint, onApply }: { blobEndpoint: boolea
   const warnings = useMemo(() => {
     const v = validateConfig(plan.next, { blobEndpoint, solUsd: null });
     const paths = plan.priced.flatMap((p) => ['source', 'fallbacks', 'cross_check'].map((k) => `markets.${p.market}.${p.direction}.${k}`));
-    return v.warnings.filter((w) => paths.includes(w.path));
+    return v.warnings.filter((w) => paths.includes(w.path)).map((w) => {
+      const [, market, direction, field] = w.path.split('.') as [string, keyof typeof MARKET_LABEL, keyof typeof DIRECTION_LABEL, string];
+      return { about: `${MARKET_LABEL[market]} ${DIRECTION_LABEL[direction]}, ${field === 'cross_check' ? 'cross-check' : field}`, message: w.message };
+    });
   }, [plan, blobEndpoint]);
   const offer = (p: { market: keyof typeof MARKET_LABEL; direction: keyof typeof DIRECTION_LABEL }): string => `${MARKET_LABEL[p.market]} ${DIRECTION_LABEL[p.direction]}`;
   return (
@@ -74,7 +77,7 @@ export function WxmrOnlyPreset({ blobEndpoint, onApply }: { blobEndpoint: boolea
               <ul style={{ margin: 0, paddingLeft: 18 }} aria-label="Preset warnings">
                 {warnings.map((w, i) => (
                   <li key={i} className="msg warning">
-                    <b>Warning:</b> {w.message}
+                    <b>{w.about}:</b> {w.message}
                   </li>
                 ))}
               </ul>

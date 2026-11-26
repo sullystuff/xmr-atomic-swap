@@ -3,7 +3,7 @@ import type { ConfigValidation } from '@xmrswap/protocol/daemon-api';
 import { APPROVAL_WINDOW_REASON } from '../src/lib/config/schema.js';
 import { ConfigSyntaxError, diffConfig, getPath, parseToml, revisionOf, setPath, stringifyToml, type Toml } from '../src/lib/config/toml.js';
 import type { ValidateContext } from '../src/lib/config/validate.js';
-import { issuesAboutKey, missingPrice, pairsFrom, unknownKeys } from '../src/lib/config/validate.js';
+import { RISK, issuesAboutKey, missingPrice, pairsFrom, unknownKeys } from '../src/lib/config/validate.js';
 import { MOCK_TOKEN, MockDaemon } from '../src/mock/daemon.js';
 import { autoClaimDelayMinutes, issuesAt, minClaimDelayMinutes, minClaimDelaySecs, resolveOffer, validateConfig, withDefaults } from '../src/lib/config/validate.js';
 import { DESIGN_BOTH_TOML, DESIGN_CONFIG_TOML, DESIGN_REBALANCE_TOML } from './design.js';
@@ -54,13 +54,13 @@ describe('DESIGN example files', () => {
     expect(o.terms.enabled).toBe(true);
     const text = [...v.warnings, ...v.errors].map((i) => i.message).join(' | ');
     expect(text).not.toMatch(/may only be a cross-check|promoted|demot/i);
-    // The risk is stated, with DESIGN's liquidity figures and the pool's own protections, and nothing is blocked.
-    const w = messages(v.warnings, 'markets.sol.sell_xmr.source');
-    expect(w).toContain('sol sell_xmr: this market is priced from the wXMR pool. A thin pool can be pushed off-market cheaply by someone who then takes your quote.');
-    expect(w).toContain('about $392,500 of liquidity across 719 pools, and one of its USDC pools held about $35,700');
-    expect(w).toContain("The pool's own protections matter most in this setup: minimum liquidity (now $250,000) and averaging window (now 300 s). The choice is yours.");
-    // Its addresses are placeholders in the example: said, not enforced.
-    expect(w).toContain('the wXMR pool cannot be read yet: its addresses are placeholders or missing');
+    // Its addresses are placeholders in the example, so it cannot be read yet and CoinGecko prices the market meanwhile: said in the daemon's words, not enforced.
+    expect(messages(v.warnings, 'markets.sol.sell_xmr.source')).toBe('wxmr_pool cannot be read yet: its addresses are placeholders or missing (base_vault and quote_vault are needed); it is skipped until they are set');
+    // With the addresses filled in, the pool prices the market and the risk is stated, in the daemon's words.
+    const ready = parseToml(DESIGN_CONFIG_TOML.replace('token = "<wXMR token address>"\npool = "<pool address>"', 'token = "T"\npool = "P"\nbase_vault = "B"\nquote_vault = "Q"'));
+    const r = validateConfig(ready, ctx);
+    expect(r.ok).toBe(true);
+    expect(messages(r.warnings, 'markets.sol.sell_xmr.source')).toBe("wxmr_pool is this market's primary price source: a thin pool can be pushed off-market cheaply by someone who then takes your quote");
     expect(messages(v.warnings, 'pricing.sources.wxmr_pool.token')).toMatch(/placeholder/);
     expect(v.ok).toBe(true);
   });
@@ -77,13 +77,15 @@ describe('DESIGN example files', () => {
   });
   it('states each risk as a warning beside its field, and none blocks', () => {
     const v = check(`${POOL}${offer('source = "wxmr_pool"')}`);
-    expect(messages(v.warnings, 'markets.usdc_sol.sell_xmr.source')).toContain('A thin pool can be pushed off-market cheaply by someone who then takes your quote.');
-    expect(messages(v.warnings, 'markets.usdc_sol.sell_xmr.cross_check')).toBe('usdc_sol sell_xmr: no cross-check, so nothing checks this price against a second source.');
-    expect(messages(v.warnings, 'markets.usdc_sol.sell_xmr.fallbacks')).toBe('usdc_sol sell_xmr: no fallback, so quoting pauses whenever the wXMR pool is unavailable.');
+    // The daemon's exact sentences, so the maker sees one wording whoever reports it.
+    expect(messages(v.warnings, 'markets.usdc_sol.sell_xmr.source')).toBe("wxmr_pool is this market's primary price source: a thin pool can be pushed off-market cheaply by someone who then takes your quote");
+    expect(messages(v.warnings, 'markets.usdc_sol.sell_xmr.cross_check')).toBe('nothing checks this price against a second source');
+    expect(messages(v.warnings, 'markets.usdc_sol.sell_xmr.fallbacks')).toBe('quoting pauses whenever this source is unavailable');
+    expect(RISK).toEqual({ poolPrimary: 'a thin pool can be pushed off-market cheaply by someone who then takes your quote', noCrossCheck: 'nothing checks this price against a second source', noFallback: 'quoting pauses whenever this source is unavailable' });
     expect(messages(v.warnings, 'guardrails.disagreement_pause')).toBe('Not applicable: no cross-check source is set, so the disagreement pause has nothing to compare.');
     // The same two warnings for an aggregator used alone; no pool warning there.
     const g = check(offer('source = "coingecko"'));
-    expect(messages(g.warnings, 'markets.usdc_sol.sell_xmr.fallbacks')).toBe('usdc_sol sell_xmr: no fallback, so quoting pauses whenever CoinGecko is unavailable.');
+    expect(messages(g.warnings, 'markets.usdc_sol.sell_xmr.fallbacks')).toBe('quoting pauses whenever this source is unavailable');
     expect(messages(g.warnings, 'markets.usdc_sol.sell_xmr.cross_check')).toMatch(/nothing checks this price against a second source/);
     expect(messages(g.warnings, 'markets.usdc_sol.sell_xmr.source')).toBe('');
     // With a fallback and a cross-check, none of the three.
@@ -99,7 +101,7 @@ describe('DESIGN example files', () => {
     expect(check('[pricing]\ncross_check = "none"').ok).toBe(true);
     // A cross-check that is the primary itself compares nothing.
     const same = check(`[pricing]\ncross_check = "coingecko"\n${offer('source = "coingecko"')}`);
-    expect(messages(same.warnings, 'markets.usdc_sol.sell_xmr.cross_check')).toBe('usdc_sol sell_xmr: the cross-check is CoinGecko, this market\'s primary source itself, so nothing checks this price against a second source.');
+    expect(messages(same.warnings, 'markets.usdc_sol.sell_xmr.cross_check')).toBe('the cross-check is the primary source itself (coingecko); it is treated as none: nothing checks this price against a second source');
     expect(unknownKeys(parseToml(`${POOL.replace('wxmr_pool', 'wxmr_pool_sol')}${offer('cross_check = "none"')}`))).toEqual([]);
   });
   it('knows what each source can price', () => {
@@ -125,11 +127,9 @@ describe('DESIGN example files', () => {
   it('warns locally, and leaves it to the daemon to refuse, when the sources cannot price a market', () => {
     const toml = `${POOL}${offer('source = "wxmr_pool"', 'sol')}`;
     const v = check(toml);
-    // Local: a warning, never an error.
+    // Local: a warning, never an error, in the very words the daemon uses for its error.
     expect(v.ok).toBe(true);
-    expect(messages(v.warnings, 'markets.sol.sell_xmr.source')).toContain(
-      "sol sell_xmr needs XMR/SOL; wxmr_pool supplies XMR/USD and nothing here supplies SOL/USD — add coingecko or coinmarketcap as this market's source for SOL/USD, use a SOL-quoted pool (wxmr_pool_sol), or disable the market. The daemon refuses the file while this stands.",
-    );
+    expect(issuesAt(v.warnings, 'markets.sol.sell_xmr.source').map((w) => w.message)).toContain("sol sell_xmr needs XMR/SOL; wxmr_pool supplies XMR/USD and nothing here supplies SOL/USD — add coingecko or coinmarketcap as this market's source for SOL/USD, use a SOL-quoted pool (wxmr_pool_sol), or disable the market");
     // The daemon: an error on that market's source, naming what is missing.
     expect(daemonSays(toml)).toEqual([
       { path: 'markets.sol.sell_xmr.source', message: "sol sell_xmr needs XMR/SOL; wxmr_pool supplies XMR/USD and nothing here supplies SOL/USD — add coingecko or coinmarketcap as this market's source for SOL/USD, use a SOL-quoted pool (wxmr_pool_sol), or disable the market" },
@@ -139,17 +139,38 @@ describe('DESIGN example files', () => {
     ]);
     // Fixed by a second source, or by a SOL-quoted pool.
     expect(daemonSays(`${POOL}${offer('source = "wxmr_pool"\nfallbacks = ["coingecko"]', 'sol')}`)).toEqual([]);
-    expect(daemonSays(`${POOL}quote = "sol"\n${offer('source = "wxmr_pool"', 'sol')}`)).toEqual([]);
+    const solPool = '[pricing.sources.wxmr_pool]\ntoken = "T"\npool = "P"\nbase_vault = "B"\nquote_vault = "Q"\nquote = "sol"\n';
+    expect(daemonSays(`${solPool}${offer('source = "wxmr_pool"', 'sol')}`)).toEqual([]);
+    expect(daemonSays(`${solPool.replace('wxmr_pool', 'wxmr_pool_sol').replace('quote = "sol"\n', '')}${offer('source = "wxmr_pool_sol"', 'sol')}`)).toEqual([]);
+    // A SOL-quoted pool gives no XMR/USD for a USDC market.
+    expect(daemonSays(`${solPool}${offer('source = "wxmr_pool"')}`)).toEqual([
+      { path: 'markets.usdc_sol.sell_xmr.source', message: "usdc_sol sell_xmr needs XMR/USD; wxmr_pool supplies XMR/SOL and nothing here supplies SOL/USD — add coingecko or coinmarketcap as this market's source for SOL/USD, use a USDC-quoted pool (wxmr_pool), or disable the market" },
+    ]);
+    // A liquidity floor in USD cannot be applied to a pool priced purely in SOL.
+    expect(daemonSays(`${solPool}min_liquidity_usd = 250000\n${offer('source = "wxmr_pool"', 'sol')}`)).toEqual([
+      { path: 'markets.sol.sell_xmr.source', message: "wxmr_pool has min_liquidity_usd in USD; it is SOL-quoted and nothing here supplies SOL/USD — add coingecko or coinmarketcap as this market's source for SOL/USD, or set min_liquidity_usd = 0" },
+    ]);
+    // A fallback that cannot price the market by itself is skipped, with a warning.
+    const two = `${POOL}${POOL.replace('wxmr_pool', 'wxmr_pool_sol').replace('min_liquidity_usd = 250000\n', '')}${offer('source = "wxmr_pool"\nfallbacks = ["wxmr_pool_sol"]')}`;
+    expect(messages(check(two).warnings, 'markets.usdc_sol.sell_xmr.fallbacks')).toBe('wxmr_pool_sol cannot price this market by itself and is skipped as a fallback');
+    expect(daemonSays(two)).toEqual([]);
+    // With an aggregator in the chain the pool is a full fallback: it supplies XMR/USD, the aggregator ETH/USD.
+    expect(issuesAt(check(`${POOL}${offer('source = "coingecko"\nfallbacks = ["wxmr_pool"]', 'eth')}`).warnings, 'markets.eth.sell_xmr.fallbacks')).toEqual([]);
     // A pool that is named but not in the file is the daemon's to refuse; locally it is a warning.
     const bare = offer('source = "wxmr_pool"');
     expect(check(bare).ok).toBe(true);
-    expect(messages(check(bare).warnings, 'markets.usdc_sol.sell_xmr.source')).toContain('wxmr_pool is named but [pricing.sources.wxmr_pool] is not in the file.');
+    expect(issuesAt(check(bare).warnings, 'markets.usdc_sol.sell_xmr.source').map((w) => w.message)).toContain('wxmr_pool is named but [pricing.sources.wxmr_pool] is not in the file');
     expect(daemonSays(bare)).toEqual([{ path: 'markets.usdc_sol.sell_xmr.source', message: 'wxmr_pool is named but [pricing.sources.wxmr_pool] is not in the file' }]);
     // A USD price band cannot bind a market priced purely in SOL.
-    const band = `${POOL}quote = "sol"\n[guardrails]\nprice_band_usd = { min = 300, max = 900 }\n${offer('source = "wxmr_pool"', 'sol')}`;
+    const band = `${solPool}[guardrails]\nprice_band_usd = { min = 300, max = 900 }\n${offer('source = "wxmr_pool"', 'sol')}`;
+    const bandText = "sol sell_xmr has a hard price band in USD; wxmr_pool gives XMR/SOL and nothing here supplies SOL/USD — add coingecko or coinmarketcap as this market's source for SOL/USD, or remove guardrails.price_band_usd";
     expect(check(band).ok).toBe(true);
-    expect(messages(check(band).warnings, 'markets.sol.sell_xmr.source')).toContain('the hard price band in USD cannot be applied to it');
-    expect(daemonSays(band).map((e) => e.path)).toEqual(['markets.sol.sell_xmr.source']);
+    expect(issuesAt(check(band).warnings, 'markets.sol.sell_xmr.source').map((w) => w.message)).toContain(bandText);
+    expect(daemonSays(band)).toEqual([{ path: 'markets.sol.sell_xmr.source', message: bandText }]);
+    // A pool whose addresses are still placeholders, with nothing else to read: the market stays off, with the daemon's words.
+    const placeholders = `[pricing.sources.wxmr_pool]\ntoken = "<token>"\npool = "<pool>"\n${offer('source = "wxmr_pool"')}`;
+    expect(issuesAt(check(placeholders).warnings, 'markets.usdc_sol.sell_xmr.source').map((w) => w.message)).toContain("none of this market's price sources can be read yet: it stays off until the pool addresses are set");
+    expect(check(placeholders).effective).toEqual([]);
   });
 
   it('an Ethereum market without a blob endpoint is a warning that keeps it off', () => {
@@ -271,7 +292,9 @@ describe('offer settings', () => {
     expect(check(offer('withhold_policy = "by_rule"')).ok).toBe(false);
   });
   it('rejects a primary source repeated as a fallback and unknown sources', () => {
-    expect(check(offer('source = "coingecko"\nfallbacks = ["coingecko"]')).ok).toBe(false);
+    // The daemon ignores a fallback that repeats the primary; the console says so and does not block.
+    expect(check(offer('source = "coingecko"\nfallbacks = ["coingecko"]')).ok).toBe(true);
+    expect(messages(check(offer('source = "coingecko"\nfallbacks = ["coingecko"]')).warnings, 'markets.usdc_sol.sell_xmr.fallbacks')).toContain('the second mention is ignored');
     expect(check(offer('source = "binance"')).ok).toBe(false);
     expect(check(offer('fallbacks = ["kraken"]')).ok).toBe(false);
   });

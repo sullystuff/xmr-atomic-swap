@@ -2,7 +2,7 @@
 import { useId, useState } from 'react';
 import { MARKET_CHAIN } from '@xmrswap/protocol';
 import type { AssetId, OfferView, RebalanceResponse, RefillView, VenueId } from '@xmrswap/protocol/daemon-api';
-import type { RefillViewX } from '../api/extensions.js';
+import type { OfferViewX, RefillViewX } from '../api/extensions.js';
 import { useAction, useClient, useQuery } from '../api/hooks.js';
 import { ASSETS, DIRECTION_LABEL, MODE_OPTIONS, VENUE_LABEL, chainLabel } from '../lib/config/schema.js';
 import { patchConfig } from '../lib/config/patch.js';
@@ -18,8 +18,47 @@ import { Async, Badge, Button, Card, ConfirmButton, Countdown, Empty, Id, Meter,
 
 const MODE_LABEL = { auto: 'Auto-accept', window: 'Approval window', advance: 'Approved in advance' } as const;
 
-function OfferStatus({ o }: { o: OfferView }) {
+/** Why an enabled-in-the-file offer has no price, in the daemon's words turned plain. */
+export function noPriceText(reason: string | undefined): string {
+  const m = /averaging window is not filled yet \((\d+) of (\d+) s\)/.exec(reason ?? '');
+  if (m) return `No price yet: the pool’s averaging window is still filling (${m[1]} of ${m[2]} s). Quoting starts when it is full.`;
+  return `No price right now${reason ? `: ${reason}` : ''}.`;
+}
+const SOURCE_NAME: Record<string, string> = { coingecko: 'CoinGecko', coinmarketcap: 'CoinMarketCap', wxmr_pool: 'wXMR pool', wxmr_pool_sol: 'wXMR pool (SOL-quoted)' };
+export const sourceLabel = (s: string): string => SOURCE_NAME[s] ?? s;
+
+/** Which source is pricing an offer right now, against what the file chose. */
+export function PricedBy({ o }: { o: OfferViewX }) {
+  if (o.source === undefined) return <span className="muted">not reported</span>;
+  const wanted = o.enabled || o.price_tiers.length > 0 || (o.disabled_reason !== undefined && !/switched off/i.test(o.disabled_reason));
+  if (!wanted) return <span className="muted">not offered</span>;
+  if (o.priced_by === null || o.priced_by === undefined) {
+    return (
+      <span data-testid="no-price">
+        <Badge tone="warn">No price</Badge>
+        <span className="msg warning" style={{ display: 'block' }}>
+          {noPriceText(o.disabled_reason)}
+        </span>
+      </span>
+    );
+  }
+  const fallback = o.priced_by !== o.source;
+  return (
+    <span>
+      {sourceLabel(o.priced_by)} {fallback ? <Badge tone="warn">Fallback in use</Badge> : null}
+      <span className="muted" style={{ display: 'block' }}>
+        {fallback ? `primary ${sourceLabel(o.source)} is unavailable` : (o.fallbacks ?? []).length > 0 ? `then ${(o.fallbacks ?? []).map(sourceLabel).join(', ')}` : 'no fallback'}
+        {' · '}
+        {o.cross_check ? `checked against ${sourceLabel(o.cross_check)}` : 'no cross-check'}
+        {o.price_unit === 'asset' ? ' · priced in SOL directly, no USD figure' : ''}
+      </span>
+    </span>
+  );
+}
+
+function OfferStatus({ o }: { o: OfferViewX }) {
   if (o.live) return <Badge tone="ok">Live</Badge>;
+  if (o.source !== undefined && o.priced_by === null && o.disabled_reason !== undefined && /averaging window|no price/i.test(o.disabled_reason)) return <Badge tone="warn">Waiting for a price</Badge>;
   if (o.enabled) return <Badge tone="info">{o.disabled_reason?.startsWith('Paused') ? 'Paused' : 'Dry run'}</Badge>;
   return <Badge>Off</Badge>;
 }
@@ -45,6 +84,7 @@ export function OffersPage() {
                       <tr>
                         <th scope="col">Market</th>
                         <th scope="col">Status</th>
+                        <th scope="col">Priced by, now</th>
                         <th scope="col">Price per XMR</th>
                         <th scope="col" className="num">
                           Size
@@ -69,6 +109,9 @@ export function OffersPage() {
                           <td>
                             <OfferStatus o={o} />
                             {o.disabled_reason ? <div className="muted">{o.disabled_reason}</div> : null}
+                          </td>
+                          <td>
+                            <PricedBy o={o} />
                           </td>
                           <td>
                             {o.price_tiers.length === 0 ? (

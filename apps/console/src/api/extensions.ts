@@ -4,7 +4,7 @@
  * here, so the console also works against a daemon that predates it.
  */
 import type { ChainName } from '@xmrswap/protocol';
-import type { Alert, ChainConnection, ConfigIssue, ConfigValidation, FeesResponse, OffersResponse, RebalanceResponse, RefillView, RegistrationResponse, StatusResponse, SwapAction, SwapActionResponse, SwapDetail, SwapSummary, SwapsResponse, TxResult } from '@xmrswap/protocol/daemon-api';
+import type { Alert, ChainConnection, ConfigIssue, ConfigValidation, FeesResponse, OfferView, OffersResponse, RebalanceResponse, RefillView, RegistrationResponse, StatusResponse, SwapAction, SwapActionResponse, SwapDetail, SwapSummary, SwapsResponse, TxResult } from '@xmrswap/protocol/daemon-api';
 
 /** A10: what became of an operator instruction. */
 export type ActionOutcome = 'carried_out' | 'refused' | 'pending';
@@ -88,7 +88,19 @@ export interface CostExtras {
   compute_units_per_update?: number;
 }
 export type FeesX = FeesResponse & CostExtras;
-export type OffersX = OffersResponse & CostExtras;
+/** A17: the file's choice of sources, and what is pricing the offer right now. */
+export interface OfferSourceExtras {
+  source?: string;
+  fallbacks?: string[];
+  /** `null` = none. */
+  cross_check?: string | null;
+  /** The source pricing it right now: the primary, or a fallback while the primary is unavailable; `null` while there is no price. */
+  priced_by?: string | null;
+  /** `"asset"` when a SOL-quoted pool prices the SOL market with no USD figure. */
+  price_unit?: 'usd' | 'asset';
+}
+export type OfferViewX = OfferView & OfferSourceExtras;
+export type OffersX = Omit<OffersResponse, 'offers'> & CostExtras & { offers: OfferViewX[] };
 
 /** A5: `PUT /api/registration/published`. */
 export interface PublishedRequest {

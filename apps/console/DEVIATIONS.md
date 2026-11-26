@@ -76,23 +76,15 @@ unsigned transaction for a parked payout.
 
 Still open. None is worked around silently.
 
-Price sources (owner's decision: the maker chooses freely; built to the daemon's in-progress
-change in its working tree, which may still move):
+Price sources (daemon 99986cf, its A17 and "Price sources"): confirmed and matched. The console
+uses the daemon's exact warning and error texts for the conditions it also checks locally (as
+warnings; a sentence the daemon reports as an error is shown once, as the error), reads
+`source`, `fallbacks`, `cross_check`, `priced_by` and `price_unit` on offers, and shows a pool's
+averaging window still filling as "no price yet".
 
-- **Contract assumed, to confirm.** Source names `coingecko`, `coinmarketcap`, `wxmr_pool`,
-  `wxmr_pool_sol` (`[pricing.sources.wxmr_pool_sol]`, SOL-quoted by default); a per-offer
-  `cross_check` (a source or `"none"`, absent = `[pricing].cross_check`, which also accepts
-  `"none"`); errors on `markets.<m>.<d>.source` for a market its sources cannot price, for a USD
-  price band on a market with no USD figure, and for a pool named without its section. The
-  console writes `cross_check = "none"` per market in the wXMR-only preset; a daemon without that
-  key refuses the save (reported on the key, nothing lost).
-- **Which sources supply SOL/USD or ETH/USD for a pool-priced market**: the console assumes the
-  market's own primary and fallbacks only (not the cross-check, not other configured sources).
-- The console's risk and unit findings are warnings only; where the daemon words a warning
-  differently both are shown. If the daemon puts a missing-price error on the offer table rather
-  than on `source`, the console still shows it beside the source field.
-- `docs/DESIGN.md` still says "A wXMR pool is a cross-check only" (Decisions table and open
-  items); the console follows the owner's new rule.
+- **"No price yet" is read from `disabled_reason` text** (`the averaging window is not filled yet
+  (N of M s)`); a structured field for why `priced_by` is `null` would be sturdier.
+- `docs/DESIGN.md` and SPEC 7.2 still state the old cross-check-only rule (the architect's to update).
 
 1. **Nothing on a swap says a payout is parked** (only an alert). The console therefore offers
    "Withdraw parked payout" on every swap page and reports `409 nothing_owed` in place as

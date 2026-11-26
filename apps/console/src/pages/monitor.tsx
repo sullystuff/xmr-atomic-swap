@@ -8,6 +8,7 @@ import { chainLabel } from '../lib/config/schema.js';
 import { MARKET_LABEL, fmtInt, fmtMarketAmount, fmtRate, fmtTime, fmtUnits, fmtUsd, fmtXmr, parseUnits } from '../lib/format.js';
 import { ACTION_NOUN, DIR_LABEL, DepositSummary, InstructionNote, MessageThread, StateBadge, SwapActions, SwapLink, refusalText } from '../ui/domain.js';
 import { OwnerTransaction, TxNotice } from '../ui/owner-tx.js';
+import { PricedBy } from './market.js';
 import { Async, Badge, Button, Card, ConfirmButton, Countdown, Empty, Id, Notice, PageHead, Stat, Time } from '../ui/kit.js';
 
 // ------------------------------------------------------------------ dashboard
@@ -65,6 +66,7 @@ export function DashboardPage() {
   const stats = useQuery('stats', undefined, ['swaps']);
   const fees = useQuery('fees');
   const rebalance = useQuery('rebalance', undefined, ['rebalance']);
+  const offers = useQuery('offers', undefined, ['offers']);
   const { status, swaps, inbox } = useLive();
   const pending = swaps?.filter((s) => s.state === 'PENDING').length ?? 0;
   const held = swaps?.filter((s) => s.state === 'HOLD').length ?? 0;
@@ -131,6 +133,40 @@ export function DashboardPage() {
             {status ? <AlertList alerts={status.alerts} /> : <Empty title="Waiting for the daemon" />}
           </Card>
         </div>
+
+        <Card title="Pricing now" note="The source pricing each offer at this moment." actions={<a href="#/offers">All offers</a>} flush>
+          <Async query={offers} what="the offers">
+            {(r) => {
+              const shown = r.offers.filter((o) => o.enabled || (o.source !== undefined && o.priced_by === null && o.disabled_reason !== undefined && !/switched off/i.test(o.disabled_reason)));
+              return shown.length === 0 ? (
+                <Empty title="No offer is on">Switch a market on under Configuration.</Empty>
+              ) : (
+                <div className="table-wrap">
+                  <table className="tbl" aria-label="Pricing now">
+                    <thead>
+                      <tr>
+                        <th scope="col">Offer</th>
+                        <th scope="col">Priced by, now</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {shown.map((o) => (
+                        <tr key={`${o.market}.${o.direction}`} className={o.priced_by === null || (o.priced_by !== undefined && o.priced_by !== o.source) ? 'attention' : undefined}>
+                          <th scope="row">
+                            {MARKET_LABEL[o.market]} · {o.direction === 'sell_xmr' ? 'Sell XMR' : 'Buy XMR'}
+                          </th>
+                          <td>
+                            <PricedBy o={o} />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            }}
+          </Async>
+        </Card>
 
         <Async query={stats} what="the volume">
           {(s) => (

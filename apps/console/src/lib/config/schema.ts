@@ -319,8 +319,8 @@ function poolSection(name: PoolSource): SectionDef {
       { key: 'base_vault', label: 'wXMR reserve account', type: { t: 'text' }, help: 'The pool’s token account on the wXMR side.' },
       { key: 'quote_vault', label: 'Quote reserve account', type: { t: 'text' }, help: 'The pool’s token account on the quote side.' },
       { key: 'quote', label: 'Quote asset', type: sel({ value: 'usdc', label: 'USDC: gives XMR/USD' }, { value: 'sol', label: 'SOL: gives XMR/SOL' }), def: sol ? 'sol' : 'usdc' },
-      { key: 'min_liquidity_usd', label: 'Minimum pool liquidity', type: num({ min: 0 }), def: 0, unit: 'USD', help: 'Below this the pool’s price is not used. The main protection against a pool pushed off-market.' },
-      { key: 'average_seconds', label: 'Averaging window', type: num({ min: 0 }), def: 300, unit: 's', help: 'The price is averaged over this long, so a brief push moves it less.' },
+      { key: 'min_liquidity_usd', label: 'Minimum pool liquidity', type: num({ min: 0 }), def: 0, unit: 'USD', help: 'Below this the pool gives no price at once: the next fallback takes over, or quoting pauses. 0 = no floor.' },
+      { key: 'average_seconds', label: 'Averaging window', type: num({ min: 0 }), def: 300, unit: 's', help: 'The price is the time-weighted average over this window, and there is no price until the window has filled. 0 = the last read, with no averaging: one pushed read then sets your price.' },
     ],
   };
 }

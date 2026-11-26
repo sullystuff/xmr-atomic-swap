@@ -177,7 +177,10 @@ function Editor({
     const related = (a: string, b: string): boolean => a === b || b === '' || a.startsWith(`${b}.`) || b.startsWith(`${a}.`);
     const confirmed = local.errors.filter((l) => remoteNow.errors.some((r) => related(l.path, r.path)));
     const unshared = local.errors.filter((l) => !confirmed.includes(l)).map((l) => ({ path: l.path, message: `${l.message} (This console’s own check; the daemon accepts the value.)` }));
-    return { errors: merge(confirmed, remoteNow.errors), warnings: [...merge(local.warnings, remoteNow.warnings), ...unshared] };
+    const allErrors = merge(confirmed, remoteNow.errors);
+    // A finding the daemon reports as an error is not repeated as the console's own warning.
+    const warn = [...merge(local.warnings, remoteNow.warnings), ...unshared].filter((w) => !allErrors.some((e) => sameIssue(e, w)));
+    return { errors: allErrors, warnings: warn };
   }, [local.errors, local.warnings, remoteNow]);
   const unknown = useMemo(() => unknownKeys(draft), [draft]);
 
@@ -362,7 +365,7 @@ function PricingSection() {
     <Card id="cfg-pricing" title="Price sources" note="Each market picks a primary source and an ordered list of fallbacks in its offer settings. These settings apply to all of them.">
       <SectionFields section={PRICING} />
       <Notice tone="info" title="You choose the sources.">
-        Any configured source may be a market’s primary, sit anywhere in its fallback order, or be the cross-check, and a single source with no fallback and no cross-check is a valid setup. The console warns about the risks and leaves the decision to you. {POOL_RISK} If you price from the pool, its minimum liquidity and averaging window below are the protections that matter most.
+        Any configured source may be a market’s primary, sit anywhere in its fallback order, or be the cross-check, and a single source with no fallback and no cross-check is a valid setup. The console states the risks and leaves the decision to you. A thin pool can be pushed off-market cheaply by someone who then takes your quote. {POOL_RISK} If you price from a pool, its minimum liquidity and averaging window below are the protections that matter most.
       </Notice>
       {SOURCE_SECTIONS.map((s) => (
         <div key={s.path}>

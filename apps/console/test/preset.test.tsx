@@ -73,9 +73,10 @@ describe('wXMR-only preset: on the Configuration page', () => {
     // The risk warnings, before anything changes.
     const warnings = within(review).getByRole('list', { name: 'Preset warnings' });
     const all = text(warnings);
-    expect(all).toContain('usdc_sol sell_xmr: this market is priced from the wXMR pool. A thin pool can be pushed off-market cheaply by someone who then takes your quote.');
-    expect(all).toContain('usdc_sol sell_xmr: no cross-check, so nothing checks this price against a second source.');
-    expect(all).toContain('usdc_sol sell_xmr: no fallback, so quoting pauses whenever the wXMR pool is unavailable.');
+    expect(all).toContain("USDC-SOL Sell XMR, source: wxmr_pool is this market's primary price source: a thin pool can be pushed off-market cheaply by someone who then takes your quote");
+    expect(all).toContain('USDC-SOL Sell XMR, cross-check: nothing checks this price against a second source');
+    expect(all).toContain('USDC-SOL Sell XMR, fallbacks: quoting pauses whenever this source is unavailable');
+    expect(all).toContain('USDC-ETH Sell XMR, source: wxmr_pool is this market');
     expect(within(warnings).getAllByRole('listitem')).toHaveLength(9);
 
     // The diff.
@@ -145,7 +146,9 @@ describe('wXMR-only preset: on the Configuration page', () => {
     const m = mount('#/config');
     await screen.findByRole('region', { name: 'Markets and offers' });
     await m.user.click(within(preset()).getByRole('button', { name: WXMR_ONLY_LABEL }));
-    expect(text(within(preset()).getByRole('list', { name: 'Preset warnings' }))).toContain('the wXMR pool cannot be read yet: its addresses are placeholders or missing');
+    const warned = text(within(preset()).getByRole('list', { name: 'Preset warnings' }));
+    expect(warned).toContain('USDC-SOL Sell XMR, source: wxmr_pool cannot be read yet: its addresses are placeholders or missing (base_vault and quote_vault are needed); it is skipped until they are set');
+    expect(warned).toContain("USDC-SOL Sell XMR, source: none of this market's price sources can be read yet: it stays off until the pool addresses are set");
     await m.user.click(within(preset()).getByRole('button', { name: 'Put these changes in the form' }));
     await m.user.click(within(preset()).getByRole('button', { name: WXMR_ONLY_LABEL }));
     const review = within(preset()).getByRole('region', { name: 'Preset review' });
