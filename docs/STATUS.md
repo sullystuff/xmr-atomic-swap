@@ -70,7 +70,7 @@ These are not defects; they follow from the design and no amount of testing remo
 - **False notice, then withhold.** A maker can post a false notice, wait for the refund and withhold the deposit: the taker loses up to 5% (half after 60 days). The maker gains nothing but pays only in reputation.
 - **The treasury gains from unreleased withholds**, a conflict of interest for whoever controls it.
 - **USDC freeze.** The issuer can freeze the escrow or pause the token mid-swap; atomicity is then lost.
-- **Thin wXMR pool.** The pool is small enough to be pushed off-market cheaply; it is a cross-check price source only, and refills through it must be split.
+- **Thin wXMR pool.** The pool is small enough to be pushed off-market cheaply, and refills through it must be split. Since 2026-11-26 the maker may choose it as a primary price source, even the only one; a maker who does relies on the pool's minimum-liquidity and averaging settings and the ordinary guardrails, and the console says so before saving.
 - Also: shallow confirmation depth and Monero reorgs; a compromised browser page; a stolen operator key in the sell direction; secrets that land late; finality stalls; public maker activity; and, until frozen, trust in the upgrade key.
 
 ## Owner decisions outstanding
