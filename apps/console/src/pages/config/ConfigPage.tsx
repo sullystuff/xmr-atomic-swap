@@ -28,7 +28,8 @@ import {
 } from '../../lib/config/schema.js';
 import { editToml } from '../../lib/config/edit.js';
 import { ConfigSyntaxError, diffConfig, getPath, isTable, parseToml, renderValue, setPath, stringifyToml, type Toml } from '../../lib/config/toml.js';
-import { issuesAboutKey, resolveOffers, unknownKeys, validateConfig } from '../../lib/config/validate.js';
+import { POOL_RISK, issuesAboutKey, resolveOffers, unknownKeys, validateConfig } from '../../lib/config/validate.js';
+import { WxmrOnlyPreset } from './preset.js';
 import { costBasis, estimateCost } from '../../lib/cost.js';
 import type { FeesX, OffersX } from '../../api/extensions.js';
 import { MARKET_LABEL, fmtTime } from '../../lib/format.js';
@@ -38,6 +39,7 @@ import { Field, FormProvider, Messages, NumberInput, SectionFields, useForm, typ
 import { MarketsSection } from './markets.js';
 
 const SECTIONS: { id: string; label: string }[] = [
+  { id: 'cfg-preset', label: 'Presets' },
   { id: 'cfg-markets', label: 'Markets and offers' },
   { id: 'cfg-pricing', label: 'Price sources' },
   { id: 'cfg-updates', label: 'Offer updates and cost' },
@@ -241,6 +243,7 @@ function Editor({
       </nav>
 
       <div className="stack">
+        <WxmrOnlyPreset blobEndpoint={blobEndpoint} onApply={(cfg) => { setBlocked(false); setDraft(cfg); }} />
         <MarketsSection blobEndpoint={blobEndpoint} />
         <PricingSection />
         <UpdatesSection fees={fees} offers={offers} solUsd={solUsd} cuLimit={cuLimit} blobEndpoint={blobEndpoint} daemonCost={remoteNow?.update_cost ?? null} />
@@ -358,8 +361,8 @@ function PricingSection() {
   return (
     <Card id="cfg-pricing" title="Price sources" note="Each market picks a primary source and an ordered list of fallbacks in its offer settings. These settings apply to all of them.">
       <SectionFields section={PRICING} />
-      <Notice tone="info" title="The wXMR pool may only be a cross-check.">
-        A pool that small can be pushed off-market cheaply by someone who then takes your quote. If a market names it as its primary source, the first fallback is promoted and the pool is used as that market's cross-check.
+      <Notice tone="info" title="You choose the sources.">
+        Any configured source may be a market’s primary, sit anywhere in its fallback order, or be the cross-check, and a single source with no fallback and no cross-check is a valid setup. The console warns about the risks and leaves the decision to you. {POOL_RISK} If you price from the pool, its minimum liquidity and averaging window below are the protections that matter most.
       </Notice>
       {SOURCE_SECTIONS.map((s) => (
         <div key={s.path}>
@@ -465,6 +468,8 @@ function GuardrailsSection() {
   const reorgOn = isTable(reorg) && reorg.enabled === true;
   const maxAge = getPath(draft, 'pricing.max_age_seconds') ?? 60;
   const disagreement = getPath(draft, 'pricing.max_disagreement_pct') ?? 1;
+  const cross = getPath(draft, 'pricing.cross_check');
+  const crossSet = typeof cross === 'string' && cross !== '';
   const daemonMode = getPath(draft, 'daemon.mode') ?? 'dry_run';
   const dry = getPath(draft, 'guardrails.dry_run') === true;
   return (
@@ -474,7 +479,11 @@ function GuardrailsSection() {
         <Field
           base={GUARDRAILS.path}
           def={fieldOf(GUARDRAILS, 'disagreement_pause')}
-          extra={<span className="unit">threshold: {String(disagreement)}% (largest disagreement allowed, under Price sources)</span>}
+          extra={
+            <span className="unit" data-testid="disagreement-threshold">
+              {crossSet ? `threshold: ${String(disagreement)}% (largest disagreement allowed, under Price sources)` : 'not applicable: no cross-check source is set, so there is nothing to compare'}
+            </span>
+          }
         />
         <Field base={GUARDRAILS.path} def={fieldOf(GUARDRAILS, 'stale_pause')} extra={<span className="unit">threshold: {String(maxAge)} s (maximum price age, under Price sources)</span>} />
         <Field base={GUARDRAILS.path} def={fieldOf(GUARDRAILS, 'price_band_usd')} />

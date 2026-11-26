@@ -22,12 +22,17 @@ export const VENUE_LABEL: Readonly<Record<VenueId | 'opposite_flow' | 'manual', 
   opposite_flow: 'Opposite-side flow',
   manual: 'Manual',
 };
-export const PRICE_SOURCES = ['coingecko', 'coinmarketcap', 'wxmr_pool'] as const;
+/** `wxmr_pool` is USDC-quoted unless its `quote` says otherwise; `wxmr_pool_sol` is a second pool, SOL-quoted by default. */
+export const PRICE_SOURCES = ['coingecko', 'coinmarketcap', 'wxmr_pool', 'wxmr_pool_sol'] as const;
+export const POOL_SOURCES = ['wxmr_pool', 'wxmr_pool_sol'] as const;
+export type PoolSource = (typeof POOL_SOURCES)[number];
+export const isPool = (s: string): s is PoolSource => s === 'wxmr_pool' || s === 'wxmr_pool_sol';
 export type PriceSource = (typeof PRICE_SOURCES)[number];
 export const SOURCE_LABEL: Readonly<Record<PriceSource, string>> = {
   coingecko: 'CoinGecko',
   coinmarketcap: 'CoinMarketCap',
-  wxmr_pool: 'wXMR pool (cross-check only)',
+  wxmr_pool: 'wXMR pool',
+  wxmr_pool_sol: 'wXMR pool (second, SOL-quoted)',
 };
 export const MODE_OPTIONS = [
   { value: 'auto', label: 'Automatic' },
@@ -139,7 +144,14 @@ export function offerFields(market: Market): FieldDef[] {
   return [
     { key: 'enabled', label: 'Enabled', type: { t: 'bool' }, def: false, help: 'Whether the offer is live.' },
     { key: 'source', label: 'Primary price source', type: { t: 'select', options: sourceOptions }, def: 'coingecko' },
-    { key: 'fallbacks', label: 'Fallback order', type: { t: 'list', options: sourceOptions }, def: [], help: 'Tried in this order when the primary fails.' },
+    { key: 'fallbacks', label: 'Fallback order', type: { t: 'list', options: sourceOptions }, def: [], help: 'Tried in this order when the primary fails. None is a valid choice.' },
+    {
+      key: 'cross_check',
+      label: 'Cross-check for this market',
+      type: { t: 'select', options: [{ value: '', label: 'Same as the setting for all markets' }, ...sourceOptions, { value: 'none', label: 'None for this market' }] },
+      defText: 'the setting for all markets',
+      help: 'A second source this market’s price is compared with.',
+    },
     {
       key: 'deviation_pct',
       label: 'Deviation from reference',
@@ -276,7 +288,7 @@ export const PRICING: SectionDef = {
   fields: [
     { key: 'refresh_seconds', label: 'Refresh interval', type: int({ min: 1 }), def: 15, unit: 's' },
     { key: 'max_age_seconds', label: 'Maximum price age', type: int({ min: 1 }), def: 60, unit: 's', help: 'A price older than this is stale.' },
-    { key: 'cross_check', label: 'Cross-check source', type: { t: 'select', options: [{ value: '', label: 'None' }, ...sourceOptions] }, defText: 'none' },
+    { key: 'cross_check', label: 'Cross-check source', type: { t: 'select', options: [{ value: '', label: 'None' }, ...sourceOptions] }, defText: 'none', help: 'For every market that does not name its own. None is a valid choice.' },
     { key: 'max_disagreement_pct', label: 'Largest disagreement allowed', type: num({ min: 0, exclusiveMin: true }), def: 1.0, unit: '%' },
     {
       key: 'on_failure',
@@ -296,22 +308,27 @@ const keyedSource = (name: 'coingecko' | 'coinmarketcap'): SectionDef => ({
     { key: 'base_url', label: 'API base URL', type: { t: 'text' }, defText: 'the service’s public API', help: 'Only for a self-hosted mirror or a test endpoint.' },
   ],
 });
-export const SOURCE_SECTIONS: readonly SectionDef[] = [
-  keyedSource('coingecko'),
-  keyedSource('coinmarketcap'),
-  {
-    path: 'pricing.sources.wxmr_pool',
-    title: 'wXMR pool on Solana',
+function poolSection(name: PoolSource): SectionDef {
+  const sol = name === 'wxmr_pool_sol';
+  return {
+    path: `pricing.sources.${name}`,
+    title: sol ? 'Second wXMR pool on Solana (SOL-quoted by default)' : 'wXMR pool on Solana',
     fields: [
       { key: 'token', label: 'Token address', type: { t: 'text' }, help: 'Pinned.' },
       { key: 'pool', label: 'Pool address', type: { t: 'text' }, help: 'Pinned.' },
       { key: 'base_vault', label: 'wXMR reserve account', type: { t: 'text' }, help: 'The pool’s token account on the wXMR side.' },
       { key: 'quote_vault', label: 'Quote reserve account', type: { t: 'text' }, help: 'The pool’s token account on the quote side.' },
-      { key: 'quote', label: 'Quote asset', type: sel({ value: 'usdc', label: 'USDC' }, { value: 'sol', label: 'SOL' }), def: 'usdc' },
-      { key: 'min_liquidity_usd', label: 'Minimum pool liquidity', type: num({ min: 0 }), def: 0, unit: 'USD' },
-      { key: 'average_seconds', label: 'Averaging window', type: num({ min: 0 }), def: 300, unit: 's' },
+      { key: 'quote', label: 'Quote asset', type: sel({ value: 'usdc', label: 'USDC: gives XMR/USD' }, { value: 'sol', label: 'SOL: gives XMR/SOL' }), def: sol ? 'sol' : 'usdc' },
+      { key: 'min_liquidity_usd', label: 'Minimum pool liquidity', type: num({ min: 0 }), def: 0, unit: 'USD', help: 'Below this the pool’s price is not used. The main protection against a pool pushed off-market.' },
+      { key: 'average_seconds', label: 'Averaging window', type: num({ min: 0 }), def: 300, unit: 's', help: 'The price is averaged over this long, so a brief push moves it less.' },
     ],
-  },
+  };
+}
+export const SOURCE_SECTIONS: readonly SectionDef[] = [
+  keyedSource('coingecko'),
+  keyedSource('coinmarketcap'),
+  poolSection('wxmr_pool'),
+  poolSection('wxmr_pool_sol'),
 ];
 
 export const OFFERS: SectionDef = {
@@ -371,7 +388,7 @@ export const GUARDRAILS: SectionDef = {
       defText: 'off',
       help: 'Stop quoting if the reference moves more than a set percent within a set time.',
     },
-    { key: 'disagreement_pause', label: 'Disagreement pause', type: { t: 'bool' }, def: true, help: 'Stop quoting if the primary and cross-check sources differ by more than the allowed percent.' },
+    { key: 'disagreement_pause', label: 'Disagreement pause', type: { t: 'bool' }, def: true, help: 'Stop quoting if the primary and cross-check sources differ by more than the allowed percent. It applies only to markets that have a cross-check other than their primary source.' },
     { key: 'stale_pause', label: 'Stale price pause', type: { t: 'bool' }, def: true, help: 'Stop quoting if no fresh price has arrived within the maximum age.' },
     {
       key: 'price_band_usd',

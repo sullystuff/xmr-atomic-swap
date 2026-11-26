@@ -6,6 +6,7 @@
 const OFFER = `enabled = true
 source = "coingecko"
 fallbacks = [ "coinmarketcap" ]
+cross_check = "coinmarketcap"
 deviation_pct = 1.5
 size_tiers = [ { above_xmr = 20, extra_pct = 0.5 } ]
 inventory_skew_max_pct = 1
@@ -50,8 +51,17 @@ token = "WXMRexampleToken"
 pool = "PoolExampleAddress"
 base_vault = "BaseVaultExample"
 quote_vault = "QuoteVaultExample"
-quote = "sol"
+quote = "usdc"
 min_liquidity_usd = 250000
+average_seconds = 300
+
+[pricing.sources.wxmr_pool_sol]
+token = "WXMRexampleToken"
+pool = "SolPoolExampleAddress"
+base_vault = "SolBaseVaultExample"
+quote_vault = "SolQuoteVaultExample"
+quote = "sol"
+min_liquidity_usd = 0
 average_seconds = 300
 
 ${(['usdc_sol', 'sol', 'usdc_eth', 'eth'] as const).map((m) => `[markets.${m}.sell_xmr]\n${OFFER}\n[markets.${m}.buy_xmr]\n${OFFER}`).join('\n')}

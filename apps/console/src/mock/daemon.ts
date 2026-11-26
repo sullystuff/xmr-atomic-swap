@@ -49,9 +49,9 @@ import {
   type WsPayloads,
   type WsServerMessage,
 } from '@xmrswap/protocol/daemon-api';
-import { VENUES } from '../lib/config/schema.js';
+import { VENUES, isPool } from '../lib/config/schema.js';
 import { ConfigSyntaxError, diffConfig, getPath, isTable, parseToml, revisionOf, type Toml } from '../lib/config/toml.js';
-import { resolveOffers, unknownKeys, validateConfig, withDefaults, type ResolvedOffer } from '../lib/config/validate.js';
+import { missingPrice, missingPriceMessage, pairsFrom, poolState, resolveOffers, unknownKeys, validateConfig, withDefaults, type ResolvedOffer } from '../lib/config/validate.js';
 import { runwayDays } from '../lib/cost.js';
 import {
   ADDR,
@@ -344,6 +344,31 @@ export class MockDaemon {
    */
   private validation(toml: Toml = this.parsed): ConfigValidation {
     const v = validateConfig(toml, { blobEndpoint: this.registration.blob_endpoint, solUsd: this.solUsd, expectedTriggeredPerDay: 310 });
+    // What the maker picks is what runs; the risks are warnings. The daemon refuses only what cannot work:
+    // a pool that is named but not in the file, a market its sources cannot price, a USD guardrail with no USD figure.
+    const refused: { path: string; message: string }[] = [];
+    for (const o of resolveOffers(toml, { blobEndpoint: this.registration.blob_endpoint })) {
+      if (!o.wanted) continue;
+      const base = `markets.${o.market}.${o.direction}`;
+      const where = `${o.market} ${o.direction}`;
+      for (const src of new Set([o.source, ...o.fallbacks, ...(o.crossCheck ? [o.crossCheck] : [])])) {
+        if (isPool(src) && poolState(toml, src) === 'absent') refused.push({ path: `${base}.${src === o.source ? 'source' : o.fallbacks.includes(src) ? 'fallbacks' : 'cross_check'}`, message: `${src} is named but [pricing.sources.${src}] is not in the file` });
+      }
+      const chain = [o.source, ...o.fallbacks];
+      const miss = missingPrice(o.market, o.source, chain, toml);
+      if (miss) refused.push({ path: `${base}.source`, message: missingPriceMessage(where, o.source, miss) });
+      else {
+        const usdKnown = chain.some((src) => pairsFrom(src, toml).some((g) => g === 'XMR/USD' || g === 'SOL/USD'));
+        const band = getPath(toml, 'guardrails.price_band_usd');
+        if (!usdKnown && band !== undefined && band !== false)
+          refused.push({ path: `${base}.source`, message: `${where} has a hard price band in USD; ${o.source} gives XMR/SOL and nothing here supplies SOL/USD — add coingecko or coinmarketcap as this market's source for SOL/USD, or remove guardrails.price_band_usd` });
+      }
+    }
+    if (refused.length > 0) {
+      v.ok = false;
+      v.errors.push(...refused);
+      v.effective = v.effective.filter((e) => !refused.some((u) => u.path.startsWith(`markets.${e.market}.${e.direction}.`)));
+    }
     const strange = unknownKeys(toml).filter((k) => !this.daemonKnows.some((p) => k === p || k.startsWith(`${p}.`)));
     if (strange.length === 0) return v;
     const errors = strange.map((k) => {

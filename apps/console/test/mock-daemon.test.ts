@@ -148,14 +148,36 @@ describe('mock daemon: configuration', () => {
 });
 
 describe('mock daemon: offers and fees', () => {
-  it('lists eight offers with the wXMR-pool market demoted, not dropped', async () => {
+  it('accepts a pool-only configuration and refuses only a market its sources cannot price', async () => {
+    const { client } = setup();
+    const pool = '[pricing.sources.wxmr_pool]\ntoken = "T"\npool = "P"\nbase_vault = "B"\nquote_vault = "Q"\n';
+    const one = `${pool}[liquidity]\noutput_ladder = [{ size_xmr = 5, count = 4 }]\n[markets.usdc_sol.sell_xmr]\nenabled = true\nsource = "wxmr_pool"\n`;
+    const ok = await client.call('configImport', { body: { toml: one } });
+    expect(ok.validation.ok).toBe(true);
+    expect(ok.validation.effective.map((e) => e.market)).toEqual(['usdc_sol']);
+    expect((await client.call('offers')).offers.find((o) => o.market === 'usdc_sol' && o.direction === 'sell_xmr')?.enabled).toBe(true);
+    // The SOL market from a USDC-quoted pool alone has no SOL/USD: refused, on that market's source, and nothing changes.
+    const bad = await failure(client.call('configImport', { body: { toml: `${one}[markets.sol.sell_xmr]\nenabled = true\nsource = "wxmr_pool"\n` } }));
+    expect([bad.status, bad.code]).toEqual([422, 'invalid_config']);
+    expect(bad.issues.map((i) => i.path)).toEqual(['markets.sol.sell_xmr.source']);
+    expect(bad.issues[0]?.message).toContain('needs XMR/SOL; wxmr_pool supplies XMR/USD and nothing here supplies SOL/USD');
+    expect((await client.call('configGet')).toml).toBe(one);
+  });
+  it('lists eight offers and runs the market whose primary source is the wXMR pool, as chosen', async () => {
     const { client } = setup();
     const r = await client.call('offers');
     expect(r.offers).toHaveLength(8);
     const sol = r.offers.find((o) => o.market === 'sol' && o.direction === 'sell_xmr');
     expect(sol?.enabled).toBe(true);
     expect(sol?.live).toBe(true);
+    expect(sol?.disabled_reason).toBeUndefined();
     expect(sol?.terms.approval_mode).toBe('window');
+    // Nothing in the daemon's verdict demotes the pool or mentions the old rule.
+    const v = (await client.call('configGet')).validation;
+    expect(v.ok).toBe(true);
+    expect(v.effective.map((e) => `${e.market}.${e.direction}`)).toContain('sol.sell_xmr');
+    expect([...v.warnings, ...v.errors].map((i) => i.message).join(' ')).not.toMatch(/cross-check only|may only be a cross-check|promoted/i);
+    expect(v.warnings.filter((w) => w.path === 'markets.sol.sell_xmr.source').map((w) => w.message).join(' ')).toContain('this market is priced from the wXMR pool');
     expect(r.update_cost?.daily_lamports).toBe('28800000');
     expect(r.occasional.map((o) => o.kind)).toEqual(['key_refill', 'key_rotation', 'quote_on_request', 'eth_registry']);
     expect(r.occasional.find((o) => o.kind === 'eth_registry')?.asset).toBe('eth');

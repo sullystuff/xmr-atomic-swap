@@ -372,7 +372,9 @@ export function Field({ base, def, extra, label, wide }: { base: string; def: Fi
       break;
     case 'select': {
       const hasNone = t.options.some((o) => o.value === '');
-      const current = typeof value === 'string' ? value : hasNone ? '' : typeof def.def === 'string' ? def.def : (t.options[0]?.value ?? '');
+      // A file may spell "no choice" as "none"; where the control has no such option it is the empty choice.
+      const written = value === 'none' && hasNone && !t.options.some((o) => o.value === 'none') ? '' : value;
+      const current = typeof written === 'string' ? written : hasNone ? '' : typeof def.def === 'string' ? def.def : (t.options[0]?.value ?? '');
       control = <Select id={uid} value={current} options={t.options} invalid={invalid} describedBy={describedBy} onChange={(v) => set(path, v === '' ? undefined : v)} />;
       break;
     }

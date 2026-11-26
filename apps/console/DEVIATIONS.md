@@ -76,6 +76,24 @@ unsigned transaction for a parked payout.
 
 Still open. None is worked around silently.
 
+Price sources (owner's decision: the maker chooses freely; built to the daemon's in-progress
+change in its working tree, which may still move):
+
+- **Contract assumed, to confirm.** Source names `coingecko`, `coinmarketcap`, `wxmr_pool`,
+  `wxmr_pool_sol` (`[pricing.sources.wxmr_pool_sol]`, SOL-quoted by default); a per-offer
+  `cross_check` (a source or `"none"`, absent = `[pricing].cross_check`, which also accepts
+  `"none"`); errors on `markets.<m>.<d>.source` for a market its sources cannot price, for a USD
+  price band on a market with no USD figure, and for a pool named without its section. The
+  console writes `cross_check = "none"` per market in the wXMR-only preset; a daemon without that
+  key refuses the save (reported on the key, nothing lost).
+- **Which sources supply SOL/USD or ETH/USD for a pool-priced market**: the console assumes the
+  market's own primary and fallbacks only (not the cross-check, not other configured sources).
+- The console's risk and unit findings are warnings only; where the daemon words a warning
+  differently both are shown. If the daemon puts a missing-price error on the offer table rather
+  than on `source`, the console still shows it beside the source field.
+- `docs/DESIGN.md` still says "A wXMR pool is a cross-check only" (Decisions table and open
+  items); the console follows the owner's new rule.
+
 1. **Nothing on a swap says a payout is parked** (only an alert). The console therefore offers
    "Withdraw parked payout" on every swap page and reports `409 nothing_owed` in place as
    "Nothing is parked for this swap". A `parked` amount on the swap detail would let it show the

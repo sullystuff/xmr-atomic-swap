@@ -235,22 +235,100 @@ describe('configuration: validation before save', () => {
     expect(screen.queryByText('Refused.')).toBeNull();
   });
 
-  it('labels the wXMR pool cross-check only and warns when it is demoted', async () => {
+  it('shows the wXMR pool as the primary source it was chosen as, with the risk beside the field and no demotion', async () => {
     const m = await openConfig();
-    expect(text(screen.getByRole('region', { name: 'Price sources' }))).toContain('The wXMR pool may only be a cross-check.');
-    // The SOL market of the example names the pool as primary: the fallback is promoted.
+    const pricing = screen.getByRole('region', { name: 'Price sources' });
+    expect(text(pricing)).toContain('You choose the sources. Any configured source may be a market’s primary, sit anywhere in its fallback order, or be the cross-check');
+    expect(text(screen.getByRole('main'))).not.toMatch(/cross-check only|may only be a cross-check|promoted to primary/i);
+    // The SOL market of the example names the pool as primary, and that is what is shown.
     const sol = await editOffer(m.user, 'SOL Sell XMR');
     const source = within(sol).getByLabelText('Primary price source') as HTMLSelectElement;
     expect(source.value).toBe('wxmr_pool');
-    expect([...source.options].map((o) => o.textContent)).toEqual(['CoinGecko', 'CoinMarketCap', 'wXMR pool (cross-check only)']);
-    expect(text(source.closest('.field'))).toContain('Warning: sol sell_xmr: the wXMR pool may only be a cross-check. "coingecko" is promoted to primary and the pool is used as this market\'s cross-check.');
-    expect(text(sol)).toContain('Price source in use: coingecko, cross-checked against wxmr_pool.');
+    expect([...source.options].map((o) => o.textContent)).toEqual(['CoinGecko', 'CoinMarketCap', 'wXMR pool', 'wXMR pool (second, SOL-quoted)']);
+    expect(text(sol)).toContain('Price source: wxmr_pool, then coingecko, cross-checked against coinmarketcap.');
+    const field = text(source.closest('.field'));
+    expect(field).toContain('Warning: sol sell_xmr: this market is priced from the wXMR pool. A thin pool can be pushed off-market cheaply by someone who then takes your quote. On 21 November 2026 wXMR showed about $392,500 of liquidity across 719 pools, and one of its USDC pools held about $35,700.');
+    // The pool's own protections are right there, as the controls that matter most.
+    const protections = within(sol).getByRole('group', { name: 'Pool protections' });
+    expect(text(protections)).toContain('The controls that matter most when the pool sets your price.');
+    const liquidity = within(protections).getByLabelText('Minimum pool liquidity') as HTMLInputElement;
+    expect(liquidity.value).toBe('250000');
+    expect((within(protections).getByLabelText('Averaging window') as HTMLInputElement).value).toBe('300');
+    await setValue(m.user, liquidity, '500000');
+    expect(text(source.closest('.field'))).toContain('minimum liquidity (now $500,000)');
+    // A warning, not an error: nothing about the choice blocks a save.
+    expect(text(within(saveBar()).getByTestId('error-count'))).toBe('0 errors');
+    await save(m.user);
+    await waitFor(async () => expect(getPath(await saved(m), 'pricing.sources.wxmr_pool.min_liquidity_usd')).toBe(500000));
+    expect(getPath(await saved(m), 'markets.sol.sell_xmr.source')).toBe('wxmr_pool');
+  });
 
-    // Choosing it elsewhere produces the same warning at once; with no fallback the market stays off.
-    const usdc = await editOffer(m.user, 'USDC-ETH Sell XMR');
-    await m.user.selectOptions(within(usdc).getByLabelText('Primary price source'), 'wxmr_pool');
-    expect(text(within(usdc).getByLabelText('Primary price source').closest('.field'))).toContain('there is no fallback to promote, so this market stays off');
-    expect(text((screen.getByRole('switch', { name: 'USDC-ETH Sell XMR enabled' }) as HTMLElement).closest('td'))).toContain('Kept off');
+  it('accepts a single source with no fallback and no cross-check, warning beside each field', async () => {
+    const m = await openConfig();
+    const editor = await editOffer(m.user, 'USDC-SOL Sell XMR');
+    await m.user.selectOptions(within(editor).getByLabelText('Primary price source'), 'wxmr_pool');
+    await m.user.click(within(within(editor).getByRole('group', { name: 'Fallback order' })).getByRole('button', { name: 'Remove CoinMarketCap from Fallback order' }));
+    const cross = within(editor).getByLabelText('Cross-check for this market') as HTMLSelectElement;
+    expect([...cross.options].map((o) => o.textContent)).toEqual(['Same as the setting for all markets', 'CoinGecko', 'CoinMarketCap', 'wXMR pool', 'wXMR pool (second, SOL-quoted)', 'None for this market']);
+    await m.user.selectOptions(cross, 'none');
+
+    expect(text(within(editor).getByRole('group', { name: 'Fallback order' }).closest('.field'))).toContain('Warning: usdc_sol sell_xmr: no fallback, so quoting pauses whenever the wXMR pool is unavailable.');
+    expect(text(cross.closest('.field'))).toContain('Warning: usdc_sol sell_xmr: no cross-check, so nothing checks this price against a second source.');
+    expect(text(within(editor).getByLabelText('Primary price source').closest('.field'))).toContain('A thin pool can be pushed off-market cheaply');
+    expect(text(editor)).toContain('Price source: wxmr_pool, no fallback, no cross-check.');
+    expect(text(within(editor).getByTestId('disagreement-scope'))).toBe('Disagreement pause: not applicable to this market, since nothing is compared.');
+    // Still on, still saveable.
+    expect(text((screen.getByRole('switch', { name: 'USDC-SOL Sell XMR enabled' }) as HTMLElement).closest('td'))).not.toContain('Kept off');
+    expect(text(within(saveBar()).getByTestId('error-count'))).toBe('0 errors');
+    await save(m.user);
+    await waitFor(async () => expect(getPath(await saved(m), 'markets.usdc_sol.sell_xmr.source')).toBe('wxmr_pool'));
+    const cfg = await saved(m);
+    expect(getPath(cfg, 'markets.usdc_sol.sell_xmr.fallbacks')).toBeUndefined();
+    expect(getPath(cfg, 'markets.usdc_sol.sell_xmr.cross_check')).toBe('none');
+    const live = (await m.client.call('offers')).offers.find((o) => o.market === 'usdc_sol' && o.direction === 'sell_xmr');
+    expect(live?.enabled).toBe(true);
+    // Another market keeps its cross-check.
+    const other = await editOffer(m.user, 'USDC-SOL Buy XMR');
+    expect(text(within(other).getByTestId('disagreement-scope'))).toBe('The disagreement pause covers this market.');
+  });
+
+  it('lets the cross-check for all markets be None, and shows the disagreement guardrail as not applicable', async () => {
+    const m = await openConfig();
+    const pricing = screen.getByRole('region', { name: 'Price sources' });
+    const cross = within(pricing).getByLabelText('Cross-check source') as HTMLSelectElement;
+    expect([...cross.options].map((o) => o.textContent)).toEqual(['None', 'CoinGecko', 'CoinMarketCap', 'wXMR pool', 'wXMR pool (second, SOL-quoted)']);
+    expect(text(screen.getByTestId('disagreement-threshold'))).toBe('threshold: 1% (largest disagreement allowed, under Price sources)');
+    await m.user.selectOptions(cross, '');
+    expect(text(screen.getByTestId('disagreement-threshold'))).toBe('not applicable: no cross-check source is set, so there is nothing to compare');
+    expect(text(screen.getByRole('region', { name: 'Guardrails' }))).toContain('Warning: Not applicable: no cross-check source is set, so the disagreement pause has nothing to compare.');
+    expect(text(within(saveBar()).getByTestId('error-count'))).toBe('0 errors');
+    await save(m.user);
+    await waitFor(async () => expect(getPath(await saved(m), 'pricing.cross_check')).toBeUndefined());
+    // The pool may be the cross-check too.
+    await m.user.selectOptions(within(screen.getByRole('region', { name: 'Price sources' })).getByLabelText('Cross-check source'), 'wxmr_pool');
+    expect(text(within(saveBar()).getByTestId('error-count'))).toBe('0 errors');
+  });
+
+  it('shows the daemon’s missing-price error on that market’s source field, and saves once it is fixed', async () => {
+    const m = await openConfig();
+    // SOL from the USDC-quoted pool alone: XMR/USD but no SOL/USD.
+    const sol = await editOffer(m.user, 'SOL Sell XMR');
+    await m.user.click(within(within(sol).getByRole('group', { name: 'Fallback order' })).getByRole('button', { name: 'Remove CoinGecko from Fallback order' }));
+    const field = (): string => text(within(sol).getByLabelText('Primary price source').closest('.field'));
+    // At once, locally: a warning.
+    expect(field()).toContain("Warning: sol sell_xmr needs XMR/SOL; wxmr_pool supplies XMR/USD and nothing here supplies SOL/USD");
+    // Then the daemon's answer for this draft: an error on the same field.
+    await waitFor(() => expect(field()).toContain("Error: sol sell_xmr needs XMR/SOL; wxmr_pool supplies XMR/USD and nothing here supplies SOL/USD — add coingecko or coinmarketcap as this market's source for SOL/USD, use a SOL-quoted pool (wxmr_pool_sol), or disable the market"));
+    expect((within(sol).getByLabelText('Primary price source') as HTMLElement).getAttribute('aria-invalid')).toBe('true');
+    expect(text(within(saveBar()).getByTestId('error-count'))).toBe('1 error');
+    await save(m.user);
+    expect(text(await within(saveBar()).findByRole('alert'))).toContain('markets.sol.sell_xmr.source: sol sell_xmr needs XMR/SOL');
+    expect(getPath(await saved(m), 'markets.sol.sell_xmr.fallbacks')).toEqual(['coingecko']);
+
+    // A SOL-quoted pool gives XMR/SOL directly: the error goes and the save goes through.
+    await m.user.selectOptions(within(screen.getByRole('region', { name: 'Price sources' })).getAllByLabelText('Quote asset')[0] as HTMLElement, 'sol');
+    await waitFor(() => expect(text(within(saveBar()).getByTestId('error-count'))).toBe('0 errors'));
+    expect(field()).not.toContain('needs XMR/SOL');
   });
 
   it('checks every keystroke with the daemon as well as locally', async () => {
@@ -395,11 +473,11 @@ describe('configuration: price sources, guardrails, liquidity, rebalancing', () 
     const editor = await editOffer(m.user, 'USDC-SOL Sell XMR');
     const fallbacks = within(editor).getByRole('group', { name: 'Fallback order' });
     expect(within(fallbacks).getAllByRole('listitem').map(text)).toEqual(['1CoinMarketCapUpDownRemove']);
+    // The pool may sit anywhere in the order, first included; nothing skips it.
     await m.user.selectOptions(within(fallbacks).getByRole('combobox', { name: 'Add to Fallback order' }), 'wxmr_pool');
-    await m.user.click(within(fallbacks).getByRole('button', { name: 'Move wXMR pool (cross-check only) up in Fallback order' }));
-    expect(within(fallbacks).getAllByRole('listitem').map((li) => text(li).replace(/UpDownRemove$/, ''))).toEqual(['1wXMR pool (cross-check only)', '2CoinMarketCap']);
-    expect(text(fallbacks.closest('.field'))).toContain('the wXMR pool may only be a cross-check; it is skipped as a fallback');
-    await m.user.click(within(fallbacks).getByRole('button', { name: 'Remove wXMR pool (cross-check only) from Fallback order' }));
+    await m.user.click(within(fallbacks).getByRole('button', { name: 'Move wXMR pool up in Fallback order' }));
+    expect(within(fallbacks).getAllByRole('listitem').map((li) => text(li).replace(/UpDownRemove$/, ''))).toEqual(['1wXMR pool', '2CoinMarketCap']);
+    expect(text(fallbacks.closest('.field'))).not.toMatch(/skipped as a fallback|cross-check only/);
 
     await save(m.user);
     await waitFor(async () => expect(getPath(await saved(m), 'pricing.on_failure')).toBe('widen'));
@@ -407,7 +485,7 @@ describe('configuration: price sources, guardrails, liquidity, rebalancing', () 
     expect(getPath(cfg, 'pricing.widen_pct')).toBe(0.75);
     expect(getPath(cfg, 'pricing.max_disagreement_pct')).toBe(1.5);
     expect(getPath(cfg, 'pricing.max_age_seconds')).toBe(90);
-    expect(getPath(cfg, 'markets.usdc_sol.sell_xmr.fallbacks')).toEqual(['coinmarketcap']);
+    expect(getPath(cfg, 'markets.usdc_sol.sell_xmr.fallbacks')).toEqual(['wxmr_pool', 'coinmarketcap']);
   });
 
   it('gives every guardrail its own switch and thresholds', async () => {
@@ -561,10 +639,23 @@ describe('configuration: import and export', () => {
     }
   });
 
-  it('shows the demotion warning for DESIGN’s example before importing it', async () => {
-    await openConfig();
+  it('imports DESIGN’s example with the pool as the SOL market’s primary source and no demotion message', async () => {
+    const m = await openConfig();
     fireEvent.change(within(file()).getByLabelText('Configuration file to import'), { target: { value: DESIGN_CONFIG_TOML } });
-    expect(text(within(file()).getByTestId('import-check'))).toContain('markets.sol.sell_xmr.source: sol sell_xmr: the wXMR pool may only be a cross-check. "coingecko" is promoted to primary');
+    const check = text(within(file()).getByTestId('import-check'));
+    expect(check).toContain('This file passes the check. 3 offers would run.');
+    expect(check).not.toMatch(/cross-check only|may only be a cross-check|promoted|demot/i);
+    expect(check).toContain('markets.sol.sell_xmr.source: sol sell_xmr: this market is priced from the wXMR pool.');
+    await m.user.click(within(file()).getByRole('button', { name: 'Import and apply' }));
+    await m.user.click(within(within(file()).getByRole('alertdialog')).getByRole('button', { name: 'Import and apply' }));
+    await waitFor(async () => expect((await m.client.call('configGet')).toml).toBe(DESIGN_CONFIG_TOML));
+    const v = (await m.client.call('configGet')).validation;
+    expect(v.effective.map((e) => `${e.market}.${e.direction}`)).toEqual(['usdc_sol.sell_xmr', 'sol.sell_xmr', 'usdc_eth.sell_xmr']);
+    // In the form: the pool, first, exactly as the file says.
+    const sol = await editOffer(m.user, 'SOL Sell XMR');
+    await waitFor(() => expect((within(sol).getByLabelText('Primary price source') as HTMLSelectElement).value).toBe('wxmr_pool'));
+    expect(text(sol)).toContain('Price source: wxmr_pool, then coingecko, cross-checked against coinmarketcap.');
+    expect(text(screen.getByRole('main'))).not.toMatch(/cross-check only|may only be a cross-check|promoted to primary/i);
   });
 
   it('refuses a file that is not TOML or does not validate', async () => {

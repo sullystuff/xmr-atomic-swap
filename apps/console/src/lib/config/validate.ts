@@ -7,6 +7,9 @@ import { CHAIN_CONSTS, MARKET_CHAIN, MIN_APPROVAL_SECS, type ChainName, type Mar
 import type { ConfigIssue, ConfigValidation, EffectiveOfferTerms, MarketDirection, UpdateCostEstimate } from '@xmrswap/protocol/daemon-api';
 import { BASE_FEE_LAMPORTS, dailyCostLamports, lamportsToUsd, priorityFeeLamports, updatesPerDay } from '../cost.js';
 import {
+  POOL_SOURCES,
+  isPool,
+  type PoolSource,
   ASSETS,
   DEFAULT_DEPTH_TIERS,
   DIRECTIONS,
@@ -80,9 +83,13 @@ export interface ResolvedOffer {
   wanted: boolean;
   /** Reasons the daemon keeps a wanted offer off. Empty when it runs. */
   keptOff: string[];
-  /** The primary source after the wXMR pool is demoted. */
+  /** The primary source, exactly as the maker chose it. */
   source: string;
+  fallbacks: string[];
+  /** The cross-check source (one setting for all markets), or `null` for none. */
   crossCheck: string | null;
+  /** Whether the disagreement guardrail has anything to compare for this market: a cross-check that is not the primary itself. */
+  disagreementApplies: boolean;
   values: Record<string, unknown>;
   maxXmr: number | null;
   depthTiers: DepthTier[];
@@ -118,7 +125,7 @@ const asTiers = (v: unknown): DepthTier[] => {
   return out;
 };
 
-/** The values an offer runs with: file values over defaults, `"auto"` resolved, the pool demoted. */
+/** The values an offer runs with: file values over defaults and `"auto"` resolved. The sources are the maker's choice, unchanged. */
 export function resolveOffer(cfg: Toml, market: Market, direction: MarketDirection, ctx: Pick<ValidateContext, 'blobEndpoint'>): ResolvedOffer {
   const chain = MARKET_CHAIN[market];
   const c = CHAIN_CONSTS[chain];
@@ -129,16 +136,11 @@ export function resolveOffer(cfg: Toml, market: Market, direction: MarketDirecti
   const keptOff: string[] = [];
 
   const fallbacks = Array.isArray(values.fallbacks) ? values.fallbacks.filter((x): x is string => typeof x === 'string') : [];
-  let source = typeof values.source === 'string' ? values.source : 'coingecko';
-  const globalCross = getPath(cfg, 'pricing.cross_check');
-  let crossCheck = typeof globalCross === 'string' && globalCross !== '' ? globalCross : null;
-  if (source === 'wxmr_pool') {
-    const promoted = fallbacks.find((f) => f !== 'wxmr_pool');
-    if (promoted) {
-      source = promoted;
-      crossCheck = 'wxmr_pool';
-    } else keptOff.push('its only price source is the wXMR pool, which may only be a cross-check');
-  }
+  const source = typeof values.source === 'string' ? values.source : 'coingecko';
+  // The market's own cross-check, else the one for all markets; "none" (or nothing) means none.
+  const wantedCross = typeof values.cross_check === 'string' && values.cross_check !== '' ? values.cross_check : getPath(cfg, 'pricing.cross_check');
+  const crossCheck = typeof wantedCross === 'string' && wantedCross !== '' && wantedCross !== 'none' ? wantedCross : null;
+  const disagreementApplies = crossCheck !== null && crossCheck !== source;
   if (chain === 'ethereum' && ctx.blobEndpoint === false) keptOff.push('no blob endpoint is listed in the registry');
 
   const ladderMax = largestLadderSize(cfg);
@@ -166,7 +168,7 @@ export function resolveOffer(cfg: Toml, market: Market, direction: MarketDirecti
     depth_tiers: depthTiers.map((t) => ({ above_xmr: xmrToPiconero(t.above_xmr), depth: t.depth })),
     min_claim_delay_secs: minClaimDelaySecs(chain, deepestDepth),
   };
-  return { market, direction, chain, wanted, keptOff, source, crossCheck, values, maxXmr, depthTiers, deepestDepth, claimDelayMinutes, minClaimDelayMinutes: minDelay, terms };
+  return { market, direction, chain, wanted, keptOff, source, fallbacks, crossCheck, disagreementApplies, values, maxXmr, depthTiers, deepestDepth, claimDelayMinutes, minClaimDelayMinutes: minDelay, terms };
 }
 
 export function resolveOffers(cfg: Toml, ctx: Pick<ValidateContext, 'blobEndpoint'>): ResolvedOffer[] {
@@ -215,6 +217,7 @@ function checkField(issues: Issues, path: string, f: FieldDef, v: unknown): void
       checkEnv(issues, path, f.label, v);
       return;
     case 'select':
+      if (v === 'none' && t.options.some((o) => o.value === '')) return;
       if (typeof v !== 'string' || !t.options.some((o) => o.value === v && o.value !== '')) {
         if (isPlaceholder(v)) issues.warn(path, `${String(v)} is a placeholder; whatever needs it stays off until it is filled in.`);
         else issues.error(path, `${f.label} must be one of: ${t.options.filter((o) => o.value !== '').map((o) => `"${o.value}"`).join(', ')}.`);
@@ -348,19 +351,68 @@ function checkPricing(issues: Issues, cfg: Toml): void {
     issues.error('pricing.max_age_seconds', `Maximum price age (${maxAge} s) is shorter than the refresh interval (${refresh} s), so every price would be stale.`);
   const cross = getPath(cfg, 'pricing.cross_check');
   if (typeof cross === 'string' && cross !== '' && (PRICE_SOURCES as readonly string[]).includes(cross)) {
-    if (cross !== 'wxmr_pool' && !isTable(getPath(cfg, `pricing.sources.${cross}`)))
+    if (!isPool(cross) && !isTable(getPath(cfg, `pricing.sources.${cross}`)))
       issues.warn('pricing.cross_check', `The cross-check source "${cross}" has no [pricing.sources.${cross}] section, so it has no API key.`);
-    if (cross === 'wxmr_pool') checkPoolReady(issues, cfg, 'pricing.cross_check');
   }
 }
 
-function checkPoolReady(issues: Issues, cfg: Toml, path: string): void {
-  const pool = getPath(cfg, 'pricing.sources.wxmr_pool');
-  if (!isTable(pool) || typeof pool.token !== 'string' || typeof pool.pool !== 'string')
-    issues.warn(path, 'The wXMR pool needs its token and pool addresses under [pricing.sources.wxmr_pool]; until then this cross-check is off.');
-  else if (isPlaceholder(pool.token) || isPlaceholder(pool.pool))
-    issues.warn(path, 'The wXMR pool addresses are still placeholders; until they are filled in this cross-check is off.');
+/** Whether a pool can be read: its section is in the file, both reserve accounts are named and no address is a placeholder. */
+export function poolState(cfg: Toml, name: string): 'ready' | 'absent' | 'incomplete' {
+  const pool = getPath(cfg, `pricing.sources.${name}`);
+  if (!isTable(pool)) return 'absent';
+  const ok = (v: unknown): boolean => typeof v === 'string' && v !== '' && !isPlaceholder(v);
+  return ok(pool.base_vault) && ok(pool.quote_vault) && !isPlaceholder(pool.token) && !isPlaceholder(pool.pool) ? 'ready' : 'incomplete';
 }
+const sourceName = (src: string): string => (src === 'wxmr_pool' ? 'the wXMR pool' : src === 'wxmr_pool_sol' ? 'the second wXMR pool' : src === 'coingecko' ? 'CoinGecko' : src === 'coinmarketcap' ? 'CoinMarketCap' : src);
+
+// ------------------------------------------------------------------ what each source can price
+
+export type Pair = 'XMR/USD' | 'XMR/SOL' | 'SOL/USD' | 'ETH/USD';
+/** The asset a wXMR pool is quoted in: its `quote`, else USDC for `wxmr_pool` and SOL for `wxmr_pool_sol`. */
+export const poolQuote = (cfg: Toml, name: string = 'wxmr_pool'): 'usdc' | 'sol' => {
+  const q = getPath(cfg, `pricing.sources.${name}.quote`);
+  return q === 'sol' || q === 'usdc' ? q : name === 'wxmr_pool_sol' ? 'sol' : 'usdc';
+};
+/** What a source supplies on its own. The aggregators give every USD price; a pool gives XMR in its quote asset only. */
+export function pairsFrom(source: string, cfg: Toml): Pair[] {
+  if (isPool(source)) return poolQuote(cfg, source) === 'sol' ? ['XMR/SOL'] : ['XMR/USD'];
+  if (source === 'coingecko' || source === 'coinmarketcap') return ['XMR/USD', 'SOL/USD', 'ETH/USD'];
+  return [];
+}
+export interface MissingPrice {
+  needs: Pair;
+  /** What the primary does supply, when it supplies part of what is needed. */
+  has: Pair | null;
+  lacks: Pair;
+}
+/**
+ * Why `primary` cannot price a market with the help of the market's other sources, or `null`
+ * when it can (the daemon's rule). USDC markets need XMR/USD; the SOL market needs XMR/SOL,
+ * directly or as XMR/USD with SOL/USD; the ETH markets need XMR/USD with ETH/USD.
+ */
+export function missingPrice(market: Market, primary: string, all: readonly string[], cfg: Toml): MissingPrice | null {
+  const own = pairsFrom(primary, cfg);
+  const any = (g: Pair): boolean => all.some((s) => pairsFrom(s, cfg).includes(g));
+  const xmrUsd = own.includes('XMR/USD') || (own.includes('XMR/SOL') && any('SOL/USD'));
+  if (market === 'sol') {
+    if (own.includes('XMR/SOL') || (own.includes('XMR/USD') && any('SOL/USD'))) return null;
+    return { needs: 'XMR/SOL', has: 'XMR/USD', lacks: 'SOL/USD' };
+  }
+  if (!xmrUsd) return { needs: 'XMR/USD', has: 'XMR/SOL', lacks: 'SOL/USD' };
+  if (market === 'eth' && !any('ETH/USD')) return { needs: 'ETH/USD', has: null, lacks: 'ETH/USD' };
+  return null;
+}
+/** The pool, if any, that prices this market with no other source. */
+export const poolFor = (market: Market, cfg: Toml): PoolSource | null => POOL_SOURCES.find((p) => poolState(cfg, p) !== 'absent' && missingPrice(market, p, [p], cfg) === null) ?? null;
+/** The daemon's sentence for a market its sources cannot price. */
+export function missingPriceMessage(where: string, primary: string, miss: MissingPrice): string {
+  const fix = `add coingecko or coinmarketcap as this market's source for ${miss.lacks}`;
+  if (miss.has === null) return `${where} needs ${miss.needs}; ${primary} cannot supply it — ${fix}, or disable the market`;
+  return `${where} needs ${miss.needs}; ${primary} supplies ${miss.has} and nothing here supplies ${miss.lacks} — ${fix}, use a ${miss.needs === 'XMR/SOL' ? 'SOL-quoted pool (wxmr_pool_sol)' : 'USDC-quoted pool (wxmr_pool)'}, or disable the market`;
+}
+
+/** DESIGN's liquidity figures for wXMR, kept as context for the warning. */
+export const POOL_RISK = 'A thin pool can be pushed off-market cheaply by someone who then takes your quote. On 21 November 2026 wXMR showed about $392,500 of liquidity across 719 pools, and one of its USDC pools held about $35,700.';
 
 function checkLiquidity(issues: Issues, cfg: Toml): void {
   const alloc = getPath(cfg, 'liquidity.allocation');
@@ -401,7 +453,7 @@ function checkGuardrails(issues: Issues, cfg: Toml): void {
   }
   if (getPath(cfg, 'guardrails.disagreement_pause') !== false) {
     const cross = getPath(cfg, 'pricing.cross_check');
-    if (cross === undefined || cross === '') issues.warn('guardrails.disagreement_pause', 'The disagreement pause has nothing to compare: no cross-check source is set.');
+    if (cross === undefined || cross === '') issues.warn('guardrails.disagreement_pause', 'Not applicable: no cross-check source is set, so the disagreement pause has nothing to compare.');
   }
 }
 
@@ -514,18 +566,39 @@ function checkOffer(issues: Issues, cfg: Toml, base: string, o: ResolvedOffer, p
   const file = getPath(cfg, base);
   const written = isTable(file) ? file : {};
 
-  // Price sources. The Decisions table makes the wXMR pool a cross-check only.
+  // Price sources: the maker's choice. Nothing here blocks; each warning states a risk and leaves the decision.
   const fallbacks = Array.isArray(values.fallbacks) ? (values.fallbacks as unknown[]) : [];
-  if (values.source === 'wxmr_pool') {
-    if (o.keptOff.some((r) => r.includes('wXMR pool')))
-      issues.warn(`${base}.source`, `${where}: the wXMR pool may only be a cross-check and there is no fallback to promote, so this market stays off.`);
-    else {
-      issues.warn(`${base}.source`, `${where}: the wXMR pool may only be a cross-check. "${o.source}" is promoted to primary and the pool is used as this market's cross-check.`);
-      checkPoolReady(issues, cfg, `${base}.source`);
-    }
-  } else if (fallbacks.includes(values.source)) issues.error(`${base}.fallbacks`, `${where}: "${String(values.source)}" is both the primary source and a fallback.`);
-  if (fallbacks.includes('wxmr_pool') && values.source !== 'wxmr_pool')
-    issues.warn(`${base}.fallbacks`, `${where}: the wXMR pool may only be a cross-check; it is skipped as a fallback.`);
+  if (fallbacks.includes(values.source)) issues.error(`${base}.fallbacks`, `${where}: "${String(values.source)}" is both the primary source and a fallback.`);
+  const named = [...new Set([o.source, ...o.fallbacks, ...(o.crossCheck ? [o.crossCheck] : [])])];
+  const fieldOfSource = (src: string): string => (src === o.source ? 'source' : o.fallbacks.includes(src) ? 'fallbacks' : written.cross_check !== undefined ? 'cross_check' : 'source');
+  for (const src of named) {
+    if (!isPool(src)) continue;
+    const state = poolState(cfg, src);
+    if (state === 'absent') issues.warn(`${base}.${fieldOfSource(src)}`, `${where}: ${src} is named but [pricing.sources.${src}] is not in the file. The daemon refuses that; add the pool's addresses under Price sources.`);
+    else if (state === 'incomplete') issues.warn(`${base}.${fieldOfSource(src)}`, `${where}: ${sourceName(src)} cannot be read yet: its addresses are placeholders or missing (both reserve accounts are needed). It is skipped until they are set.`);
+  }
+  if (isPool(o.source)) {
+    const pool = getPath(cfg, `pricing.sources.${o.source}`);
+    const liq = isTable(pool) && typeof pool.min_liquidity_usd === 'number' ? pool.min_liquidity_usd : 0;
+    const avg = isTable(pool) && typeof pool.average_seconds === 'number' ? pool.average_seconds : 300;
+    issues.warn(
+      `${base}.source`,
+      `${where}: this market is priced from ${sourceName(o.source)}. ${POOL_RISK} The pool's own protections matter most in this setup: minimum liquidity (now ${liq === 0 ? 'not set' : `$${liq.toLocaleString('en-US')}`}) and averaging window (now ${avg} s). The choice is yours.`,
+    );
+  }
+  if (o.crossCheck === null) issues.warn(`${base}.cross_check`, `${where}: no cross-check, so nothing checks this price against a second source.`);
+  else if (o.crossCheck === o.source) issues.warn(`${base}.cross_check`, `${where}: the cross-check is ${sourceName(o.crossCheck)}, this market's primary source itself, so nothing checks this price against a second source.`);
+  if (o.fallbacks.length === 0) issues.warn(`${base}.fallbacks`, `${where}: no fallback, so quoting pauses whenever ${sourceName(o.source)} is unavailable.`);
+  // Units. The daemon decides whether the chosen sources can price the market; this is the same finding, early, as a warning.
+  const chainOfSources = [o.source, ...o.fallbacks];
+  const miss = missingPrice(o.market, o.source, chainOfSources, cfg);
+  if (miss) issues.warn(`${base}.source`, `${missingPriceMessage(where, o.source, miss)}. The daemon refuses the file while this stands.`);
+  else {
+    const usdKnown = chainOfSources.some((src) => pairsFrom(src, cfg).some((g) => g === 'XMR/USD' || g === 'SOL/USD'));
+    const band = getPath(cfg, 'guardrails.price_band_usd');
+    if (!usdKnown && band !== undefined && band !== false)
+      issues.warn(`${base}.source`, `${where}: priced in SOL straight from the pool, this market has no USD figure, so the hard price band in USD cannot be applied to it. Add a source for SOL/USD or switch the band off; the daemon refuses the file while this stands.`);
+  }
   if (chain === 'ethereum' && o.keptOff.some((r) => r.includes('blob endpoint')))
     issues.warn(`${base}.enabled`, `${where}: Ethereum markets need a blob endpoint in the registry (the onion address or a contact of kind 5). None is listed, so this market stays off.`);
 

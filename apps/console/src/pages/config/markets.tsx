@@ -2,7 +2,7 @@
 import { useState } from 'react';
 import { CHAIN_CONSTS, MARKET_CHAIN, type Market } from '@xmrswap/protocol';
 import type { MarketDirection } from '@xmrswap/protocol/daemon-api';
-import { APPROVAL_WINDOW_REASON, DIRECTIONS, DIRECTION_LABEL, MARKETS, RECOMMENDED_APPROVAL_SECS, chainLabel, offerFields, type FieldDef } from '../../lib/config/schema.js';
+import { APPROVAL_WINDOW_REASON, DIRECTIONS, DIRECTION_LABEL, MARKETS, RECOMMENDED_APPROVAL_SECS, SOURCE_SECTIONS, chainLabel, fieldOf, isPool, offerFields, type FieldDef, type SectionDef } from '../../lib/config/schema.js';
 import { getPath } from '../../lib/config/toml.js';
 import { canBePending, issuesAt, resolveOffer, type ResolvedOffer } from '../../lib/config/validate.js';
 import { MARKET_LABEL } from '../../lib/format.js';
@@ -15,6 +15,7 @@ const MARKET_NOTE: Record<Market, { pays: string; prices: string }> = {
   usdc_eth: { pays: 'USDC on Ethereum', prices: 'XMR/USD' },
   eth: { pays: 'ETH', prices: 'XMR/USD and ETH/USD' },
 };
+const poolSectionOf = (name: string): SectionDef => SOURCE_SECTIONS.find((s) => s.path === `pricing.sources.${name}`) as SectionDef;
 const MODE_TEXT = { auto: 'auto-accept', window: 'approval window', advance: 'approved in advance' } as const;
 
 function summarise(o: ResolvedOffer): string {
@@ -112,7 +113,7 @@ export function MarketsSection({ blobEndpoint }: { blobEndpoint: boolean | null 
 }
 
 const GROUPS: { title: string; keys: string[] }[] = [
-  { title: 'Price', keys: ['source', 'fallbacks', 'deviation_pct', 'size_tiers', 'inventory_skew_max_pct', 'volatility_widen'] },
+  { title: 'Price', keys: ['source', 'fallbacks', 'cross_check', 'deviation_pct', 'size_tiers', 'inventory_skew_max_pct', 'volatility_widen'] },
   { title: 'Size and volume', keys: ['min_xmr', 'max_xmr', 'daily_cap_xmr', 'offer_valid_seconds'] },
   { title: 'Approval', keys: ['approval_mode', 'approval_window_seconds'] },
   { title: 'Depth, deadlines and deposit', keys: ['confirmation_depth', 'claim_delay_minutes', 'claim_window_minutes', 'notice_seconds', 'final_days', 'deposit_pct', 'withhold_policy', 'withhold_move_pct'] },
@@ -156,7 +157,20 @@ function OfferEditor({ market, direction, blobEndpoint, onClose }: { market: Mar
     if (f.key === 'source') {
       return (
         <div style={{ flexBasis: '100%' }}>
-          <p className="help">The wXMR pool is a cross-check only: a thin pool can be pushed off-market cheaply by someone who then takes your quote.</p>
+          <p className="help">
+            Any configured source may be the primary, a fallback or the cross-check; one source alone is a valid setup. A wXMR/USDC pool gives XMR/USD, a wXMR/SOL pool gives XMR/SOL, CoinGecko and CoinMarketCap give every USD price.
+          </p>
+          {/* An error the daemon puts on the offer as a whole (for example a price it cannot get) belongs beside the source. */}
+          <Messages path={base} exact />
+          {isPool(o.source) ? (
+            <div className="notice warn" role="group" aria-label="Pool protections" style={{ marginTop: 6 }}>
+              <strong>The controls that matter most when the pool sets your price.</strong> They apply to every market that uses the pool.
+              <div className="fields" style={{ marginTop: 8 }}>
+                <Field base={poolSectionOf(o.source).path} def={fieldOf(poolSectionOf(o.source), 'min_liquidity_usd')} />
+                <Field base={poolSectionOf(o.source).path} def={fieldOf(poolSectionOf(o.source), 'average_seconds')} />
+              </div>
+            </div>
+          ) : null}
         </div>
       );
     }
@@ -177,13 +191,16 @@ function OfferEditor({ market, direction, blobEndpoint, onClose }: { market: Mar
         </Button>
       </div>
       <p className="muted" style={{ marginBottom: 10 }}>
-        Offer price = reference price × (1 {direction === 'sell_xmr' ? '+' : '−'} deviation {direction === 'sell_xmr' ? '+' : '−'} size tier {direction === 'sell_xmr' ? '+' : '−'} inventory skew). Price source in use: <strong>{o.source}</strong>
-        {o.crossCheck ? (
+        Offer price = reference price × (1 {direction === 'sell_xmr' ? '+' : '−'} deviation {direction === 'sell_xmr' ? '+' : '−'} size tier {direction === 'sell_xmr' ? '+' : '−'} inventory skew). Price source: <strong>{o.source}</strong>
+        {o.fallbacks.length > 0 ? <>, then {o.fallbacks.join(', then ')}</> : <>, no fallback</>}
+        {o.disagreementApplies ? (
           <>
             , cross-checked against <strong>{o.crossCheck}</strong>
           </>
-        ) : null}
-        .
+        ) : (
+          <>, no cross-check</>
+        )}
+        . <span data-testid="disagreement-scope">{o.disagreementApplies ? 'The disagreement pause covers this market.' : 'Disagreement pause: not applicable to this market, since nothing is compared.'}</span>
       </p>
       <Messages path={`${base}.enabled`} exact />
       {GROUPS.map((g) => (

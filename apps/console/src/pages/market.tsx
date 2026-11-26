@@ -536,7 +536,17 @@ export function RebalancingPage() {
                     </tbody>
                   </table>
                 </Card>
-                <Card title="Venues" flush>
+                <Card
+                  title="Venues"
+                  note={
+                    r.venues.filter((v) => v.enabled).length === 1 && r.venues.some((v) => v.enabled && v.id === 'wxmr_bridge')
+                      ? 'Only the wXMR bridge is enabled. That is a complete setup: every refill goes through the bridge, and waits when the bridge is offline or too costly.'
+                      : r.venues.every((v) => !v.enabled)
+                        ? 'No venue is enabled, so nothing can be refilled from here. One venue is enough.'
+                        : 'One venue is enough; several let a refill fall through to the next.'
+                  }
+                  flush
+                >
                   <table className="tbl" aria-label="Venues">
                     <thead>
                       <tr>
