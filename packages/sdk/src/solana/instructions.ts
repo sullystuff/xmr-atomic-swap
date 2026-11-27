@@ -7,6 +7,7 @@
  */
 import { PublicKey, SYSVAR_INSTRUCTIONS_PUBKEY, SystemProgram, TransactionInstruction } from '@solana/web3.js';
 import {
+  ASSOCIATED_TOKEN_PROGRAM,
   type Contact,
   type EthQuoteRefresh,
   INCINERATOR,
@@ -71,6 +72,21 @@ export interface SettleContext {
   direction: number;
   /** `Config.split_mode == 1`: the treasury account is the incinerator. */
   burn?: boolean;
+  /**
+   * Amendment 1 (SPEC 11.2): `swap.payout`, where a direction-B claim pays. Omit in direction A
+   * and for the default (the taker's own wallet).
+   */
+  swapPayout?: Key | null;
+}
+
+/** How a `claim` or `withdraw_owed` fills the three payout slots. */
+export interface PayoutSlots {
+  /**
+   * Pass the associated-token program so a missing token account of the payout address is
+   * created at the caller's cost (`rent(165)` more on the caller; otherwise the proceeds park).
+   * Default: passed for a USDC swap in direction B, absent otherwise.
+   */
+  createPayoutToken?: boolean;
 }
 
 export type SettleName = 'reject' | 'cancelPending' | 'expirePending' | 'abort' | 'refundUnnoticed' | 'expireUnnoticed' | 'refund' | 'claim' | 'releaseDeposit' | 'splitDeposit' | 'closeSwap' | 'withdrawOwed';
@@ -154,12 +170,12 @@ export class XmrSwapProgram {
   }
 
   /** `fund` (B5). Signer: operator, who pays `amount` (SOL from the signer; USDC from its associated token account). */
-  fund(p: { operator: Key; swap: Key; maker: Key; asset: number; expectedOpen: Bytes; makerSpendPub: Bytes; makerPok: Bytes; makerView: Bytes }): TransactionInstruction {
+  fund(p: { operator: Key; swap: Key; maker: Key; asset: number; expectedOpen: Bytes; makerSpendPub: Bytes; makerPok: Bytes; makerView: Bytes; watcher?: Key | null }): TransactionInstruction {
     const usdc = p.asset === 1;
     return buildInstruction(
       this.programId,
       'fund',
-      { expectedOpen: p.expectedOpen, makerSpendPub: p.makerSpendPub, makerPok: p.makerPok, makerView: p.makerView },
+      { expectedOpen: p.expectedOpen, makerSpendPub: p.makerSpendPub, makerPok: p.makerPok, makerView: p.makerView, watcher: p.watcher ? pk(p.watcher).toBase58() : null },
       {
         operator: p.operator,
         swap: p.swap,
@@ -185,17 +201,31 @@ export class XmrSwapProgram {
    * An instruction on the Settle list. `maker_wallet` is `maker.payout` for a claim in direction
    * A and `maker.operator` otherwise; token destinations are the associated token accounts.
    * For `withdraw_owed`, `destination` replaces the taker (who = 0) or the maker wallet (who = 1).
+   *
+   * `claim` and `withdraw_owed` carry three more accounts (Amendment 1, SPEC 11.2): the payout
+   * address (`swap.payout` in direction B, the taker in A), its token account and, when a
+   * missing one should be created, the associated-token program. For `withdraw_owed(0)` of
+   * claim proceeds that belong to a payout address, `destination` (honoured only when the
+   * payout address itself signs) replaces the payout slots; the taker slots stay the taker's.
    */
-  settle<N extends SettleName>(name: N, caller: Key, c: SettleContext, args: InstructionArgs[N], destination?: Key): TransactionInstruction {
+  settle<N extends SettleName>(name: N, caller: Key, c: SettleContext, args: InstructionArgs[N], destination?: Key, slots: PayoutSlots = {}): TransactionInstruction {
     const usdc = c.asset === 1;
     let taker = pk(c.taker);
     let makerWallet = pk(name === 'claim' && c.direction === 0 ? c.payout : c.operator);
+    const other = c.direction === 1 && c.swapPayout !== null && c.swapPayout !== undefined && !pk(c.swapPayout).equals(taker);
+    let payout = c.direction === 1 && c.swapPayout ? pk(c.swapPayout) : taker;
     if (name === 'withdrawOwed') {
       const who = (args as InstructionArgs['withdrawOwed']).who;
       if (who === 1) makerWallet = pk(destination ?? c.payout);
-      if (who === 0 && destination) taker = pk(destination);
+      if (who === 0 && destination) {
+        if (other) payout = pk(destination);
+        else taker = payout = pk(destination);
+      }
     }
+    const withPayout = name === 'claim' || name === 'withdrawOwed';
+    const create = slots.createPayoutToken ?? (usdc && c.direction === 1);
     return buildInstruction(this.programId, name, args, {
+      ...(withPayout ? { payout, payout_token: usdc ? ata(payout, this.mint()) : null, associated_token_program: usdc && create ? ASSOCIATED_TOKEN_PROGRAM : null } : {}),
       caller,
       swap: c.swap,
       maker: c.maker,
@@ -220,6 +250,10 @@ export class XmrSwapProgram {
   setReady(p: { caller: Key; swap: Key; maker: Key }): TransactionInstruction {
     return this.short('setReady', p, {});
   }
+  /** `freeze` (Z1, SPEC 11.6). Signer: the watcher the swap names, or the locker. NOTICED, before `T_co`, once. Moves nothing. */
+  freeze(p: { caller: Key; swap: Key; maker: Key }): TransactionInstruction {
+    return buildInstruction(this.programId, 'freeze', {}, { caller: p.caller, swap: p.swap, maker: p.maker, config: this.config });
+  }
   /** `withhold`. Direction A with a notice on record: the evidence MUST open the commitment. Otherwise pass `null`. */
   withhold(p: { caller: Key; swap: Key; maker: Key; evidence: { txid: Bytes; view: Bytes } | null }): TransactionInstruction {
     return this.short('withhold', p, { evidence: p.evidence });
@@ -234,9 +268,9 @@ export class XmrSwapProgram {
   refund(caller: Key, c: SettleContext, secret: Bytes): TransactionInstruction {
     return this.settle('refund', caller, c, { secret });
   }
-  /** `claim` (A11, B10). `secret` is the claimer's spend share. */
-  claim(caller: Key, c: SettleContext, secret: Bytes): TransactionInstruction {
-    return this.settle('claim', caller, c, { secret });
+  /** `claim` (A11, B10). `secret` is the claimer's spend share. In direction B it pays `c.swapPayout` (SPEC 11.2). */
+  claim(caller: Key, c: SettleContext, secret: Bytes, slots: PayoutSlots = {}): TransactionInstruction {
+    return this.settle('claim', caller, c, { secret }, undefined, slots);
   }
 
   // ---------------------------------------------------------------- registry (SPEC 4.3)
@@ -310,6 +344,11 @@ export class XmrSwapProgram {
   }
 
   // ---------------------------------------------------------------- admin (tests and the owner's tooling)
+
+  /** `set_caps` (SPEC 11.1). Admin. Per asset: index 0 SOL, 1 USDC. A fresh deployment opens nothing until this is called. */
+  setCaps(admin: Key, p: { capsOn: boolean; maxSwap: [bigint, bigint]; maxOpen: [bigint, bigint] }): TransactionInstruction {
+    return buildInstruction(this.programId, 'setCaps', { capsOn: p.capsOn, maxSwap: p.maxSwap, maxOpen: p.maxOpen }, { admin, config: this.config });
+  }
 
   initialize(p: { authority: Key; usdcMint: Key; clusterTag: Bytes; treasuryAuthority: Key; splitMode: number }): TransactionInstruction {
     const programData = PublicKey.findProgramAddressSync([this.programId.toBytes()], BPF_LOADER_UPGRADEABLE)[0];

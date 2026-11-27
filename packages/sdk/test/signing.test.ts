@@ -132,7 +132,7 @@ describe('Solana offers and taker-bound quotes', () => {
   const makerPda = base58Encode(new Uint8Array(32).fill(3));
   const taker = base58Encode(new Uint8Array(32).fill(4));
   const maker = { paused: 0, quoteEpoch: 5 } as Maker;
-  const offerBase = { asset: 0, direction: 0, mode: 0, enabled: 1, seq: 12n, updatedAt: 1_800_000_000n, validSecs: 60, depBps: 100, wA: 60, wN: 600, dC: 6060, wC: 1800, wF: 604_800, depthAbove: [0n, X, 50n * X], depths: Uint8Array.of(2, 10, 25) } as unknown as Offer;
+  const offerBase = { asset: 0, direction: 0, mode: 0, enabled: 1, seq: 12n, updatedAt: 1_800_000_000n, validSecs: 60, depBps: 100, wA: 60, wN: 600, dC: 6060, wC: 1800, wF: 604_800, wZ: 0, depthAbove: [0n, X, 50n * X], depths: Uint8Array.of(2, 10, 25) } as unknown as Offer;
   let offer: Offer;
   beforeAll(() => {
     offer = { ...offerBase, termsHash: offerTermsHash(offerBase) } as Offer;

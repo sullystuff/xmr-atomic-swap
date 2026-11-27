@@ -30,8 +30,19 @@ export interface CallMaterial {
    * maker's view share, posted in clear by `fund`.
    */
   makerShare?: { spendPub: Bytes; pok?: Bytes; key?: Address; key2?: Address; view?: Bytes };
-  /** `withdraw_owed`: where the parked payout goes (default: the owed party's own address). */
+  /**
+   * `withdraw_owed`: where the parked payout goes (default: the owed party's own address).
+   * `push_owed` of a maker-side balance on Ethereum: the account whose balance is pushed.
+   */
   destination?: string;
+  /** `fund` (direction B, SPEC 11.6): the maker's watcher key. Refused by the chain against `w_z = 0`. */
+  watcher?: string | null;
+  /**
+   * Solana `claim` / `withdraw_owed` on a USDC swap in direction B: pass the associated-token
+   * program so a missing token account of the payout address is created at the caller's cost
+   * (default true; the caller needs `rent(165)` more, else the proceeds park).
+   */
+  createPayoutToken?: boolean;
 }
 
 function need<T>(v: T | undefined, call: string, what: string): T {
@@ -61,7 +72,8 @@ export interface SolanaMakerWallets {
 export function solanaInstruction(program: XmrSwapProgram, s: SwapView, maker: SolanaMakerWallets, caller: string, call: FlowCall, m: CallMaterial = {}): TransactionInstruction {
   if (s.chain !== 'solana') throw new SdkError('WrongChain', 'not a Solana swap');
   const swap = new PublicKey(s.swapRef);
-  const ctx: SettleContext = { swap, taker: s.taker, maker: s.maker, operator: maker.operator, payout: maker.payout, asset: Number(s.asset), direction: s.direction, ...(maker.burn ? { burn: true } : {}) };
+  const ctx: SettleContext = { swap, taker: s.taker, maker: s.maker, operator: maker.operator, payout: maker.payout, asset: Number(s.asset), direction: s.direction, ...(maker.burn ? { burn: true } : {}), swapPayout: s.payoutAddress };
+  const slots = m.createPayoutToken === undefined ? {} : { createPayoutToken: m.createPayoutToken };
   const short = { caller, swap, maker: s.maker };
   switch (call.name) {
     case 'lock':
@@ -73,7 +85,7 @@ export function solanaInstruction(program: XmrSwapProgram, s: SwapView, maker: S
     }
     case 'fund': {
       const share = need(m.makerShare, 'fund', 'the maker share');
-      return program.fund({ operator: caller, swap, maker: s.maker, asset: Number(s.asset), expectedOpen: expectedOpen(s), makerSpendPub: share.spendPub, makerPok: need(share.pok, 'fund', 'the proof of knowledge'), makerView: need(share.view, 'fund', 'the maker view share') });
+      return program.fund({ operator: caller, swap, maker: s.maker, asset: Number(s.asset), expectedOpen: expectedOpen(s), makerSpendPub: share.spendPub, makerPok: need(share.pok, 'fund', 'the proof of knowledge'), makerView: need(share.view, 'fund', 'the maker view share'), watcher: m.watcher ?? null });
     }
     case 'reject':
       return program.reject(caller, ctx, expectedOpen(s), call.reason);
@@ -83,6 +95,8 @@ export function solanaInstruction(program: XmrSwapProgram, s: SwapView, maker: S
     }
     case 'set_ready':
       return program.setReady(short);
+    case 'freeze':
+      return program.freeze(short);
     case 'withhold':
       return program.withhold({ ...short, evidence: call.evidence === 'absent' ? null : checkedEvidence(s, 'withhold', m) });
     case 'publish_evidence': {
@@ -92,9 +106,16 @@ export function solanaInstruction(program: XmrSwapProgram, s: SwapView, maker: S
     case 'refund':
       return program.refund(caller, ctx, checkedSecret(s, 'refund', m));
     case 'claim':
-      return program.claim(caller, ctx, checkedSecret(s, 'claim', m));
+      return program.claim(caller, ctx, checkedSecret(s, 'claim', m), slots);
     case 'withdraw_owed':
-      return program.settle('withdrawOwed', caller, ctx, { who: call.who === 'taker' ? OWED.TAKER : call.who === 'maker' ? OWED.MAKER : OWED.TREASURY }, m.destination);
+      // `payout`: the claim proceeds of a direction-B swap, parked for the payout address. They
+      // sit in the taker's slot (`who = 0`); a destination is honoured only when the payout
+      // address itself signs, otherwise the program pays the payout address and no other.
+      return program.settle('withdrawOwed', caller, ctx, { who: call.who === 'taker' || call.who === 'payout' ? OWED.TAKER : call.who === 'maker' ? OWED.MAKER : OWED.TREASURY }, m.destination, slots);
+    case 'push_owed':
+      // Solana has no separate push: anyone delivers parked claim proceeds to the payout address with `withdraw_owed(0)`.
+      if (call.who !== 'payout') throw new SdkError('NotAvailable', 'on Solana only parked claim proceeds of a payout address can be delivered by a third party');
+      return program.settle('withdrawOwed', caller, ctx, { who: OWED.TAKER }, undefined, slots);
     case 'cancel_pending':
       return program.settle('cancelPending', caller, ctx, {});
     case 'expire_pending':
@@ -126,7 +147,7 @@ export function ethereumCall(contract: XmrSwapContract, s: SwapView, call: FlowC
       return contract.approve(id, expectedOpen(s));
     case 'fund': {
       const share = need(m.makerShare, 'fund', 'the maker share');
-      return contract.fund({ swapId: id, expectedOpen: expectedOpen(s), key: need(share.key, 'fund', 'keyAddr'), key2: need(share.key2, 'fund', 'keyAddr2'), spendPub: share.spendPub, viewShare: need(share.view, 'fund', 'the maker view share'), amount: s.amount, token: s.asset as Address });
+      return contract.fund({ swapId: id, expectedOpen: expectedOpen(s), key: need(share.key, 'fund', 'keyAddr'), key2: need(share.key2, 'fund', 'keyAddr2'), spendPub: share.spendPub, viewShare: need(share.view, 'fund', 'the maker view share'), amount: s.amount, token: s.asset as Address, watcher: (m.watcher ?? null) as Address | null });
     }
     case 'reject':
       return contract.reject(id, expectedOpen(s), call.reason);
@@ -136,6 +157,8 @@ export function ethereumCall(contract: XmrSwapContract, s: SwapView, call: FlowC
     }
     case 'set_ready':
       return contract.setReady(id);
+    case 'freeze':
+      return contract.freeze(id);
     case 'withhold':
       return contract.withhold(id, call.evidence === 'absent' ? null : checkedEvidence(s, 'withhold', m));
     case 'publish_evidence': {
@@ -149,6 +172,11 @@ export function ethereumCall(contract: XmrSwapContract, s: SwapView, call: FlowC
     case 'withdraw_owed':
       // The owed account itself calls; parked payouts are keyed by account, not by swap.
       return contract.withdrawOwed(s.asset as Address, need(m.destination, 'withdraw_owed', 'a destination address') as Address);
+    case 'push_owed': {
+      // Anyone: the balance goes to the account itself and nowhere else.
+      const account = call.who === 'payout' ? s.payoutAddress : call.who === 'taker' ? s.taker : m.destination;
+      return contract.pushOwed(s.asset as Address, need(account ?? undefined, 'push_owed', 'the account whose parked balance is pushed') as Address);
+    }
     case 'cancel_pending':
       return contract.cancelPending(id);
     case 'expire_pending':

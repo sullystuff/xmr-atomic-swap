@@ -7,7 +7,7 @@
  * provider, anvil, or a fake in tests. The client holds no key.
  */
 import type { EthApproval, EthQuote } from '@xmrswap/core-wasm';
-import { type Address, ETH_NATIVE, type Hex, IXmrSwapAbi } from '@xmrswap/protocol';
+import { type Address, type AssetCaps, ETH_NATIVE, type Hex, IXmrSwapAbi, SWAP_FLAG } from '@xmrswap/protocol';
 import { type Abi, decodeErrorResult, decodeEventLog, decodeFunctionResult, encodeFunctionData } from 'viem';
 import { type EthSwapStruct, type SwapView, viewFromEthereum } from '../machine/view.js';
 import { EMPTY_ETH_APPROVAL, approvalMessage, quoteMessage } from '../signing/eip712.js';
@@ -117,6 +117,9 @@ const b32 = (b: Bytes): Hex => {
   return hex0x(b);
 };
 /** A spend share (32 little-endian bytes) as the `uint256` the contract takes. */
+/** The zero address: "no watcher"; never a payout. */
+const ZERO_ADDRESS = ETH_NATIVE;
+
 export const secretToUint = (secret: Bytes): bigint => {
   if (secret.length !== 32) throw new SdkError('BadLength', 'a spend share is 32 bytes');
   return leToBig(secret);
@@ -183,6 +186,8 @@ export class XmrSwapContract {
     takerKeys: TakerKeysArg;
     leaf: PoolLeafArg;
     approval?: { approval: EthApproval; sig: Bytes };
+    /** Amendment 1 (SPEC 11.6): the key that may freeze. Omit for none. `WatcherNotAllowed` against `freezeWindow == 0`. */
+    watcher?: Address | null;
   }): EthCall {
     if (p.swapNonce.length !== 16) throw new SdkError('BadNonce', 'a swap nonce is 16 bytes');
     if (p.amount > p.maxPay) throw new SdkError('PriceMoved', 'the amount is above maxPay');
@@ -201,11 +206,16 @@ export class XmrSwapContract {
         { index: p.leaf.index, key: p.leaf.key, key2: p.leaf.key2, spendPub: b32(p.leaf.spendPub), proof: p.leaf.proof.map(b32) },
         approvalMessage(p.approval?.approval ?? EMPTY_ETH_APPROVAL),
         hex0x(p.approval?.sig ?? new Uint8Array(0)),
+        p.watcher ?? ZERO_ADDRESS,
       ],
       (eth ? p.amount : 0n) + p.sessionBudget,
     );
   }
-  /** `take` (B1). `deposit` is the take deposit (`priceEthQuote(...).deposit`): ETH needs `deposit + sessionBudget`. */
+  /**
+   * `take` (B1). `deposit` is the take deposit (`priceEthQuote(...).deposit`): ETH needs
+   * `deposit + sessionBudget`. `payout` (Amendment 1, SPEC 11.2) is where the claim pays: the
+   * taker's own address for the default. Zero and the contract itself are `BadValue`.
+   */
   take(p: {
     quote: EthQuote;
     sig: Bytes;
@@ -217,21 +227,24 @@ export class XmrSwapContract {
     sessionBudget: bigint;
     takerKeys: TakerKeysArg;
     approval?: { approval: EthApproval; sig: Bytes };
+    payout: Address;
   }): EthCall {
     if (p.swapNonce.length !== 16) throw new SdkError('BadNonce', 'a swap nonce is 16 bytes');
+    const payout = p.payout.toLowerCase();
+    if (!/^0x[0-9a-f]{40}$/.test(payout) || payout === ZERO_ADDRESS || payout === this.address) throw new SdkError('PayoutInvalid', 'the payout address is zero, malformed or the contract itself');
     const eth = beToBig(p.quote.token) === 0n;
     return this.encode(
       'take',
-      [quoteMessage(p.quote), hex0x(p.sig), p.xmr, p.minReceive, hex0x(p.swapNonce), p.sessionKey, p.sessionBudget, this.takerKeys(p.takerKeys), approvalMessage(p.approval?.approval ?? EMPTY_ETH_APPROVAL), hex0x(p.approval?.sig ?? new Uint8Array(0))],
+      [quoteMessage(p.quote), hex0x(p.sig), p.xmr, p.minReceive, hex0x(p.swapNonce), p.sessionKey, p.sessionBudget, this.takerKeys(p.takerKeys), approvalMessage(p.approval?.approval ?? EMPTY_ETH_APPROVAL), hex0x(p.approval?.sig ?? new Uint8Array(0)), payout],
       (eth ? p.deposit : 0n) + p.sessionBudget,
     );
   }
   approve(swapId: Bytes, expectedOpen: Bytes): EthCall {
     return this.encode('approve', [b32(swapId), b32(expectedOpen)]);
   }
-  /** `fund` (B5). ETH: `value` = `amount`; USDC: zero value and an allowance from the operator. */
-  fund(p: { swapId: Bytes; expectedOpen: Bytes; key: Address; key2: Address; spendPub: Bytes; viewShare: Bytes; amount: bigint; token: Address }): EthCall {
-    return this.encode('fund', [b32(p.swapId), b32(p.expectedOpen), p.key, p.key2, b32(p.spendPub), b32(p.viewShare)], p.token.toLowerCase() === ETH_NATIVE ? p.amount : 0n);
+  /** `fund` (B5). ETH: `value` = `amount`; USDC: zero value and an allowance from the operator. `watcher`: the maker's watcher (SPEC 11.6); omit for none. */
+  fund(p: { swapId: Bytes; expectedOpen: Bytes; key: Address; key2: Address; spendPub: Bytes; viewShare: Bytes; amount: bigint; token: Address; watcher?: Address | null }): EthCall {
+    return this.encode('fund', [b32(p.swapId), b32(p.expectedOpen), p.key, p.key2, b32(p.spendPub), b32(p.viewShare), p.watcher ?? ZERO_ADDRESS], p.token.toLowerCase() === ETH_NATIVE ? p.amount : 0n);
   }
   reject(swapId: Bytes, expectedOpen: Bytes, reason: 0 | 1 | 2): EthCall {
     return this.encode('reject', [b32(swapId), b32(expectedOpen), reason]);
@@ -244,6 +257,8 @@ export class XmrSwapContract {
   cancelPending = (swapId: Bytes): EthCall => this.simple('cancelPending', swapId);
   expirePending = (swapId: Bytes): EthCall => this.simple('expirePending', swapId);
   setReady = (swapId: Bytes): EthCall => this.simple('setReady', swapId);
+  /** `freeze` (Z1): the watcher the swap names, or the locker; NOTICED, before `T_co`, once. Moves nothing. */
+  freeze = (swapId: Bytes): EthCall => this.simple('freeze', swapId);
   abort = (swapId: Bytes): EthCall => this.simple('abort', swapId);
   refundUnnoticed = (swapId: Bytes): EthCall => this.simple('refundUnnoticed', swapId);
   expireUnnoticed = (swapId: Bytes): EthCall => this.simple('expireUnnoticed', swapId);
@@ -272,6 +287,18 @@ export class XmrSwapContract {
   withdrawOwed(token: Address, to: Address): EthCall {
     return this.encode('withdrawOwed', [token, to]);
   }
+  /** `pushOwed` (SPEC 11.2): anyone retries the push of `account`'s parked balance of `token` to `account` itself. */
+  pushOwed(token: Address, account: Address): EthCall {
+    return this.encode('pushOwed', [token, account]);
+  }
+  /** `setCaps` (owner): the largest `amount` of one swap and the largest open value of `token`. */
+  setCaps(token: Address, maxSwap: bigint, maxOpen: bigint): EthCall {
+    return this.encode('setCaps', [token, maxSwap, maxOpen]);
+  }
+  /** `setCapsOn` (owner): the global switch. */
+  setCapsOn(on: boolean): EthCall {
+    return this.encode('setCapsOn', [on]);
+  }
   /** `postMessage`: the costly fallback transport. Cap 900 bytes. */
   postMessage(to: Address, swapId: Bytes | null, payload: Bytes): EthCall {
     if (payload.length > 900) throw new SdkError('MessageTooLarge', `${payload.length} bytes is over the 900-byte on-chain cap`);
@@ -280,34 +307,39 @@ export class XmrSwapContract {
 }
 
 /**
- * Gas used by the calls a session key sends, measured on anvil against the contract with the
- * packed swap storage (the integration suite re-measures on every run and fails if a call
- * exceeds its figure by more than the margin): the most expensive observed variant of each
- * (USDC, first write of the slots it touches).
+ * Gas used by the calls a session key sends, measured on anvil against the contract of
+ * Amendment 1 (the integration suite re-measures on every run and fails if a call exceeds its
+ * figure by more than the margin): the most expensive observed variant of each (USDC, first
+ * write of the slots it touches, a swap that was frozen, a claim paid to a fresh payout address).
  */
 export const ETH_SESSION_GAS = {
-  /** A9. */
-  setReady: 63_100n,
+  /** A9, and Z2 from FROZEN. */
+  setReady: 65_600n,
   /** A4, B2. */
-  cancelPending: 70_100n,
+  cancelPending: 76_300n,
   /** A10 with the deposit held, USDC. */
-  refund: 157_800n,
+  refund: 159_100n,
   /** B6: stores the 104-byte ciphertext. */
-  postNotice: 216_200n,
-  /** B10, USDC. */
-  claim: 186_600n,
+  postNotice: 218_400n,
+  /** B10, USDC, paid to a payout address that held none. */
+  claim: 182_600n,
 } as const;
 /** Margin added on top of the measured figures, in percent. */
 export const ETH_SESSION_GAS_MARGIN_PCT = 25n;
-/** The dearest session-key call (`postNotice`, 216,200) plus the margin, rounded up to 1,000. */
-export const ETH_SESSION_GAS_PER_CALL = 271_000n;
+/** The dearest session-key call (`postNotice`, 218,400) plus the margin. */
+export const ETH_SESSION_GAS_PER_CALL = 273_000n;
+/**
+ * Gas of the calls only a watcher or a third party sends (measured, whole transactions): a
+ * watcher's fee balance is sized by `freeze`; `pushOwed` is what delivering a parked balance costs.
+ */
+export const ETH_WATCHER_GAS = { freeze: 78_600n, pushOwed: 74_300n } as const;
 
 /**
  * The session budget on Ethereum (SPEC 5.4): four calls at a capped gas price, each sized as
  * the dearest measured session-key call plus 25%. The budget is shown before locking; what is
  * left returns to the taker with a plain transfer at the end. A budget that runs out is a lost
- * automatic refund, so it errs high: the worst real sequences (A: ready then refund, 221,000
- * gas; B: notice then claim, 403,000) use well under half of it.
+ * automatic refund, so it errs high: the worst real sequences (A: ready then refund, 225,000
+ * gas; B: notice then claim, 401,000) use well under half of it.
  */
 export function ethSessionBudget(maxFeePerGasWei: bigint, gasPerCall = ETH_SESSION_GAS_PER_CALL, calls = 4n): bigint {
   return maxFeePerGasWei * gasPerCall * calls;
@@ -451,7 +483,11 @@ export class EthereumClient {
     if (s.state === 0) return null;
     if (!withOwed) return viewFromEthereum(hex0x(swapId), s);
     const owed = await this.owedFor(s.token as Address, s.taker as Address, s.maker as Address, tag);
-    return viewFromEthereum(hex0x(swapId), s, { taker: owed.taker, maker: owed.payout + owed.operator + owed.owner });
+    // Claim proceeds of a direction-B swap are parked under the payout address (SPEC 11.2).
+    const claimed = (s.flags & SWAP_FLAG.REVEALED) !== 0 && (s.flags & SWAP_FLAG.REVEALER_LOCKER) === 0;
+    const toPayout = s.direction === 1 && claimed && s.payout.toLowerCase() !== s.taker.toLowerCase();
+    const takerSide = toPayout ? await this.owedOf(s.token as Address, s.payout as Address, tag) : owed.taker;
+    return viewFromEthereum(hex0x(swapId), s, { taker: takerSide, maker: owed.payout + owed.operator + owed.owner });
   }
 
   /**
@@ -508,6 +544,31 @@ export class EthereumClient {
   }
   owedOf(token: Address, account: Address, tag: BlockTag = 'finalized'): Promise<bigint> {
     return this.read<bigint>('owedOf', [token, account], tag);
+  }
+  /**
+   * The beta caps of `token` (SPEC 11.1): the switch, the per-swap cap, the open-value cap and
+   * the open value. A fresh deployment reads `on` with zero caps: nothing opens. Read at
+   * `latest` when planning an open: that is the state the open executes on.
+   */
+  async capsOf(token: Address, tag: BlockTag = 'finalized'): Promise<AssetCaps> {
+    const [on, maxSwap, maxOpen, openValue] = await this.read<readonly [boolean, bigint, bigint, bigint]>('capsOf', [token], tag);
+    return { on, maxSwap, maxOpen, openValue };
+  }
+  /**
+   * Check a payout address before a `take` (SPEC 11.2). `refuse`: the contract reverts with
+   * `BadValue` (zero, or the contract itself). `warn`: the address has code; a contract that
+   * does not accept ETH inside the 30,000-gas stipend (or a blacklisted USDC holder) gets the
+   * proceeds parked under its address, where `pushOwed` or its own `withdrawOwed` delivers them.
+   */
+  async payoutProblem(payout: Address, tag: BlockTag = 'latest'): Promise<{ verdict: 'ok' | 'warn' | 'refuse'; reason: 'invalid-address' | 'contract' | null }> {
+    const p = payout.toLowerCase() as Address;
+    if (!/^0x[0-9a-f]{40}$/.test(p) || p === ZERO_ADDRESS || p === this.contract.address) return { verdict: 'refuse', reason: 'invalid-address' };
+    return (await this.hasCode(p, tag)) ? { verdict: 'warn', reason: 'contract' } : { verdict: 'ok', reason: null };
+  }
+  /** Whether `address` has code at `tag`: a payout address that is a contract may refuse ETH or need more than the 30,000-gas stipend. */
+  async hasCode(address: Address, tag: BlockTag = 'latest'): Promise<boolean> {
+    const code = (await this.transport.request({ method: 'eth_getCode', params: [address, typeof tag === 'bigint' ? `0x${tag.toString(16)}` : tag] })) as string;
+    return code !== '0x' && code !== '0x0';
   }
   async volumeOf(maker: Address, token: Address, tag: BlockTag = 'finalized'): Promise<{ volume: bigint; withheldVolume: bigint }> {
     const [volume, withheldVolume] = await this.read<readonly [bigint, bigint]>('volumeOf', [maker, token], tag);

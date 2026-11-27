@@ -62,7 +62,9 @@ export type Warning =
   /** The lock notice does not decrypt or does not open its commitment: treated as "no lock". */
   | 'notice-invalid'
   /** The Monero lock is invalid (wrong amount, time-locked, duplicate output key, node disagreement). */
-  | 'lock-invalid';
+  | 'lock-invalid'
+  /** The swap is frozen (SPEC 11.6): the claimer's claim-without-ready is paused until `T_ff`; the locker must return before `T_ff − M`. */
+  | 'frozen';
 
 /**
  * Why an explicit request (the taker's "refund this swap" / cancel, the maker's reject, back
@@ -86,7 +88,13 @@ export type Refusal =
   /** A deposit can be withheld only inside the 30-minute hold. */
   | 'hold-ended'
   /** No deposit is in the hold or withheld: nothing to withhold or release. */
-  | 'no-deposit-held';
+  | 'no-deposit-held'
+  /** A freeze was asked for on a swap that names no watcher (or whose offer has no freeze window): only such a swap can be frozen. */
+  | 'freeze-not-available'
+  /** A freeze is accepted only in NOTICED and before `T_co`: there is no notice yet, ready is set, or the claim delay has run out. */
+  | 'freeze-window-closed'
+  /** The swap is, or was, frozen: a swap can be frozen once. */
+  | 'already-frozen';
 
 /** What every decision may carry: an explicit request that could not be honoured. */
 interface Refusable {

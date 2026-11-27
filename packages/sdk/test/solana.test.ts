@@ -36,6 +36,8 @@ const operator = key();
 const payout = key();
 const taker = key();
 const session = key();
+const watcherKey = key();
+const ATA_PROGRAM = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
 const maker = makerPda(PROGRAM, owner);
 const nonce = r.bytes(16);
 const swap = swapPda(PROGRAM, taker, nonce);
@@ -83,8 +85,8 @@ beforeAll(() => {
     makerEncVersion: 3,
     approvalIx: null,
   };
-  lockArgs = { ...common, asset: 0, maxPay: 300_000_000n, takerView: k.view, keyHint: 5 };
-  takeArgs = { ...common, asset: 0, minReceive: 290_000_000n };
+  lockArgs = { ...common, asset: 0, maxPay: 300_000_000n, takerView: k.view, keyHint: 5, watcher: null };
+  takeArgs = { ...common, asset: 0, minReceive: 290_000_000n, payout: taker.toBase58() };
 });
 
 describe('PDAs (SPEC 4.1)', () => {
@@ -115,7 +117,14 @@ describe('instruction builders against the frozen IDL', () => {
     const data = checkIx(sol, 'lock', { ...base, offer: offerPda(PROGRAM, maker, 0, 0), quote: null, quote_rent_receiver: null, instructions_sysvar: null, mint: null, taker_token: null, vault: null, token_program: null });
     expect(data.args.xmr.toString()).toBe('2000000000000');
     expect(data.args.key_hint).toBe(5);
-    expect(sol.data.length).toBe(8 + 247);
+    expect(data.args.watcher).toBe(null);
+    // Amendment 1: one byte more for the absent watcher, 33 with one.
+    expect(sol.data.length).toBe(8 + 248);
+    const watched = program.lock({ taker, maker, sessionKey: session, source: { offer: true }, args: { ...lockArgs, watcher: watcherKey.toBase58() } });
+    expect(checkIx(watched, 'lock', { ...base, offer: offerPda(PROGRAM, maker, 0, 0), quote: null, quote_rent_receiver: null, instructions_sysvar: null, mint: null, taker_token: null, vault: null, token_program: null }).args.watcher.toBase58()).toBe(watcherKey.toBase58());
+    expect(watched.data.length).toBe(8 + 280);
+    // config is writable in lock and take: the open value is kept there.
+    expect(sol.keys[3]).toMatchObject({ pubkey: config, isWritable: true });
 
     const usdcQuote = program.lock({ taker, maker, sessionKey: session, source: { quoteId: 42n, operator }, args: { ...lockArgs, asset: 1, approvalIx: APPROVAL_IX_INDEX } });
     checkIx(usdcQuote, 'lock', {
@@ -129,7 +138,7 @@ describe('instruction builders against the frozen IDL', () => {
       vault: vaultPda(PROGRAM, swap),
       token_program: TOKEN_PROGRAM_ID,
     });
-    expect(usdcQuote.data.length).toBe(8 + 248);
+    expect(usdcQuote.data.length).toBe(8 + 249);
     expect(codeOf(() => new XmrSwapProgram(PROGRAM).lock({ taker, maker, sessionKey: session, source: { offer: true }, args: { ...lockArgs, asset: 1 } }))).toBe('NoUsdcMint');
   });
 
@@ -137,7 +146,9 @@ describe('instruction builders against the frozen IDL', () => {
     const ix = program.take({ taker, maker, sessionKey: session, source: { offer: true }, args: takeArgs });
     const data = checkIx(ix, 'take', { taker, swap, maker, config, session_key: session, system_program: sys, offer: offerPda(PROGRAM, maker, 0, 1), quote: null, quote_rent_receiver: null, instructions_sysvar: null, mint: null, taker_token: null, vault: null, token_program: null });
     expect(data.args.min_receive.toString()).toBe('290000000');
-    expect(ix.data.length).toBe(8 + 214);
+    expect(data.args.payout.toBase58()).toBe(taker.toBase58());
+    expect(ix.data.length).toBe(8 + 246);
+    expect(ix.keys[3]).toMatchObject({ pubkey: config, isWritable: true });
   });
 
   it('approve and fund carry the expected open hash', () => {
@@ -147,7 +158,10 @@ describe('instruction builders against the frozen IDL', () => {
     const a = checkIx(program.approve({ operator, swap, maker, expectedOpen: open, makerSpendPub: share, makerPok: pok }), 'approve', { operator, swap, maker, config });
     expect(hex(Uint8Array.from(a.expected_open))).toBe(hex(open));
     const f = program.fund({ operator, swap, maker, asset: 1, expectedOpen: open, makerSpendPub: share, makerPok: pok, makerView: r.bytes(32) });
-    checkIx(f, 'fund', { operator, swap, maker, config, system_program: sys, mint: USDC, operator_token: ata(operator, USDC), vault: vaultPda(PROGRAM, swap), token_program: TOKEN_PROGRAM_ID });
+    // Direction B: the maker names its watcher at fund (SPEC 11.6).
+    const fw = program.fund({ operator, swap, maker, asset: 1, expectedOpen: open, makerSpendPub: share, makerPok: pok, makerView: r.bytes(32), watcher: watcherKey });
+    expect(checkIx(fw, 'fund', { operator, swap, maker, config, system_program: sys, mint: USDC, operator_token: ata(operator, USDC), vault: vaultPda(PROGRAM, swap), token_program: TOKEN_PROGRAM_ID }).watcher.toBase58()).toBe(watcherKey.toBase58());
+    expect(checkIx(f, 'fund', { operator, swap, maker, config, system_program: sys, mint: USDC, operator_token: ata(operator, USDC), vault: vaultPda(PROGRAM, swap), token_program: TOKEN_PROGRAM_ID }).watcher).toBe(null);
     checkIx(program.fund({ operator, swap, maker, asset: 0, expectedOpen: open, makerSpendPub: share, makerPok: pok, makerView: r.bytes(32) }), 'fund', { operator, swap, maker, config, system_program: sys, mint: null, operator_token: null, vault: null, token_program: null });
   });
 
@@ -158,6 +172,11 @@ describe('instruction builders against the frozen IDL', () => {
     expect(n.ciphertext.length).toBe(104);
     expect(codeOf(() => program.postNotice({ ...p, commitment: r.bytes(32), ciphertext: r.bytes(103) }))).toBe('BadNotice');
     checkIx(program.setReady(p), 'set_ready', present);
+    // freeze (Z1): the same four accounts; the caller is the watcher or the locker.
+    const fz = program.freeze({ caller: watcherKey, swap, maker });
+    checkIx(fz, 'freeze', { caller: watcherKey, swap, maker, config });
+    expect(fz.data.length).toBe(8);
+    expect(fz.keys[3]!.isWritable).toBe(false);
     expect(checkIx(program.withhold({ ...p, evidence: null }), 'withhold', present).evidence).toBe(null);
     const ev = checkIx(program.withhold({ ...p, evidence: { txid: r.bytes(32), view: r.bytes(32) } }), 'withhold', present);
     expect(ev.evidence.txid.length).toBe(32);
@@ -171,12 +190,31 @@ describe('instruction builders against the frozen IDL', () => {
     const secret = r.bytes(32);
 
     // A: claim pays maker.payout; refund names the operator (the account is unused in A).
-    const claimA = checkIx(program.claim(session, ctx(1, 0), secret), 'claim', usdc(payout));
+    // Amendment 1: claim and withdraw_owed carry three more accounts. In A the payout slots are the taker's and nothing is created.
+    const noPay = { payout: taker, payout_token: null, associated_token_program: null };
+    const claimA = checkIx(program.claim(session, ctx(1, 0), secret), 'claim', { ...usdc(payout), payout: taker, payout_token: ata(taker, USDC), associated_token_program: null });
     expect(hex(Uint8Array.from(claimA.secret))).toBe(hex(secret));
     checkIx(program.refund(session, ctx(1, 0), secret), 'refund', usdc(operator));
     // B: the maker's refund returns to its current operator; the taker's claim never pays the payout address.
     checkIx(program.refund(session, ctx(0, 1), secret), 'refund', sol(operator));
-    checkIx(program.claim(session, ctx(0, 1), secret), 'claim', sol(operator));
+    checkIx(program.claim(session, ctx(0, 1), secret), 'claim', { ...sol(operator), ...noPay });
+    // B with a fresh payout address: the claim pays it and no other; for USDC the associated-token
+    // program is passed so a missing token account is created at the caller's cost.
+    const fresh = key();
+    const toFresh = (asset: number): SettleContext => ({ ...ctx(asset, 1), swapPayout: fresh });
+    checkIx(program.claim(session, toFresh(0), secret), 'claim', { ...sol(operator), payout: fresh, payout_token: null, associated_token_program: null });
+    const claimFresh = program.claim(session, toFresh(1), secret);
+    checkIx(claimFresh, 'claim', { ...usdc(operator), payout: fresh, payout_token: ata(fresh, USDC), associated_token_program: ATA_PROGRAM });
+    expect(claimFresh.keys.length).toBe(17);
+    // The caller may decline the creation: the proceeds then park if the account is missing.
+    checkIx(program.claim(session, toFresh(1), secret, { createPayoutToken: false }), 'claim', { ...usdc(operator), payout: fresh, payout_token: ata(fresh, USDC), associated_token_program: null });
+    // The default payout (the taker's own wallet) is the same list with the taker in the payout slots.
+    checkIx(program.claim(session, { ...ctx(1, 1), swapPayout: taker }, secret), 'claim', { ...usdc(operator), payout: taker, payout_token: ata(taker, USDC), associated_token_program: ATA_PROGRAM });
+    // Parked claim proceeds: anyone delivers them to the payout address (pinned); the payout address itself may name a destination.
+    const stranger = key();
+    checkIx(program.settle('withdrawOwed', stranger, toFresh(1), { who: 0 }), 'withdraw_owed', { ...usdc(operator), caller: stranger, payout: fresh, payout_token: ata(fresh, USDC), associated_token_program: ATA_PROGRAM });
+    const elsewhere = key();
+    checkIx(program.settle('withdrawOwed', fresh, toFresh(1), { who: 0 }, elsewhere), 'withdraw_owed', { ...usdc(operator), caller: fresh, payout: elsewhere, payout_token: ata(elsewhere, USDC), associated_token_program: ATA_PROGRAM });
     // Burn mode: the treasury account is the incinerator.
     checkIx(program.settle('splitDeposit', session, ctx(0, 0, true), {}), 'split_deposit', sol(operator, new PublicKey('1nc1nerator11111111111111111111111111111111')));
 
@@ -189,9 +227,14 @@ describe('instruction builders against the frozen IDL', () => {
     // withdraw_owed: the destination replaces the taker (who = 0) or the maker wallet (who = 1).
     const dest = key();
     const w0 = program.settle('withdrawOwed', taker, ctx(1, 0), { who: 0 }, dest);
-    checkIx(w0, 'withdraw_owed', { ...usdc(operator), caller: taker, taker: dest, taker_token: ata(dest, USDC) });
+    checkIx(w0, 'withdraw_owed', { ...usdc(operator), caller: taker, taker: dest, taker_token: ata(dest, USDC), payout: dest, payout_token: ata(dest, USDC), associated_token_program: null });
     const w1 = program.settle('withdrawOwed', owner, ctx(1, 0), { who: 1 }, dest);
-    checkIx(w1, 'withdraw_owed', { ...usdc(dest), caller: owner });
+    checkIx(w1, 'withdraw_owed', { ...usdc(dest), caller: owner, payout: taker, payout_token: ata(taker, USDC), associated_token_program: null });
+    // Every Settle-list call writes config (the open value falls at the exit).
+    expect(w1.keys[3]).toMatchObject({ pubkey: config, isWritable: true });
+    // set_caps: admin and config only.
+    const caps = checkIx(program.setCaps(owner, { capsOn: true, maxSwap: [5n, 6n], maxOpen: [50n, 60n] }), 'set_caps', { admin: owner, config });
+    expect([caps.caps_on, caps.max_swap.map(String), caps.max_open.map(String)]).toEqual([true, ['5', '6'], ['50', '60']]);
   });
 
   it('registry instructions', () => {
@@ -208,7 +251,7 @@ describe('instruction builders against the frozen IDL', () => {
     checkIx(program.setOnion(operator, maker, `${'a'.repeat(56)}.onion`), 'set_onion', { operator, maker });
     checkIx(program.setContacts(operator, maker, [{ kind: 5, value: 'https://blobs.example' }]), 'set_contacts', { operator, maker });
     checkIx(program.setInboxPolicy(operator, maker, 1), 'set_inbox_policy', { operator, maker });
-    const terms = { mode: 0, minXmr: 1n, maxXmr: 2n, validSecs: 60, priceAbove: [0n, 0n, 0n], depthAbove: [0n, 0n, 0n], depths: Uint8Array.of(2, 0, 0), depBps: 100, wA: 60, wN: 600, dC: 5400, wC: 1800, wF: 604_800 };
+    const terms = { mode: 0, minXmr: 1n, maxXmr: 2n, validSecs: 60, priceAbove: [0n, 0n, 0n], depthAbove: [0n, 0n, 0n], depths: Uint8Array.of(2, 0, 0), depBps: 100, wA: 60, wN: 600, dC: 5400, wC: 1800, wF: 604_800, wZ: 0 };
     checkIx(program.setOffer(operator, maker, 1, 0, terms), 'set_offer', { operator, maker, offer: offerPda(PROGRAM, maker, 1, 0), system_program: sys });
     const refresh = program.refreshOffers(operator, maker, [{ asset: 0, direction: 0, enabled: true, prices: [1n, 0n, 0n], capacityXmr: 5n }, { asset: 1, direction: 1, enabled: false, prices: [2n, 0n, 0n], capacityXmr: 6n }], [{ slot: 0, tierPrice: [1n, 2n, 3n], validUntil: 9n, quoteId: 4n, sig: r.bytes(65) }]);
     checkIx(refresh, 'refresh_offers', { operator, maker, eth_board: ethBoardPda(PROGRAM, maker) }, 2);
@@ -218,8 +261,8 @@ describe('instruction builders against the frozen IDL', () => {
     const slots = Array.from({ length: 8 }, (_, index) => ({ index, share: r.bytes(32), pok: r.bytes(64) }));
     checkIx(program.refillKeys(operator, maker, 1, slots), 'refill_keys', { operator, maker, offer: offerPda(PROGRAM, maker, 1, 0) });
     expect(codeOf(() => program.refillKeys(operator, maker, 1, [...slots, slots[0]!]))).toBe('TooManySlots');
-    checkIx(program.setEthQuote(operator, maker, 2, r.bytes(251), r.bytes(65)), 'set_eth_quote', { operator, maker, eth_board: ethBoardPda(PROGRAM, maker), system_program: sys });
-    const qt = { quoteId: 42n, taker: taker.toBase58(), asset: 1, direction: 0, depth: 25, xmr: 1n, amount: 2n, depBps: 0, wN: 600, dC: 6060, wC: 1800, wF: 604_800, makerSpendPub: r.bytes(32), makerPok: r.bytes(64), expiresAt: 1_800_000_120n };
+    checkIx(program.setEthQuote(operator, maker, 2, r.bytes(255), r.bytes(65)), 'set_eth_quote', { operator, maker, eth_board: ethBoardPda(PROGRAM, maker), system_program: sys });
+    const qt = { quoteId: 42n, taker: taker.toBase58(), asset: 1, direction: 0, depth: 25, xmr: 1n, amount: 2n, depBps: 0, wN: 600, dC: 6060, wC: 1800, wF: 604_800, wZ: 0, makerSpendPub: r.bytes(32), makerPok: r.bytes(64), expiresAt: 1_800_000_120n };
     checkIx(program.postQuote(operator, maker, qt), 'post_quote', { operator, maker, quote: quotePda(PROGRAM, maker, 42n), system_program: sys });
     checkIx(program.cancelQuote(session, maker, 42n, operator), 'cancel_quote', { caller: session, maker, quote: quotePda(PROGRAM, maker, 42n), quote_rent_receiver: operator });
     checkIx(program.initialize({ authority: owner, usdcMint: USDC, clusterTag: r.bytes(32), treasuryAuthority: owner, splitMode: 0 }), 'initialize', {
@@ -252,35 +295,47 @@ describe('transaction sizes (SPEC 4.10)', () => {
     const keys = tx.compileMessage().accountKeys.length;
     return { bytes: wireSize(tx), keys, tx };
   };
-  const lock = (o: { asset: number; quote?: boolean; approval?: boolean; t?: PublicKey; m?: PublicKey; s?: PublicKey }) => {
+  const lock = (o: { asset: number; quote?: boolean; approval?: boolean; watcher?: boolean; t?: PublicKey; m?: PublicKey; s?: PublicKey }) => {
     const t = o.t ?? taker;
-    return program.lock({ taker: t, maker: o.m ?? maker, sessionKey: o.s ?? session, source: o.quote ? { quoteId: 42n, operator } : { offer: true }, args: { ...lockArgs, asset: o.asset, approvalIx: o.approval ? APPROVAL_IX_INDEX : null } });
+    return program.lock({ taker: t, maker: o.m ?? maker, sessionKey: o.s ?? session, source: o.quote ? { quoteId: 42n, operator } : { offer: true }, args: { ...lockArgs, asset: o.asset, approvalIx: o.approval ? APPROVAL_IX_INDEX : null, watcher: o.watcher ? watcherKey.toBase58() : null } });
   };
 
   it('every single lock is a legacy transaction of the documented size', () => {
-    expect(size(taker, [lock({ asset: 0 })])).toMatchObject({ keys: 9, bytes: 683 });
-    expect(size(taker, [lock({ asset: 1 })])).toMatchObject({ keys: 13, bytes: 811 });
+    // Figures of solana/DEVIATIONS.md after Amendment 1 (the absent watcher is one byte; a named one 33).
+    expect(size(taker, [lock({ asset: 0 })])).toMatchObject({ keys: 9, bytes: 684 });
+    expect(size(taker, [lock({ asset: 1 })])).toMatchObject({ keys: 13, bytes: 812 });
+    expect(size(taker, [lock({ asset: 1, watcher: true })])).toMatchObject({ keys: 13, bytes: 844 });
     // SPEC 4.10 lists 15 keys and 875 bytes here; with "exactly one of offer and quote" present (SPEC 4.4,
     // frozen IDL) the offer key is absent, so the real figure is one key (32 bytes) less. See DEVIATIONS.md.
-    expect(size(taker, [lock({ asset: 1, quote: true })])).toMatchObject({ keys: 14, bytes: 843 });
-    expect(size(taker, [approval(), lock({ asset: 0, approval: true })])).toMatchObject({ keys: 11, bytes: 1054 });
+    expect(size(taker, [lock({ asset: 1, quote: true })])).toMatchObject({ keys: 14, bytes: 844 });
+    expect(size(taker, [approval(), lock({ asset: 0, approval: true })])).toMatchObject({ keys: 11, bytes: 1055 });
     // The largest single-swap transaction.
-    const largest = size(taker, [approval(), lock({ asset: 1, approval: true })]);
-    expect(largest).toMatchObject({ keys: 15, bytes: 1182 });
-    expect(assertFits(largest.tx)).toBe(1182);
+    expect(size(taker, [approval(), lock({ asset: 1, approval: true })])).toMatchObject({ keys: 15, bytes: 1183 });
+    // The largest single-swap transaction: a USDC lock with an advance approval and a watcher, 17 bytes under the limit.
+    const largest = size(taker, [approval(), lock({ asset: 1, approval: true, watcher: true })]);
+    expect(largest).toMatchObject({ keys: 15, bytes: 1215 });
+    expect(assertFits(largest.tx)).toBe(1215);
+    expect(MAX_TX_BYTES - 1215).toBe(17);
     // The approval's Ed25519 instruction sits right after the compute-budget pair, where approval_ix points.
     expect(largest.tx.instructions[APPROVAL_IX_INDEX]!.programId.toBase58()).toBe('Ed25519SigVerify111111111111111111111111111');
     expect(largest.tx.instructions.slice(0, 2).every((i) => i.programId.equals(ComputeBudgetProgram.programId))).toBe(true);
-    // take is 33 bytes smaller than lock.
-    expect(size(taker, [program.take({ taker, maker, sessionKey: session, source: { offer: true }, args: takeArgs })]).bytes).toBe(683 - 33);
+    // take carries the 32-byte payout and no view share or key hint: 2 bytes smaller than a lock without a watcher.
+    expect(size(taker, [program.take({ taker, maker, sessionKey: session, source: { offer: true }, args: takeArgs })]).bytes).toBe(684 - 2);
+    expect(size(taker, [program.take({ taker, maker, sessionKey: session, source: { offer: true }, args: { ...takeArgs, asset: 1, payout: key().toBase58() } })])).toMatchObject({ keys: 13, bytes: 810 });
+    expect(size(taker, [approval(), program.take({ taker, maker, sessionKey: session, source: { offer: true }, args: { ...takeArgs, asset: 1, payout: key().toBase58(), approvalIx: APPROVAL_IX_INDEX } })])).toMatchObject({ keys: 15, bytes: 1181 });
   });
 
   it('batches: two SOL legs fit, two USDC legs do not, and two fit a v0 transaction with the lookup table', () => {
     const m2 = makerPda(PROGRAM, key());
     const s2 = key();
     const args2 = { ...lockArgs, swapNonce: r.bytes(16) };
-    const second = (asset: number) => program.lock({ taker, maker: m2, sessionKey: s2, source: { offer: true }, args: { ...args2, asset } });
-    expect(size(taker, [lock({ asset: 0 }), second(0)])).toMatchObject({ keys: 13, bytes: 1084 });
+    const second = (asset: number, watcher = false) => program.lock({ taker, maker: m2, sessionKey: s2, source: { offer: true }, args: { ...args2, asset, watcher: watcher ? watcherKey.toBase58() : null } });
+    expect(size(taker, [lock({ asset: 0 }), second(0)])).toMatchObject({ keys: 13, bytes: 1086 });
+    // Two SOL legs with watchers still fit; two USDC legs with watchers do not (1,310 bytes), as before the amendment.
+    expect(size(taker, [lock({ asset: 0, watcher: true }), second(0, true)])).toMatchObject({ keys: 13, bytes: 1150 });
+    const twoWatched = legacyTransaction({ payer: taker, blockhash: BLOCKHASH, instructions: [lock({ asset: 1, watcher: true }), second(1, true)], cuLimit: 400_000, cuPrice: 1 });
+    expect(twoWatched.compileMessage().accountKeys.length).toBe(18);
+    expect(() => assertFits(twoWatched)).toThrow(/1310/);
     const twoUsdc = legacyTransaction({ payer: taker, blockhash: BLOCKHASH, instructions: [lock({ asset: 1 }), second(1)], cuLimit: 400_000, cuPrice: 1 });
     expect(twoUsdc.compileMessage().accountKeys.length).toBe(18);
     expect(codeOf(() => assertFits(twoUsdc))).toBe('TransactionTooLarge');
@@ -291,13 +346,19 @@ describe('transaction sizes (SPEC 4.10)', () => {
     const table = new AddressLookupTableAccount({ key: key(), state: { deactivationSlot: 2n ** 64n - 1n, lastExtendedSlot: 0, lastExtendedSlotStartIndex: 0, addresses: [configPda(PROGRAM), SystemProgram.programId, USDC, TOKEN_PROGRAM_ID] } });
     const v0 = v0Transaction({ payer: taker, blockhash: BLOCKHASH, instructions: [lock({ asset: 1 }), second(1)], cuLimit: 400_000, cuPrice: 1 }, [table]);
     expect(v0.message.staticAccountKeys.length).toBe(14);
-    expect(wireSize(v0)).toBe(1156);
+    expect(wireSize(v0)).toBe(1158);
     expect(assertFits(v0)).toBeLessThanOrEqual(MAX_TX_BYTES);
   });
 
   it('the other documented transactions', () => {
     const ctx: SettleContext = { swap, taker, maker, operator, payout, asset: 1, direction: 0 };
-    expect(size(operator, [program.claim(operator, ctx, r.bytes(32))])).toMatchObject({ keys: 16, bytes: 691 });
+    expect(size(operator, [program.claim(operator, ctx, r.bytes(32))])).toMatchObject({ keys: 16, bytes: 694 });
+    // A direction-B USDC claim that creates the payout's token account: 19 keys.
+    expect(size(session, [program.claim(session, { ...ctx, direction: 1, swapPayout: key() }, r.bytes(32))])).toMatchObject({ keys: 19, bytes: 790 });
+    expect(size(watcherKey, [program.freeze({ caller: watcherKey, swap, maker })])).toMatchObject({ keys: 6, bytes: 329 });
+    expect(size(owner, [program.setCaps(owner, { capsOn: true, maxSwap: [1n, 2n], maxOpen: [3n, 4n] })])).toMatchObject({ keys: 4, bytes: 296 });
+    expect(size(operator, [program.fund({ operator, swap, maker, asset: 1, expectedOpen: r.bytes(32), makerSpendPub: r.bytes(32), makerPok: r.bytes(64), makerView: r.bytes(32), watcher: watcherKey })])).toMatchObject({ keys: 11, bytes: 688 });
+    expect(size(operator, [program.setEthQuote(operator, maker, 2, r.bytes(255), r.bytes(65))])).toMatchObject({ keys: 6, bytes: 651 });
     const offers = [0, 1].flatMap((asset) => [0, 1].map((direction) => ({ asset, direction, enabled: true, prices: [1n, 2n, 3n], capacityXmr: 9n })));
     const eth = [0, 1, 2, 3].map((slot) => ({ slot, tierPrice: [1n, 2n, 3n], validUntil: 5n, quoteId: 6n, sig: r.bytes(65) }));
     expect(size(operator, [program.refreshOffers(operator, maker, offers, eth)])).toMatchObject({ keys: 9, bytes: 1097 });
@@ -323,6 +384,7 @@ describe('transaction sizes (SPEC 4.10)', () => {
 // ------------------------------------------------------------------ client over an injected transport
 
 const z = (n: number) => new Uint8Array(n);
+const DEFAULT_KEY = '11111111111111111111111111111111';
 function makerAccount(over: Partial<Maker> = {}): Maker {
   return {
     owner: owner.toBase58(), operator: operator.toBase58(), payout: payout.toBase58(), encKey: z(32).fill(1), encKeyVersion: 2, prevEncKey: z(32).fill(2), prevEncKeyExpiresAt: 0n,
@@ -336,7 +398,7 @@ function swapAccount(over: Partial<Swap> = {}): Swap {
     takerEncKey: z(32), makerEncVersion: 2, makerEncKey: z(32), amount: 1_500_000_000n, deposit: 15_000_000n, xmr: 10n ** 13n, price: 150_000_000n, depBps: 100, feeBps: 5, wN: 600, dC: 5400, wC: 1800,
     takerSpendPub: z(32), makerSpendPub: z(32), lockerView: z(32), noticeCommitment: z(32), noticeCt: z(104), evidenceTxid: z(32), evidenceView: z(32), revealed: z(32),
     tLock: 1_800_000_000n, tPendingDeadline: 0n, tActive: 1_800_000_000n, tNoteDeadline: 1_800_000_600n, tNotice: 0n, tCut: 0n, tClaimOpen: 0n, tReady: 0n, tClaimDeadline: 0n, tFinal: 1_800_604_800n, tRefund: 0n, tSettled: 0n,
-    owedTaker: 0n, owedMaker: 0n, owedTreasury: 0n, reserved: z(42), ...over,
+    owedTaker: 0n, owedMaker: 0n, owedTreasury: 0n, payout: DEFAULT_KEY, watcher: DEFAULT_KEY, wZ: 0, tFreeze: 0n, reserved: z(30), ...over,
   };
 }
 
@@ -369,6 +431,18 @@ describe('SolanaClient over a fake transport', () => {
     expect(hex(view!.swapRef)).toBe(hex(swap.toBytes()));
     // No notice on record: the 104 stored zero bytes are not a ciphertext.
     expect(view!.noticeCt.length).toBe(0);
+    // Amendment 1: zeros on chain read as "none"; the account is 800 bytes.
+    expect(view).toMatchObject({ payout: 'none', payoutAddress: null, watcher: false, watcherAddress: null, wZ: 0, tFreeze: 0n });
+    expect(ACCOUNT_SIZE.Swap).toBe(800);
+    const other = key();
+    const set = (over: Partial<Swap>) => fake.setAccount(other.toBase58(), P, encodeAccount('Swap', swapAccount(over), ACCOUNT_SIZE.Swap));
+    set({ state: 10, watcher: watcherKey.toBase58(), wZ: 86_400, tNotice: 1_800_000_100n, tClaimOpen: 1_800_005_500n, tFreeze: 1_800_000_200n });
+    const frozen = (await client.getSwap(other))!;
+    expect(frozen).toMatchObject({ state: 10, watcher: true, watcherAddress: watcherKey.toBase58(), wZ: 86_400, tFreeze: 1_800_000_200n, payout: 'none' });
+    set({ direction: 1, payout: taker.toBase58() });
+    expect(await client.getSwap(other)).toMatchObject({ payout: 'taker', payoutAddress: taker.toBase58() });
+    set({ direction: 1, payout: payout.toBase58(), flags: 32 });
+    expect(await client.getSwap(other)).toMatchObject({ payout: 'other', payoutAddress: payout.toBase58(), flags: 32 });
     expect(await client.getSwap(key())).toBe(null);
     expect(await client.getOffer(maker, 0, 0)).toBe(null);
     fake.setAccount(swap.toBase58(), key().toBase58(), encodeAccount('Swap', swapAccount(), ACCOUNT_SIZE.Swap));
@@ -395,7 +469,7 @@ describe('SolanaClient over a fake transport', () => {
     expect((await client.listSwapsByMaker(maker, 9)).map((s) => s.state)).toEqual([9]);
     expect((await client.listSwapsByMaker(otherMaker, 2)).length).toBe(0);
     expect((await client.listMakers()).map((m) => m.pubkey)).toEqual([maker.toBase58()]);
-    const offer = { maker: maker.toBase58(), asset: 1, direction: 0, enabled: 1, mode: 0, bump: 1, seq: 1n, updatedAt: 0n, validSecs: 60, minXmr: 0n, maxXmr: 1n, capacityXmr: 1n, priceAbove: [0n, 0n, 0n], prices: [1n, 0n, 0n], depthAbove: [0n, 0n, 0n], depths: Uint8Array.of(2, 0, 0), depBps: 0, wA: 60, wN: 600, dC: 5400, wC: 1800, wF: 604800, termsHash: z(32), poolFilled: 0, poolUsed: 0, pool: Array.from({ length: 16 }, () => z(32)), reserved: z(34) } as Offer;
+    const offer = { maker: maker.toBase58(), asset: 1, direction: 0, enabled: 1, mode: 0, bump: 1, seq: 1n, updatedAt: 0n, validSecs: 60, minXmr: 0n, maxXmr: 1n, capacityXmr: 1n, priceAbove: [0n, 0n, 0n], prices: [1n, 0n, 0n], depthAbove: [0n, 0n, 0n], depths: Uint8Array.of(2, 0, 0), depBps: 0, wA: 60, wN: 600, dC: 5400, wC: 1800, wF: 604800, termsHash: z(32), poolFilled: 0, poolUsed: 0, pool: Array.from({ length: 16 }, () => z(32)), wZ: 0, reserved: z(30) } as Offer;
     fake.setAccount(offerPda(PROGRAM, maker, 1, 0).toBase58(), P, encodeAccount('Offer', offer, ACCOUNT_SIZE.Offer));
     expect((await client.listOffers(maker)).length).toBe(1);
     expect((await client.listOffers(otherMaker)).length).toBe(0);

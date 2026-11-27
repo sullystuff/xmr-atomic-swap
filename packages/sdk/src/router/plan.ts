@@ -10,8 +10,13 @@
  *     each offer's `max_xmr` and `capacity_xmr`, never more than one leg per maker per wave.
  *  3. Stop at the worst acceptable rate.
  *  4. Group each wave's legs into transactions (SPEC 4.10 batching).
+ *
+ * Amendment 1 (SPEC 11.1): a leg is also bounded by the deployment's beta caps of its asset,
+ * the per-swap cap and the open value still free, which every leg of a wave shares. An offer
+ * a cap keeps out or shrinks is reported as `cap-reached`, never as a maker limit, and the
+ * plan says so in `capReached`.
  */
-import { type ChainName, PICONERO_PER_XMR, takerDepthFor } from '@xmrswap/protocol';
+import { type AssetCaps, type ChainName, PICONERO_PER_XMR, capsHeadroom, takerDepthFor } from '@xmrswap/protocol';
 import { SWAP_STATE } from '@xmrswap/protocol';
 import type { SwapView } from '../machine/view.js';
 import { endedInClaim, endedInRefund } from '../machine/view.js';
@@ -43,6 +48,13 @@ export interface RouterOffer {
   /** The taker holds a valid advance approval for this maker (needed for mode 2; turns mode 1 into auto). */
   hasApproval?: boolean;
   price(xmr: bigint): Pricing;
+  /**
+   * The beta caps of the offer's asset, read with the offers (`SolanaClient.getCaps`,
+   * `EthereumClient.capsOf`). Omitted = not limited. Offers of one asset on one chain share the
+   * open value: give them the same `capsKey` (default `chain:asset`; on Ethereum pass the token).
+   */
+  caps?: AssetCaps;
+  capsKey?: string;
 }
 
 export interface RouterOrder {
@@ -97,7 +109,8 @@ export interface PlannedWave {
   expectedSecs: number;
 }
 
-export type DropReason = 'approval-required' | 'approval-window' | 'fault-rate' | 'withhold-rate' | 'depth' | 'worse-than-limit' | 'below-minimum';
+/** `cap-reached`: the deployment's beta cap (per swap, or open value) leaves no room for this offer's minimum; not the maker's limit. */
+export type DropReason = 'approval-required' | 'approval-window' | 'fault-rate' | 'withhold-rate' | 'depth' | 'worse-than-limit' | 'below-minimum' | 'cap-reached';
 
 export interface RoutePlan {
   waves: PlannedWave[];
@@ -112,6 +125,8 @@ export interface RoutePlan {
   expectedSecs: number;
   /** Offers that took no part, and why. */
   dropped: { offerId: string; reason: DropReason }[];
+  /** A beta cap kept an offer out of a wave or made a leg smaller than the maker and the budget allowed: "cap reached", as distinct from a maker limit. */
+  capReached: boolean;
 }
 
 /** Average Monero block time, for the duration estimate only. */
@@ -167,7 +182,9 @@ export function planRoute(order: RouterOrder, offers: readonly RouterOffer[]): R
   let remaining = order.totalPay;
   const maxWaves = order.maxWaves ?? 16;
   const noted = new Set(dropped.map((d) => d.offerId));
+  const capHit = { any: false };
   const note = (offerId: string, reason: DropReason) => {
+    if (reason === 'cap-reached') capHit.any = true;
     if (!noted.has(offerId)) {
       noted.add(offerId);
       dropped.push({ offerId, reason });
@@ -180,7 +197,7 @@ export function planRoute(order: RouterOrder, offers: readonly RouterOffer[]): R
     let legs: PlannedLeg[] = [];
     let requiredDepth = 0;
     for (;;) {
-      legs = planWave(order, usable, capacity, remaining, excluded, note);
+      legs = planWave(order, usable, capacity, remaining, excluded, note, capHit);
       const totalXmr = legs.reduce((s, l) => s + l.xmr, 0n);
       requiredDepth = Math.max(takerDepthFor(totalXmr), f.minDepth ?? 0);
       const shallow = legs.filter((l) => l.depth < requiredDepth);
@@ -217,11 +234,19 @@ export function planRoute(order: RouterOrder, offers: readonly RouterOffer[]): R
   const vsReferenceBps = blendedPrice !== null && order.referencePrice ? Number(((blendedPrice - order.referencePrice) * BPS) / order.referencePrice) : null;
   // "Dropped" means took no part: an offer used in one wave and exhausted in the next is not listed.
   const used = new Set(waves.flatMap((w) => w.legs.map((l) => l.offerId)));
-  return { waves, filledPay, filledXmr, unfilledPay: remaining, blendedPrice, vsReferenceBps, expectedSecs: waves.reduce((s, w) => s + w.expectedSecs, 0), dropped: dropped.filter((d) => !used.has(d.offerId)) };
+  return { waves, filledPay, filledXmr, unfilledPay: remaining, blendedPrice, vsReferenceBps, expectedSecs: waves.reduce((s, w) => s + w.expectedSecs, 0), dropped: dropped.filter((d) => !used.has(d.offerId)), capReached: capHit.any };
 }
 
-function planWave(order: RouterOrder, offers: readonly RouterOffer[], capacity: ReadonlyMap<string, bigint>, remaining: bigint, excluded: ReadonlySet<string>, note: (offerId: string, reason: DropReason) => void): PlannedLeg[] {
+const capsKeyOf = (o: RouterOffer): string => o.capsKey ?? `${o.chain}:${o.asset}`;
+
+function planWave(order: RouterOrder, offers: readonly RouterOffer[], capacity: ReadonlyMap<string, bigint>, remaining: bigint, excluded: ReadonlySet<string>, note: (offerId: string, reason: DropReason) => void, capHit: { any: boolean }): PlannedLeg[] {
   let budget = remaining < order.maxInFlight ? remaining : order.maxInFlight;
+  // Open value still free per asset: every leg of the wave is open at once and draws on it.
+  const room = new Map<string, bigint>();
+  for (const o of offers) {
+    const h = o.caps ? capsHeadroom(o.caps) : null;
+    if (h !== null && !room.has(capsKeyOf(o))) room.set(capsKeyOf(o), h);
+  }
   const legs: PlannedLeg[] = [];
   const makers = new Set<string>();
   const left = offers.filter((o) => !excluded.has(o.id));
@@ -233,7 +258,19 @@ function planWave(order: RouterOrder, offers: readonly RouterOffer[], capacity: 
       const left = capacity.get(o.id)!;
       const cap = left < o.maxXmr ? left : o.maxXmr;
       if (cap < o.minXmr || cap <= 0n) continue;
-      const fit = affordable(o, budget, cap);
+      // The beta caps bound what this leg may pay: the per-swap cap and the open value left.
+      const head = o.caps?.on ? room.get(capsKeyOf(o))! : null;
+      const capBudget = head === null ? budget : [budget, o.caps!.maxSwap, head].reduce((a, b) => (a < b ? a : b));
+      const fit = capBudget > 0n ? affordable(o, capBudget, cap) : null;
+      if (capBudget < budget) {
+        // Would the maker and the budget have allowed more? Then the cap is what limits.
+        const free = affordable(o, budget, cap);
+        if (free && (!fit || fit.xmr < free.xmr)) {
+          capHit.any = true;
+          if (!fit) note(o.id, 'cap-reached');
+        }
+        if (!fit && free) continue;
+      }
       if (!fit) {
         note(o.id, 'below-minimum');
         continue;
@@ -252,6 +289,7 @@ function planWave(order: RouterOrder, offers: readonly RouterOffer[], capacity: 
     legs.push({ offerId: o.id, makerId: o.makerId, xmr, pay: pricing.amount, price: pricing.price, depth: pricing.depth, deposit: pricing.deposit, pendingSecs: pending ? o.approvalWindow : 0, approval });
     makers.add(o.makerId);
     budget -= pricing.amount;
+    if (o.caps?.on) room.set(capsKeyOf(o), room.get(capsKeyOf(o))! - pricing.amount);
   }
   return legs;
 }

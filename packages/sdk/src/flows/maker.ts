@@ -6,6 +6,7 @@
  */
 import { CHAIN_CONSTS, SWAP_FLAG, SWAP_STATE } from '@xmrswap/protocol';
 import { type SwapView, deadlinesOf, endedInClaim, endedInRefund, hasFlag } from '../machine/view.js';
+import { freezeRefusal } from './taker.js';
 import { type Decision, type LockReport, call, done, need, offchain, refuse, wait } from './types.js';
 
 export interface MakerFacts {
@@ -37,6 +38,12 @@ export interface MakerFacts {
   backOut?: boolean;
   /** The sweep of the joint address is confirmed (or there is nothing to sweep). */
   swept?: boolean;
+  /**
+   * Direction B, a swap whose `fund` named a watcher: pause it (Z1, SPEC 11.6). The locker
+   * itself may freeze, in NOTICED before `T_co`, once. A decision to give the escrow back
+   * (`backOut`) wins over it.
+   */
+  freeze?: boolean;
 }
 
 export function makerStep(f: MakerFacts): Decision {
@@ -44,6 +51,11 @@ export function makerStep(f: MakerFacts): Decision {
   // A release or withhold asked for while no deposit is in the hold is said so, not dropped.
   const st = f.swap.state;
   if (d.refused === undefined && st !== SWAP_STATE.HOLD && st !== SWAP_STATE.WITHHELD && (f.release || f.withhold)) return refuse(d, 'no-deposit-held');
+  // A freeze asked for where none is possible is said so, not dropped.
+  if (f.freeze && d.refused === undefined && !(d.do === 'call' && d.call.name === 'freeze')) {
+    const why = freezeRefusal(f.swap, f.now, 1);
+    if (why) return refuse(d, why);
+  }
   return d;
 }
 
@@ -132,6 +144,25 @@ function makerA(f: MakerFacts): Decision {
       if (now >= d.tFinal) return f.withoutReady === 'abort' ? refuse(call({ name: 'claim' }, 'operator', 'A11c', d.tExp - M), 'abort-window-closed') : call({ name: 'claim' }, 'operator', 'A11c', d.tExp - M);
       return call({ name: 'abort' }, 'operator', 'A7c', d.tFinal - 1n);
     }
+    case S.FROZEN: {
+      // The taker or its watcher paused the claim-without-ready until T_ff (SPEC 11.6). The
+      // taker may still set ready (then claim as usual) or refund (the deposit is held).
+      const tFf = d.tFf!;
+      if (!relayed) {
+        if (f.lockTx === 'prepared' && !f.lockFailed && now < d.tCut!) return offchain('relay-xmr', d.tCut! - 1n);
+        if (now < d.tFinal) return call({ name: 'abort' }, 'operator', 'Z5', d.tFinal - 1n);
+        return wait('taker-refund', null);
+      }
+      if (f.lockFailed && now < d.tFinal) return call({ name: 'abort' }, 'operator', 'Z5', d.tFinal - 1n);
+      if (f.lock?.state === 'not-found' && now < tFf) return offchain('rebroadcast-xmr');
+      if (now < tFf) return wait('ready', tFf, 'frozen');
+      if (now > d.tExp - M) return wait('taker-refund', null, 'claim-window-missed');
+      if (f.lock === undefined && f.withoutReady === undefined) return need('lock-report');
+      const policy = f.withoutReady ?? (f.lock?.ok ? 'claim' : 'abort');
+      if (policy === 'claim') return call({ name: 'claim' }, 'operator', now < d.tFinal ? 'Z4' : 'A11c', d.tExp - M);
+      if (now >= d.tFinal) return f.withoutReady === 'abort' ? refuse(call({ name: 'claim' }, 'operator', 'A11c', d.tExp - M), 'abort-window-closed') : call({ name: 'claim' }, 'operator', 'A11c', d.tExp - M);
+      return call({ name: 'abort' }, 'operator', 'Z5', d.tFinal - 1n);
+    }
     case S.READY:
       // `ready` is final. Claim no later than T_cd − M.
       if (now <= d.tCd! - M) return call({ name: 'claim' }, 'operator', 'A11a', d.tCd! - M);
@@ -193,6 +224,8 @@ function makerB(f: MakerFacts): Decision {
       // window is open (B9c or B9h before T_cut, B9d after it).
       if (f.backOut && refundable) return call({ name: 'refund' }, 'operator', now < d.tCut! ? (hasFlag(s, SWAP_FLAG.LATE_NOTICE) ? 'B9h' : 'B9c') : 'B9d', tCo - M);
       if (f.backOut) return refuse(makerB({ ...f, backOut: false }), 'refund-window-closed');
+      // A pause asked for by the operator (Z1): possible only on a swap whose fund named a watcher.
+      if (f.freeze && freezeRefusal(s, now, 1) === null) return call({ name: 'freeze' }, 'operator', 'Z1', tCo - 1n);
       if (now < tCo) {
         if (f.noticeOpens === undefined) return need('notice-opening');
         if (f.noticeOpens && f.lock === undefined) return need('lock-report');
@@ -208,6 +241,33 @@ function makerB(f: MakerFacts): Decision {
       // lets a taker with a false notice claim the escrow at T_co.
       if (refundable && now >= d.tCut!) return call({ name: 'refund' }, 'operator', 'B9d', tCo - M, { urgent: true });
       if (refundable) return wait('xmr-confirmations', d.tCut, f.noticeOpens === false ? 'notice-invalid' : f.lock?.state === 'invalid' ? 'lock-invalid' : undefined);
+      return expiry();
+    }
+    case S.FROZEN: {
+      // Frozen by the maker's watcher (or by the operator): the taker's claim-without-ready
+      // waits for T_ff. The maker has what it had in NOTICED until then: set ready on a good
+      // lock (Z2), or refund (Z3), which returns the take deposit at once and can never hold it.
+      const tFf = d.tFf!;
+      const refundable = now <= tFf - M;
+      if (f.backOut && refundable) return call({ name: 'refund' }, 'operator', 'Z3', tFf - M);
+      if (f.backOut) return refuse(makerB({ ...f, backOut: false }), 'refund-window-closed');
+      if (now < tFf) {
+        if (f.noticeOpens === undefined) return need('notice-opening');
+        if (f.noticeOpens && f.lock === undefined) return need('lock-report');
+        const lockGood = f.noticeOpens && f.lock?.ok === true && f.lock.state === 'confirmed';
+        if (lockGood) {
+          if (f.commitmentsOk === undefined) return need('commitment-check');
+          if (f.commitmentsOk) return now >= d.tReadyMin! ? call({ name: 'set_ready' }, 'operator', 'Z2', tFf - 1n) : wait('ready-minimum', d.tReadyMin, 'frozen');
+          if (refundable) return call({ name: 'refund' }, 'operator', 'Z3', tFf - M, { urgent: true });
+        }
+      }
+      // A false notice or an invalid lock is refunded at once; a valid lock that is still
+      // confirming gets the freeze window, with one margin to spare. Never later than T_ff − M:
+      // a missed window lets a taker with a false notice claim the escrow at T_ff.
+      const bad = f.noticeOpens === false || f.lock?.state === 'invalid' || (f.lock?.state === 'not-found' && now >= d.tCut!);
+      const lastWait = tFf - 2n * M > d.tCut! ? tFf - 2n * M : d.tCut!;
+      if (refundable && (bad || now >= lastWait)) return call({ name: 'refund' }, 'operator', 'Z3', tFf - M, { urgent: true });
+      if (refundable) return wait('xmr-confirmations', lastWait, 'frozen');
       return expiry();
     }
     case S.READY:

@@ -36,7 +36,9 @@ export interface VectorStep {
   call: string;
   caller: Role;
   args: Record<string, any>;
-  env: { maker_can_receive: boolean; taker_can_receive: boolean; treasury_can_receive: boolean; open_pending: number };
+  env: { maker_can_receive: boolean; taker_can_receive: boolean; treasury_can_receive: boolean; payout_can_receive: boolean; maker_paused: boolean; open_pending: number; caps: { on: boolean; max_swap: string; max_open: string; open_value: string } };
+  /** `multi_sequences` only: the index of the step's swap. */
+  swap?: number;
   expect?: any;
 }
 
@@ -72,6 +74,10 @@ export function swapOf(j: any): ModelSwap {
     owedTaker: BigInt(j.owed_taker),
     owedMaker: BigInt(j.owed_maker),
     owedTreasury: BigInt(j.owed_treasury),
+    payout: j.payout,
+    watcher: j.watcher,
+    wZ: j.w_z,
+    tFreeze: t('t_freeze'),
   };
 }
 
@@ -82,11 +88,12 @@ export function callOf(step: VectorStep): Call {
     case 'take':
       return {
         name: step.call,
-        args: { offerMode: a.offer_mode, approval: a.approval, amount: BigInt(a.amount), xmr: BigInt(a.xmr), wA: a.w_a, wN: a.w_n, dC: a.d_c, wC: a.w_c, wF: a.w_f, depth: a.depth, depBps: a.dep_bps },
+        args: { offerMode: a.offer_mode, approval: a.approval, amount: BigInt(a.amount), xmr: BigInt(a.xmr), wA: a.w_a, wN: a.w_n, dC: a.d_c, wC: a.w_c, wF: a.w_f, depth: a.depth, depBps: a.dep_bps, wZ: a.w_z, payout: a.payout, watcher: a.watcher },
       };
     case 'approve':
+      return { name: 'approve', openOk: a.open_ok };
     case 'fund':
-      return { name: step.call, openOk: a.open_ok };
+      return { name: 'fund', openOk: a.open_ok, watcher: a.watcher };
     case 'reject':
       return { name: 'reject', openOk: a.open_ok, reason: a.reason };
     case 'refund':
@@ -97,7 +104,8 @@ export function callOf(step: VectorStep): Call {
     case 'publish_evidence':
       return { name: 'publish_evidence', opens: a.opens };
     case 'withdraw_owed':
-      return { name: 'withdraw_owed', who: a.who };
+    case 'push_owed':
+      return { name: step.call, who: a.who };
     default:
       return { name: step.call } as Call;
   }
@@ -108,6 +116,9 @@ export const envOf = (step: VectorStep): Env => ({
   makerCanReceive: step.env.maker_can_receive,
   treasuryCanReceive: step.env.treasury_can_receive,
   openPending: step.env.open_pending,
+  payoutCanReceive: step.env.payout_can_receive,
+  makerPaused: step.env.maker_paused,
+  caps: { on: step.env.caps.on, maxSwap: BigInt(step.env.caps.max_swap), maxOpen: BigInt(step.env.caps.max_open), openValue: BigInt(step.env.caps.open_value) },
 });
 
 /** Every distinct open swap state that appears in `transitions.json` for a chain (the flow tests' corpus). */
@@ -125,6 +136,10 @@ export function corpus(chain: ChainName): ModelSwap[] {
     add(r.step.expect?.swap);
   }
   for (const q of v.sequences) {
+    if (q.chain !== chain) continue;
+    for (const s of q.steps) add(s.expect?.swap);
+  }
+  for (const q of v.multi_sequences) {
     if (q.chain !== chain) continue;
     for (const s of q.steps) add(s.expect?.swap);
   }

@@ -12,6 +12,7 @@ import { type CallMaterial, solanaInstruction } from '../../src/flows/execute.js
 import { makerShareKeys, solanaMakerShare } from '../../src/flows/keys.js';
 import type { Decision } from '../../src/flows/types.js';
 import type { SwapView } from '../../src/machine/view.js';
+import type { WatcherDecision } from '../../src/watcher/step.js';
 import { SolanaClient, type SolanaSigner, seedSigner } from '../../src/solana/client.js';
 import { ata } from '../../src/solana/pdas.js';
 import { type SolanaTransport, connectionTransport } from '../../src/solana/transport.js';
@@ -24,6 +25,8 @@ export const XMR = 1_000_000_000_000n;
 const seed = (n: number) => new Uint8Array(32).fill(n);
 /** The operator's Ed25519 seed (the daemon's hot key): signs advance approvals and envelopes. */
 export const OPERATOR_SEED = seed(3);
+/** The caps every world starts with: far above what the scenarios open, so only the cap scenarios meet them. */
+export const DEFAULT_CAPS = { maxSwap: [1_000_000_000_000n, 1_000_000_000_000n], maxOpen: [10_000_000_000_000n, 10_000_000_000_000n] } as const;
 
 export interface SolWorld {
   svm: SvmRpc;
@@ -37,6 +40,10 @@ export interface SolWorld {
   payout: SolanaSigner;
   taker: SolanaSigner;
   stranger: SolanaSigner;
+  /** A watcher's key: holds a fee balance and nothing else. */
+  watcher: SolanaSigner;
+  /** `set_caps` by the admin: per asset, `[SOL, USDC]`. */
+  setCaps(c: { capsOn?: boolean; maxSwap: [bigint, bigint]; maxOpen: [bigint, bigint] }): Promise<void>;
   /** Maker PDA, base58. */
   makerPda: string;
   /** The maker's keystore seed and its current X25519 key pair. */
@@ -56,7 +63,7 @@ export interface SolWorld {
   /** `set_offer`, pool keys for direction A, then one `refresh_offers` that makes it live. */
   publishOffer(o: { asset: number; direction: number; mode: number; price: bigint; depBps?: number; capacityXmr?: bigint; terms?: Partial<OfferTerms> }): Promise<void>;
   /** Carry out a flow decision of kind `call` with the signer its caller names. */
-  exec(s: SwapView, d: Decision, signers: { session?: SolanaSigner }, m?: CallMaterial): Promise<string>;
+  exec(s: SwapView, d: Decision | WatcherDecision, signers: { session?: SolanaSigner; payout?: SolanaSigner }, m?: CallMaterial): Promise<string>;
   balance(pubkey: string): Promise<bigint>;
   tokenBalance(owner: string): Promise<bigint>;
   stop(): Promise<void>;
@@ -66,8 +73,8 @@ export async function startSolana(): Promise<SolWorld> {
   if (!existsSync(SO)) throw new Error(`integration: ${SO} is missing; build it with \`cd solana/program && cargo build-sbf\``);
   const svm = await startSvmRpc({ programs: [{ programId: PROGRAM_ID, soPath: SO }], unixTimestamp: T0 });
   const transport = connectionTransport(new Connection(svm.url, 'confirmed'), { subscriptions: false });
-  const [admin, owner, operator, payout, taker, stranger] = [1, 2, 3, 4, 5, 6].map((n) => seedSigner(seed(n))) as [SolanaSigner, SolanaSigner, SolanaSigner, SolanaSigner, SolanaSigner, SolanaSigner];
-  for (const s of [admin, owner, operator, payout, taker, stranger]) await svm.airdrop(s.publicKey, 100_000_000_000n);
+  const [admin, owner, operator, payout, taker, stranger, watcher] = [1, 2, 3, 4, 5, 6, 9].map((n) => seedSigner(seed(n))) as [SolanaSigner, SolanaSigner, SolanaSigner, SolanaSigner, SolanaSigner, SolanaSigner, SolanaSigner];
+  for (const s of [admin, owner, operator, payout, taker, stranger, watcher]) await svm.airdrop(s.publicKey, 100_000_000_000n);
   await svm.setUpgradeAuthority(PROGRAM_ID, admin.publicKey);
   const usdc = await svm.createMint(6, admin.publicKey);
   // Payouts never create token accounts: every party that may receive USDC has its account.
@@ -81,18 +88,23 @@ export async function startSolana(): Promise<SolWorld> {
 
   const send = (ixs: TransactionInstruction[], signers: SolanaSigner[]) => client.sendAndConfirm(ixs, signers, { intervalMs: 20 });
   await send([client.program.initialize({ authority: admin.publicKey, usdcMint: usdc, clusterTag: base58Decode(genesis), treasuryAuthority: admin.publicKey, splitMode: 0 })], [admin]);
+  // A fresh deployment is fail-closed (caps on, all zero): nothing opens until the admin sets caps.
+  await send([client.program.setCaps(admin.publicKey, { capsOn: true, maxSwap: [DEFAULT_CAPS.maxSwap[0], DEFAULT_CAPS.maxSwap[1]], maxOpen: [DEFAULT_CAPS.maxOpen[0], DEFAULT_CAPS.maxOpen[1]] })], [admin]);
   await send([client.program.registerMaker({ owner: owner.publicKey, operator: operator.publicKey, payout: payout.publicKey, encKey: makerEnc.encPub })], [owner]);
   const makerPda = client.program.makerPda(owner.publicKey).toBase58();
   const rent0 = await transport.getMinimumBalanceForRentExemption(0);
 
   const w: SolWorld = {
-    svm, transport, client, usdc, genesis, admin, owner, operator, payout, taker, stranger, makerPda, makerSeed, makerEnc, shares, rent0,
+    svm, transport, client, usdc, genesis, admin, owner, operator, payout, taker, stranger, watcher, makerPda, makerSeed, makerEnc, shares, rent0,
     now: () => client.chainTime(),
     async warpTo(t) {
       const now = await client.chainTime();
       if (t > now) await svm.warp(t - now);
     },
     send,
+    async setCaps(c) {
+      await send([client.program.setCaps(admin.publicKey, { capsOn: c.capsOn ?? true, maxSwap: c.maxSwap, maxOpen: c.maxOpen })], [admin]);
+    },
     async maker() {
       return (await client.getMaker(makerPda))!;
     },
@@ -105,7 +117,7 @@ export async function startSolana(): Promise<SolWorld> {
       return k;
     },
     async publishOffer(o) {
-      const terms: OfferTerms = { mode: o.mode, minXmr: XMR / 100n, maxXmr: 1000n * XMR, validSecs: 3600, priceAbove: [0n, 0n, 0n], depthAbove: [0n, 0n, 0n], depths: Uint8Array.of(2, 0, 0), depBps: o.depBps ?? 100, wA: 60, wN: 600, dC: 3600, wC: 1800, wF: 604_800, ...o.terms };
+      const terms: OfferTerms = { mode: o.mode, minXmr: XMR / 100n, maxXmr: 1000n * XMR, validSecs: 3600, priceAbove: [0n, 0n, 0n], depthAbove: [0n, 0n, 0n], depths: Uint8Array.of(2, 0, 0), depBps: o.depBps ?? 100, wA: 60, wN: 600, dC: 3600, wC: 1800, wF: 604_800, wZ: 0, ...o.terms };
       await send([client.program.setOffer(operator.publicKey, makerPda, o.asset, o.direction, terms)], [operator]);
       if (o.direction === 0) {
         const pda = base58Decode(makerPda);
@@ -118,8 +130,8 @@ export async function startSolana(): Promise<SolWorld> {
     async exec(s, d, signers, m = {}) {
       if (d.do !== 'call') throw new Error(`not a call: ${JSON.stringify(d, (_k, v) => (typeof v === 'bigint' ? v.toString() : v))}`);
       const mk = await w.maker();
-      const signer = d.caller === 'operator' ? operator : d.caller === 'taker' ? taker : d.caller === 'owner' ? owner : d.caller === 'anyone' ? stranger : signers.session;
-      if (!signer) throw new Error('the session key is needed for this call');
+      const signer = d.caller === 'operator' ? operator : d.caller === 'taker' ? taker : d.caller === 'owner' ? owner : d.caller === 'anyone' ? stranger : d.caller === 'watcher' ? watcher : d.caller === 'payout' ? signers.payout : signers.session;
+      if (!signer) throw new Error(`the ${d.caller} key is needed for this call`);
       return send([solanaInstruction(client.program, s, { operator: mk.operator, payout: mk.payout }, signer.publicKey, d.call, m)], [signer]);
     },
     async balance(pubkey) {

@@ -3,7 +3,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { init } from '@xmrswap/core-wasm';
 import { CHAIN_CONSTS, COUNTER_NAMES, SWAP_STATE_NAMES, type ChainName } from '@xmrswap/protocol';
-import { type Effects, ModelError, type ModelSwap, NO_SWAP, apply, enabled, newMakerRecord, recordEffects, type MakerRecord, isSecretBearing, type Role } from '../src/machine/model.js';
+import { type Effects, ModelError, type ModelSwap, NO_SWAP, apply, enabled, newMakerRecord, recordEffects, type MakerRecord, isSecretBearing, type Role, tFf } from '../src/machine/model.js';
 import { type VectorStep, callOf, envOf, swapOf, vector } from './helpers.js';
 
 beforeAll(async () => {
@@ -39,6 +39,7 @@ function checkExpect(chain: ChainName, label: string, before: ModelSwap, step: V
   expect(got.responseSecs, label).toBe(e.response_secs === null ? null : BigInt(e.response_secs));
   expect(got.volume, label).toBe(BigInt(e.volume));
   expect(got.withheldVolume, label).toBe(BigInt(e.withheld_volume));
+  expect(got.openValueAfter, label).toBe(BigInt(e.open_value_after));
   expect(
     got.payouts.map((p) => ({ to: p.to, amount: p.amount.toString(), parked: p.parked })),
     label,
@@ -109,6 +110,35 @@ describe('transitions.json sequences', () => {
         expect(maker, `${q.name} final maker`).toEqual(makerOf(q.final.maker));
       }
     });
+
+    it(`replays every ${chain} multi-swap sequence against one open-value ledger`, () => {
+      const seqs = v.multi_sequences.filter((q: any) => q.chain === chain);
+      expect(seqs.length).toBe(v.summary[chain].multi_sequences);
+      for (const q of seqs) {
+        const swaps: ModelSwap[] = Array.from({ length: q.swaps }, () => NO_SWAP);
+        let maker = makerOf(q.initial_maker);
+        // The ledger is carried by the replay, not read from the step: each step's own
+        // `env.caps.open_value` must be what the previous steps left.
+        let openValue = BigInt(q.steps[0].env.caps.open_value);
+        for (const [i, step] of (q.steps as VectorStep[]).entries()) {
+          const label = `${chain} ${q.name} step ${i} swap ${step.swap} ${step.call}`;
+          expect(BigInt(step.env.caps.open_value), `${label} (ledger)`).toBe(openValue);
+          const got = run(chain, swaps[step.swap!]!, step);
+          swaps[step.swap!] = checkExpect(chain, label, swaps[step.swap!]!, step, got);
+          if (!(got instanceof ModelError)) {
+            openValue = got.openValueAfter;
+            maker = recordEffects(chain, maker, got);
+            expect(maker, label).toEqual(makerOf(step.expect.maker));
+          }
+        }
+        expect(openValue, `${q.name} final open value`).toBe(BigInt(q.final.open_value));
+        // The open value is the sum of the counted values of the swaps still counted.
+        const counted = swaps.filter((s) => (s.flags & 32) !== 0).reduce((a, s) => a + (s.direction === 0 ? s.amount : s.amount + s.deposit), 0n);
+        expect(counted, `${q.name} counted`).toBe(openValue);
+        q.final.swaps.forEach((j: any, k: number) => expect(swaps[k], `${q.name} final swap ${k}`).toEqual(j === null ? NO_SWAP : swapOf(j)));
+        expect(maker, `${q.name} final maker`).toEqual(makerOf(q.final.maker));
+      }
+    });
   }
 
   it('saturates counters and totals and never fails', () => {
@@ -116,7 +146,7 @@ describe('transitions.json sequences', () => {
     m.counters[8] = 0xffff_ffff;
     m.responseSecsSum = (1n << 64n) - 2n;
     m.volume = (1n << 64n) - 6n;
-    const fx: Effects = { swap: NO_SWAP, payouts: [], escrowIn: 0n, counter: 8, responseSecs: 10n, volume: 100n, withheldVolume: 0n, openPending: -1, closed: false };
+    const fx: Effects = { swap: NO_SWAP, payouts: [], escrowIn: 0n, counter: 8, responseSecs: 10n, volume: 100n, withheldVolume: 0n, openPending: -1, closed: false, openValueAfter: 0n };
     m = recordEffects('solana', m, fx);
     expect(m.counters[8]).toBe(0xffff_ffff);
     expect(m.responseSecsSum).toBe((1n << 64n) - 1n);
@@ -139,7 +169,7 @@ describe('invariant 1: exclusive windows', () => {
         if (seen.has(key)) return;
         seen.add(key);
         const s = swapOf(j);
-        const marks = [s.tLock, s.tPendingDeadline, s.tActive, s.tNoteDeadline, s.tNotice, s.tCut, s.tClaimOpen, s.tReady, s.tClaimDeadline, s.tFinal, s.tFinal + BigInt(c.expirySecs), s.tRefund];
+        const marks = [s.tLock, s.tPendingDeadline, s.tActive, s.tNoteDeadline, s.tNotice, s.tCut, s.tClaimOpen, s.tReady, s.tClaimDeadline, s.tFinal, s.tFinal + BigInt(c.expirySecs), s.tRefund, s.tFreeze, tFf(s) ?? 0n];
         const locker: Role = s.direction === 0 ? 'taker' : 'operator';
         const claimer: Role = s.direction === 0 ? 'operator' : 'taker';
         for (const m of marks) {

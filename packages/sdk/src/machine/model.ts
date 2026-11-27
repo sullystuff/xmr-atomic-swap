@@ -7,10 +7,18 @@
  * sums of stored fields.
  */
 import { CoreError, type ModelCall as CoreCall, type ModelEffects as CoreEffects, type ModelSwap as CoreSwap, modelApply } from '@xmrswap/core-wasm';
-import { CHAIN_CONSTS, type ChainConsts, type ChainName, COUNTER_NONE, COUNTER_SLOTS, DAY_SECS, PICONERO_PER_XMR, SWAP_STATE, SWAP_STATE_NAMES } from '@xmrswap/protocol';
+import { type AssetCaps, CHAIN_CONSTS, type ChainConsts, type ChainName, COUNTER_NONE, COUNTER_SLOTS, DAY_SECS, PICONERO_PER_XMR, SWAP_STATE, SWAP_STATE_NAMES } from '@xmrswap/protocol';
 
-export type Role = 'taker' | 'session' | 'operator' | 'owner' | 'anyone';
-export type Party = 'taker' | 'maker' | 'treasury';
+/**
+ * Who signs a call. `watcher`: the watcher key the swap names (it can only `freeze`). `payout`:
+ * the payout address of a direction-B swap when it is not the taker's own (it can only pull or
+ * be pushed the parked proceeds of a claim).
+ */
+export type Role = 'taker' | 'session' | 'operator' | 'owner' | 'watcher' | 'payout' | 'anyone';
+/** A payout destination. A watcher is never paid. */
+export type Party = 'taker' | 'maker' | 'treasury' | 'payout';
+/** Where a direction-B claim pays: `none` in direction A, the `taker`'s own address, or an`other`. */
+export type PayoutKind = 'none' | 'taker' | 'other';
 export type DirectionCode = 0 | 1;
 
 /** Largest `amount` each chain's type holds (Ethereum is capped at `u128`, as the compact quote form is). */
@@ -49,6 +57,14 @@ export interface ModelSwap {
   owedTaker: bigint;
   owedMaker: bigint;
   owedTreasury: bigint;
+  /** Amendment 1 (SPEC 11.2). On a direction-B swap claimed with `payout` = `other`, `owedTaker` belongs to the payout address. */
+  payout: PayoutKind;
+  /** A watcher key is named (SPEC 11.6). */
+  watcher: boolean;
+  /** `W_z`; 0 = the swap cannot be frozen. */
+  wZ: number;
+  /** `t_Z`, when the swap was frozen; 0 = never. */
+  tFreeze: bigint;
 }
 
 /** "No such swap": the state `lock` and `take` start from. */
@@ -81,6 +97,10 @@ export const NO_SWAP: ModelSwap = Object.freeze({
   owedTaker: 0n,
   owedMaker: 0n,
   owedTreasury: 0n,
+  payout: 'none',
+  watcher: false,
+  wZ: 0,
+  tFreeze: 0n,
 });
 
 /** The per-swap parameters copied from the offer or quote at lock time. */
@@ -103,6 +123,12 @@ export interface OpenArgs extends SwapParams {
   amount: bigint;
   /** The swap's size in piconero. Zero is refused (`AmountOutOfRange`). Defaults to 1 XMR when a caller only models the escrow. */
   xmr?: bigint;
+  /** `W_z` of the offer or quote; 0 (the default) = no watcher accepted. */
+  wZ?: number;
+  /** `take`: the payout address. Default `taker`. `invalid` is refused (`PayoutInvalid` / `BadValue`). */
+  payout?: 'taker' | 'other' | 'invalid';
+  /** `lock`: the taker names a watcher. Refused against `wZ` = 0 (`WatcherNotAllowed`). */
+  watcher?: boolean;
 }
 
 export type EvidenceArg = 'absent' | 'opens' | 'mismatch';
@@ -112,12 +138,13 @@ export type Call =
   | { name: 'lock'; args: OpenArgs }
   | { name: 'take'; args: OpenArgs }
   | { name: 'approve'; openOk?: boolean }
-  | { name: 'fund'; openOk?: boolean }
+  | { name: 'fund'; openOk?: boolean; watcher?: boolean }
   | { name: 'reject'; openOk?: boolean; reason: 0 | 1 | 2 }
   | { name: 'cancel_pending' }
   | { name: 'expire_pending' }
   | { name: 'post_notice' }
   | { name: 'set_ready' }
+  | { name: 'freeze' }
   | { name: 'abort' }
   | { name: 'refund_unnoticed' }
   | { name: 'expire_unnoticed' }
@@ -127,7 +154,9 @@ export type Call =
   | { name: 'withhold'; evidence?: EvidenceArg }
   | { name: 'split_deposit' }
   | { name: 'publish_evidence'; opens?: boolean }
-  | { name: 'withdraw_owed'; who: Party };
+  | { name: 'withdraw_owed'; who: Party }
+  /** Ethereum `pushOwed(token, account)`: anyone delivers a parked balance to its owner. */
+  | { name: 'push_owed'; who: Party };
 export type CallName = Call['name'];
 
 /** A call whose arguments reveal a spend share. */
@@ -139,6 +168,12 @@ export interface Env {
   makerCanReceive: boolean;
   treasuryCanReceive: boolean;
   openPending: number;
+  /** The payout address of a direction-B swap can receive (default true). */
+  payoutCanReceive?: boolean;
+  /** The maker's pause that applies to this open: refuses `lock` and `take` and nothing else. */
+  makerPaused?: boolean;
+  /** The caps of the swap's asset before the call. Default: switched on, out of reach, open value 0. */
+  caps?: AssetCaps;
 }
 export const ENV_OK: Env = Object.freeze({ takerCanReceive: true, makerCanReceive: true, treasuryCanReceive: true, openPending: 0 });
 
@@ -165,6 +200,8 @@ export interface Effects {
   openPending: -1 | 0 | 1;
   /** A "closed" row with nothing parked: Solana closes the account in the same instruction. */
   closed: boolean;
+  /** The asset's open value after the call (SPEC 11.1). */
+  openValueAfter: bigint;
 }
 
 export type ModelErrorName =
@@ -187,7 +224,14 @@ export type ModelErrorName =
   | 'DepthInvalid'
   | 'ClaimDelayTooShort'
   | 'ClaimWindowTooShort'
-  | 'FinalWindowOutOfRange';
+  | 'FinalWindowOutOfRange'
+  | 'Paused'
+  | 'PayoutInvalid'
+  | 'BadValue'
+  | 'SwapCapExceeded'
+  | 'OpenCapExceeded'
+  | 'WatcherNotAllowed'
+  | 'FreezeWindowOutOfRange';
 
 export class ModelError extends Error {
   readonly code: ModelErrorName;
@@ -204,8 +248,14 @@ export class ModelError extends Error {
 
 const min = (a: bigint, b: bigint): bigint => (a < b ? a : b);
 
-/** `T_nl = t_final − d_c − w_c − 86,400`: the latest notice in direction B. */
-export const tNl = (s: ModelSwap): bigint => s.tFinal - BigInt(s.dC) - BigInt(s.wC) - BigInt(DAY_SECS);
+/** `T_nl = t_final − d_c − w_z − w_c − 86,400`: the latest notice in direction B. */
+export const tNl = (s: ModelSwap): bigint => s.tFinal - BigInt(s.dC) - BigInt(s.wZ) - BigInt(s.wC) - BigInt(DAY_SECS);
+/**
+ * `T_ff = max(t_Z + W_z, T_co)`: in FROZEN the locker's refund and ready close and the claim
+ * without ready opens. `null` on a swap that was never frozen. (The max is deviation D1 of
+ * `docs/research/a1-deviations.md`: a freeze never shortens the locker's window.)
+ */
+export const tFf = (s: ModelSwap): bigint | null => (s.tFreeze === 0n ? null : s.tFreeze + BigInt(s.wZ) > s.tClaimOpen ? s.tFreeze + BigInt(s.wZ) : s.tClaimOpen);
 /** `T_exp = t_final + EXPIRY_SECS`. */
 export const tExp = (s: ModelSwap, c: ChainConsts): bigint => s.tFinal + BigInt(c.expirySecs);
 /** `T_hold = t_refund + HOLD_SECS`. */
@@ -261,6 +311,10 @@ function toCore(s: ModelSwap): CoreSwap | null {
     owed_taker: s.owedTaker.toString(),
     owed_maker: s.owedMaker.toString(),
     owed_treasury: s.owedTreasury.toString(),
+    payout: s.payout,
+    watcher: s.watcher,
+    w_z: s.wZ,
+    t_freeze: Number(s.tFreeze),
   };
 }
 
@@ -294,6 +348,10 @@ function fromCore(j: CoreSwap): ModelSwap {
     owedTaker: BigInt(j.owed_taker),
     owedMaker: BigInt(j.owed_maker),
     owedTreasury: BigInt(j.owed_treasury),
+    payout: j.payout,
+    watcher: j.watcher,
+    wZ: j.w_z,
+    tFreeze: BigInt(j.t_freeze),
   };
 }
 
@@ -304,12 +362,13 @@ function callToCore(call: Call): CoreCall {
       const a = call.args;
       return {
         call: call.name,
-        args: { direction: call.name === 'lock' ? 'A' : 'B', offer_mode: a.offerMode, approval: a.approval, xmr: (a.xmr ?? PICONERO_PER_XMR).toString(), amount: a.amount.toString(), w_a: a.wA, w_n: a.wN, d_c: a.dC, w_c: a.wC, w_f: a.wF, depth: a.depth, dep_bps: a.depBps },
+        args: { direction: call.name === 'lock' ? 'A' : 'B', offer_mode: a.offerMode, approval: a.approval, xmr: (a.xmr ?? PICONERO_PER_XMR).toString(), amount: a.amount.toString(), w_a: a.wA, w_n: a.wN, d_c: a.dC, w_c: a.wC, w_f: a.wF, depth: a.depth, dep_bps: a.depBps, w_z: a.wZ ?? 0, payout: a.payout ?? 'taker', watcher: a.watcher === true },
       };
     }
     case 'approve':
+      return { call: 'approve', args: { open_ok: call.openOk !== false } };
     case 'fund':
-      return { call: call.name, args: { open_ok: call.openOk !== false } };
+      return { call: 'fund', args: { open_ok: call.openOk !== false, watcher: call.watcher === true } };
     case 'reject':
       return { call: 'reject', args: { open_ok: call.openOk !== false, reason: call.reason } };
     case 'refund':
@@ -320,7 +379,8 @@ function callToCore(call: Call): CoreCall {
     case 'publish_evidence':
       return { call: 'publish_evidence', args: { opens: call.opens !== false } };
     case 'withdraw_owed':
-      return { call: 'withdraw_owed', args: { who: call.who } };
+    case 'push_owed':
+      return { call: call.name, args: { who: call.who } };
     default:
       return { call: call.name };
   }
@@ -337,7 +397,15 @@ const modelName = (code: string): ModelErrorName => (code === 'ScalarMismatch' ?
 export function apply(chain: ChainName, swap: ModelSwap, call: Call, caller: Role, now: bigint, env: Env = ENV_OK): Effects {
   let fx: CoreEffects;
   try {
-    fx = modelApply(chain, toCore(swap), callToCore(call), caller, now, { taker_can_receive: env.takerCanReceive, maker_can_receive: env.makerCanReceive, treasury_can_receive: env.treasuryCanReceive, open_pending: env.openPending });
+    fx = modelApply(chain, toCore(swap), callToCore(call), caller, now, {
+      taker_can_receive: env.takerCanReceive,
+      maker_can_receive: env.makerCanReceive,
+      treasury_can_receive: env.treasuryCanReceive,
+      open_pending: env.openPending,
+      payout_can_receive: env.payoutCanReceive !== false,
+      maker_paused: env.makerPaused === true,
+      ...(env.caps ? { caps: { on: env.caps.on, max_swap: env.caps.maxSwap.toString(), max_open: env.caps.maxOpen.toString(), open_value: env.caps.openValue.toString() } } : {}),
+    });
   } catch (e) {
     if (e instanceof CoreError) throw new ModelError(modelName(e.code));
     throw e;
@@ -352,6 +420,7 @@ export function apply(chain: ChainName, swap: ModelSwap, call: Call, caller: Rol
     withheldVolume: BigInt(fx.withheld_volume),
     openPending: fx.open_pending as -1 | 0 | 1,
     closed: fx.closed,
+    openValueAfter: BigInt(fx.open_value_after),
   };
 }
 

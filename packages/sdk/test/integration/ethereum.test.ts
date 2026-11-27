@@ -1,5 +1,6 @@
 // Ethereum integration (M2): the SDK against the real contract (WP3) on a local anvil, deployed
 // by the anvil-only forge script, with real XMR on the Monero regtest. Loopback only.
+import { writeFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { type DerivedKeys, type EthQuote, type JointAddress, init } from '@xmrswap/core-wasm';
 import { type Address, COUNTER, DEPOSIT_STATE, type Hex, SWAP_FLAG, SWAP_STATE } from '@xmrswap/protocol';
@@ -52,7 +53,7 @@ async function signQuote(over: Partial<EthQuote> & { direction: 0 | 1 }): Promis
     maker: unhex(makerAddr()), taker: zero20, token, approvalMode: 0, minXmr: X / 100n, maxXmr: 1000n * X,
     tierXmr: [0n, 0n, 0n], tierPrice: [usdc ? 150_000_000n : 60_000_000_000_000_000n, 0n, 0n], depthXmr: [0n, 0n, 0n], depth: [2, 0, 0],
     depositBps: 100, approvalWindow: 600, noticeWindow: 1800, claimDelay: 7200, claimWindow: 5400, finalWindow: 604_800,
-    validUntil: (await w.now()) + 170n, epoch: m.quoteEpoch, keyRoot: over.direction === 0 ? w.newPool(2) : new Uint8Array(32), quoteId: ++quoteCounter, ...over,
+    validUntil: (await w.now()) + 170n, epoch: m.quoteEpoch, keyRoot: over.direction === 0 ? w.newPool(2) : new Uint8Array(32), quoteId: ++quoteCounter, freezeWindow: 0, ...over,
   };
   return { q, sig: await signEthQuote(w.operatorKey, w.deployment, q) };
 }
@@ -583,10 +584,17 @@ describe('identity link history', () => {
 
 describe('session budget', () => {
   it('every call a session key sent stayed within its measured figure plus the margin', () => {
-    const world = new Set([w.owner, w.operator, w.payout, w.taker, w.stranger].map((a) => a.address.toLowerCase()));
+    const world = new Set([w.owner, w.operator, w.payout, w.taker, w.stranger, w.watcher].map((a) => a.address.toLowerCase()));
     const bySession = w.gas.filter((g) => !world.has(g.from));
     const seen = new Map<string, bigint>();
     for (const g of bySession) seen.set(g.fn, g.gasUsed > (seen.get(g.fn) ?? 0n) ? g.gasUsed : (seen.get(g.fn) ?? 0n));
+    // The measured figures of this run, for the record (the dearest variant of each call).
+    const all = new Map<string, bigint>();
+    for (const g of w.gas) all.set(g.fn, g.gasUsed > (all.get(g.fn) ?? 0n) ? g.gasUsed : (all.get(g.fn) ?? 0n));
+    console.info(`ethereum gas, dearest per call: ${[...all].map(([fn, used]) => `${fn} ${used}`).join(', ')}`);
+    console.info(`ethereum gas, session-key calls: ${[...seen].map(([fn, used]) => `${fn} ${used}`).join(', ')}`);
+    // XMRSWAP_GAS_OUT=<file>: also write them there (the figures quoted in DEVIATIONS.md come from such a run).
+    if (process.env.XMRSWAP_GAS_OUT) writeFileSync(process.env.XMRSWAP_GAS_OUT, JSON.stringify({ dearest: Object.fromEntries([...all].map(([k, v]) => [k, Number(v)])), session: Object.fromEntries([...seen].map(([k, v]) => [k, Number(v)])) }, null, 2));
     // The scenarios above exercised each kind of session-key call.
     expect([...seen.keys()].sort()).toEqual(['cancelPending', 'claim', 'postNotice', 'refund', 'setReady']);
     for (const [fn, used] of seen) {

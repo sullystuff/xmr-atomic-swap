@@ -14,6 +14,7 @@ import { type CallMaterial, ethereumCall } from '../../src/flows/execute.js';
 import { makerShareKeys } from '../../src/flows/keys.js';
 import type { Decision } from '../../src/flows/types.js';
 import type { SwapView } from '../../src/machine/view.js';
+import type { WatcherDecision } from '../../src/watcher/step.js';
 import { MakerHttp } from '../../src/messages/transports.js';
 import type { EthDeployment } from '../../src/signing/eip712.js';
 import { fakeMakerEndpoint } from '../../src/testing/maker.js';
@@ -24,6 +25,8 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../
 const DEPLOYER = '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266';
 const USDC_ABI = parseAbi(['function mint(address to, uint256 amount)', 'function approve(address spender, uint256 amount) returns (bool)', 'function balanceOf(address) view returns (uint256)']);
 export const ETH_NATIVE = '0x0000000000000000000000000000000000000000' as Address;
+/** The caps every world starts with, for ETH and for USDC: far above what the scenarios open. */
+export const DEFAULT_ETH_CAPS = { maxSwap: 10n ** 30n, maxOpen: 10n ** 32n } as const;
 
 async function rpc<T = unknown>(url: string, method: string, params: unknown[] = []): Promise<T> {
   const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
@@ -58,6 +61,10 @@ export interface EthWorld {
   payout: PrivateKeyAccount;
   taker: PrivateKeyAccount;
   stranger: PrivateKeyAccount;
+  /** A watcher's key: holds a fee balance and nothing else. */
+  watcher: PrivateKeyAccount;
+  /** `setCaps` by the contract's owner (the deploy script's unlocked sender). */
+  setCaps(token: Address, maxSwap: bigint, maxOpen: bigint): Promise<void>;
   makerSeed: Bytes;
   /** The maker's X25519 key pair (published in its Solana record; version 1). */
   makerEnc: DerivedKeys;
@@ -80,7 +87,7 @@ export interface EthWorld {
   newShare(): { keys: DerivedKeys; key: Address; key2: Address };
   /** A key pool of `n` fresh shares, served by the endpoint. Returns its root. */
   newPool(n: number): Bytes;
-  exec(s: SwapView, d: Decision, signers: { session?: PrivateKeyAccount }, m?: CallMaterial): Promise<Hex>;
+  exec(s: SwapView, d: Decision | WatcherDecision, signers: { session?: PrivateKeyAccount; payout?: PrivateKeyAccount }, m?: CallMaterial): Promise<Hex>;
   /** Gas used by every call sent to the contract, by function name and sender. */
   gas: { fn: string; from: string; gasUsed: bigint }[];
   balance(a: Address): Promise<bigint>;
@@ -119,8 +126,8 @@ export async function startEthereum(): Promise<EthWorld> {
   const client = new EthereumClient({ transport, contract });
   await client.verifyChainId(31337);
 
-  const [owner, operator, payout, taker, stranger] = [11, 12, 13, 14, 15].map(account) as [PrivateKeyAccount, PrivateKeyAccount, PrivateKeyAccount, PrivateKeyAccount, PrivateKeyAccount];
-  for (const a of [owner, operator, taker, stranger]) await rpc(url, 'anvil_setBalance', [a.address, `0x${(1000n * 10n ** 18n).toString(16)}`]);
+  const [owner, operator, payout, taker, stranger, watcher] = [11, 12, 13, 14, 15, 19].map(account) as [PrivateKeyAccount, PrivateKeyAccount, PrivateKeyAccount, PrivateKeyAccount, PrivateKeyAccount, PrivateKeyAccount];
+  for (const a of [owner, operator, taker, stranger, watcher]) await rpc(url, 'anvil_setBalance', [a.address, `0x${(1000n * 10n ** 18n).toString(16)}`]);
   const makerSeed = new Uint8Array(32).fill(88);
   const makerEnc = makerShareKeys(makerSeed, 'ethereum', new Uint8Array(16).fill(1));
   const shares = new Map<string, DerivedKeys>();
@@ -148,7 +155,7 @@ export async function startEthereum(): Promise<EthWorld> {
   });
 
   const w: EthWorld = {
-    url, transport, client, contract, usdc, treasury, deployment: { chainId: 31337n, contract }, owner, operator, operatorKey: hex0x(new Uint8Array(32).fill(12)), payout, taker, stranger,
+    url, transport, client, contract, usdc, treasury, deployment: { chainId: 31337n, contract }, owner, operator, operatorKey: hex0x(new Uint8Array(32).fill(12)), payout, taker, stranger, watcher,
     makerSeed, makerEnc, shares, blobs, pools, http: new MakerHttp(endpoint), gas: [],
     now: () => client.chainTime('latest'),
     async advanceTo(t) {
@@ -163,6 +170,13 @@ export async function startEthereum(): Promise<EthWorld> {
       const receipt = await client.waitMined(hash, { intervalMs: 20 });
       if (call.to === contract) w.gas.push({ fn: decodeFunctionData({ abi: IXmrSwapAbi as unknown as Abi, data: call.data }).functionName, from: from.address.toLowerCase(), gasUsed: receipt.gasUsed });
       return hash;
+    },
+    async setCaps(token, maxSwap, maxOpen) {
+      // The owner is the deploy script's sender, one of anvil's unlocked development accounts.
+      const call = client.contract.setCaps(token, maxSwap, maxOpen);
+      const hash = await rpc<Hex>(url, 'eth_sendTransaction', [{ from: DEPLOYER, to: call.to, data: call.data }]);
+      // Throws if the transaction reverted.
+      await client.waitMined(hash, { intervalMs: 20 });
     },
     async maker() {
       return (await client.getMaker(owner.address.toLowerCase() as Address, 'latest'))!;
@@ -185,11 +199,11 @@ export async function startEthereum(): Promise<EthWorld> {
     },
     async exec(s, d, signers, m = {}) {
       if (d.do !== 'call') throw new Error(`not a call: ${JSON.stringify(d, (_k, v) => (typeof v === 'bigint' ? v.toString() : v))}`);
-      const signer = d.caller === 'operator' ? operator : d.caller === 'taker' ? taker : d.caller === 'owner' ? owner : d.caller === 'anyone' ? stranger : signers.session;
-      if (!signer) throw new Error('the session key is needed for this call');
+      const signer = d.caller === 'operator' ? operator : d.caller === 'taker' ? taker : d.caller === 'owner' ? owner : d.caller === 'anyone' ? stranger : d.caller === 'watcher' ? watcher : d.caller === 'payout' ? signers.payout : signers.session;
+      if (!signer) throw new Error(`the ${d.caller} key is needed for this call`);
       const call = ethereumCall(client.contract, s, d.call, m);
       if (!call) throw new Error('nothing to send on Ethereum for this call');
-      return w.send(call, signer, { secret: d.secret });
+      return w.send(call, signer, { secret: 'secret' in d && d.secret });
     },
     balance: async (a) => BigInt(await rpc<string>(url, 'eth_getBalance', [a, 'latest'])),
     async usdcBalance(a) {
@@ -203,6 +217,10 @@ export async function startEthereum(): Promise<EthWorld> {
       child.kill();
     },
   };
+  // The deploy script leaves the caps on at its defaults (100 / 1,000 ether; 250,000 / 2,500,000 USDC). The
+  // scenarios open more than that: raise them out of reach, so only the cap scenarios meet a cap.
+  await w.setCaps(ETH_NATIVE, DEFAULT_ETH_CAPS.maxSwap, DEFAULT_ETH_CAPS.maxOpen);
+  await w.setCaps(usdc, DEFAULT_ETH_CAPS.maxSwap, DEFAULT_ETH_CAPS.maxOpen);
   // Register the maker from its owner address, linked to a Solana owner key.
   await w.send(client.contract.registerMaker(operator.address, payout.address, new Uint8Array(32).fill(7)), owner);
   for (const a of [operator, taker]) await w.send({ to: usdc, data: encodeFunctionData({ abi: USDC_ABI, functionName: 'mint', args: [a.address, 1_000_000_000_000n] }), value: 0n }, stranger);

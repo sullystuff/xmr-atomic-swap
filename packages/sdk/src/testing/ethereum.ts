@@ -37,6 +37,8 @@ export class FakeEthereum implements EthTransport {
   baseFeePerGas = 10_000_000_000n;
   gasEstimate = 100_000n;
   readonly nonces = new Map<string, number>();
+  /** Addresses that have code (lowercase): what `eth_getCode` answers `0x60…` for. */
+  readonly code = new Set<string>();
 
   constructor(readonly contract: Hex) {}
 
@@ -111,6 +113,8 @@ export class FakeEthereum implements EthTransport {
           return (f.topics ?? []).every((t, i) => t === null || l.topics[i]?.toLowerCase() === t.toLowerCase());
         });
       }
+      case 'eth_getCode':
+        return this.code.has(String(params[0]).toLowerCase()) || String(params[0]).toLowerCase() === this.contract.toLowerCase() ? '0x6080' : '0x';
       case 'eth_getTransactionReceipt':
         return this.receipts.get(params[0] as string) ?? null;
       default:

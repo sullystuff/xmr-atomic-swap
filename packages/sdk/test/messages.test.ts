@@ -393,7 +393,7 @@ describe('DLEQ proofs (dleq.json)', () => {
   const [v1, v2] = d.cases.filter((c: any) => c.valid);
   const ethView = (over: Partial<SwapView>): SwapView => ({
     ...NO_SWAP, chain: 'ethereum', swapRef: new Uint8Array(32), taker: '', maker: '', asset: '0x', xmr: 0n, price: 0n, depBps: 0, swapNonce: new Uint8Array(16), sessionKey: '', takerEncKey: new Uint8Array(32), makerEncVersion: 1,
-    makerEncKey: new Uint8Array(32), takerSpendPub: unhex(v1.output.spend_pub), makerSpendPub: unhex(v2.output.spend_pub), lockerView: new Uint8Array(32), noticeCommitment: new Uint8Array(32), noticeCt: new Uint8Array(0),
+    makerEncKey: new Uint8Array(32), takerSpendPub: unhex(v1.output.spend_pub), makerSpendPub: unhex(v2.output.spend_pub), lockerView: new Uint8Array(32), noticeCommitment: new Uint8Array(32), noticeCt: new Uint8Array(0), payoutAddress: null, watcherAddress: null,
     evidenceTxid: new Uint8Array(32), evidenceView: new Uint8Array(32), revealed: new Uint8Array(32),
     eth: { takerKey: `0x${v1.output.key_addr}`, takerKey2: `0x${v1.output.key_addr2}`, makerKey: `0x${v2.output.key_addr}`, makerKey2: `0x${v2.output.key_addr2}`, keyLeaf: new Uint8Array(32), openHash: new Uint8Array(32) },
     ...over,

@@ -129,11 +129,29 @@ export function exportJointWallet(joint: JointAddress, spendKey: Bytes, lockTxid
  * lock that will be approved.
  */
 export function expectedOpen(s: SwapView): Bytes {
+  return openHashOf(s);
+}
+
+/**
+ * The payout address and the watcher an open hash covers (Amendment 1, SPEC 11.2, 11.6): the
+ * payout named at `take` (the taker's own by default; absent in direction A) and the watcher
+ * named at `lock` (absent when none; the maker's watcher of a direction-B swap arrives with
+ * `fund` and is never part of the hash).
+ */
+function openExtras(s: SwapView): { payout?: Bytes; watcher?: Bytes } {
+  const raw = (a: string): Bytes => (s.chain === 'solana' ? base58Decode(a) : unhex(a));
+  return {
+    ...(s.direction === 1 && s.payoutAddress !== null ? { payout: raw(s.payoutAddress) } : {}),
+    ...(s.direction === 0 && s.watcherAddress !== null ? { watcher: raw(s.watcherAddress) } : {}),
+  };
+}
+
+function openHashOf(s: SwapView): Bytes {
   if (s.state !== SWAP_STATE.PENDING) throw new SdkError('BadState', 'only a pending swap has an open hash to approve');
   // The locker's view share as stored at lock: the taker's in A, zeros in B (the maker's arrives with fund).
   const lockerView = s.direction === 0 ? s.lockerView : new Uint8Array(32);
   if (s.chain === 'solana') {
-    return openHashSolana({ swap: s.swapRef, tLock: s.tLock, direction: s.direction, asset: Number(s.asset), xmr: s.xmr, amount: s.amount, deposit: s.deposit, takerSpendPub: s.takerSpendPub, lockerView, takerEncKey: s.takerEncKey, makerEncKey: s.makerEncKey });
+    return openHashSolana({ swap: s.swapRef, tLock: s.tLock, direction: s.direction, asset: Number(s.asset), xmr: s.xmr, amount: s.amount, deposit: s.deposit, takerSpendPub: s.takerSpendPub, lockerView, takerEncKey: s.takerEncKey, makerEncKey: s.makerEncKey, ...openExtras(s) });
   }
   if (!s.eth) throw new SdkError('BadState', 'an Ethereum swap view carries its twin commitments');
   const computed = openHashEthereum({
@@ -151,6 +169,7 @@ export function expectedOpen(s: SwapView): Bytes {
     takerEncKey: s.takerEncKey,
     makerEncKey: s.makerEncKey,
     keyLeaf: s.eth.keyLeaf,
+    ...openExtras(s),
   });
   if (!bytesEqual(computed, s.eth.openHash)) throw new SdkError('OpenHashMismatch', 'the stored open hash is not the hash of the stored lock');
   return computed;

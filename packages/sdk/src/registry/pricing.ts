@@ -3,8 +3,9 @@
  * (`payAmount`, `receiveAmount`, `depositOf`, `feeOf`) and the tier lookup are the core's.
  */
 import { type EthQuote, depositOf, feeOf, payAmount, receiveAmount, tierValue as coreTierValue } from '@xmrswap/core-wasm';
-import { CHAIN_CONSTS, type ChainName, type Offer } from '@xmrswap/protocol';
+import { type AssetCaps, CHAIN_CONSTS, type ChainName, type Offer, capsRefusal } from '@xmrswap/protocol';
 import { SdkError } from '../util.js';
+import { CapReached } from './caps.js';
 
 /**
  * The value of the highest used tier with `xmr >= above[i]` (the core's `tierValue`). Tiers are
@@ -39,20 +40,32 @@ function price(chain: ChainName, direction: number, xmr: bigint, tierXmr: readon
   return { price: p, depth, amount, deposit: depositOf(amount, depBps), fee: feeOf(amount, CHAIN_CONSTS[chain].feeBps) };
 }
 
-/**
- * Price a size against a Solana offer. Throws `AmountOutOfRange` outside `min_xmr..max_xmr` and
- * `CapacityExceeded` above `capacity_xmr` (what the program checks at lock).
- */
-export function priceOffer(o: Offer, xmr: bigint): Pricing {
-  if (xmr < o.minXmr || xmr > o.maxXmr) throw new SdkError('AmountOutOfRange', `${xmr} piconero is outside the offer's ${o.minXmr}..${o.maxXmr}`);
-  if (xmr > o.capacityXmr) throw new SdkError('CapacityExceeded', `${xmr} piconero is over the offer's capacity ${o.capacityXmr}`);
-  return price('solana', o.direction, xmr, o.priceAbove, o.prices, o.depthAbove, [...o.depths], o.depBps);
+/** With `caps`, a priced size the deployment's caps refuse throws `CapReached` (never a maker-limit error). */
+function capped(p: Pricing, direction: number, caps: AssetCaps | undefined): Pricing {
+  if (caps) {
+    const refusal = capsRefusal(caps, direction === 0 ? 0 : 1, p.amount, p.deposit);
+    if (refusal) throw new CapReached(refusal, caps);
+  }
+  return p;
 }
 
-/** Price a size against an Ethereum quote. Throws `AmountOutOfRange` outside `minXmr..maxXmr`. */
-export function priceEthQuote(q: EthQuote, xmr: bigint): Pricing {
+/**
+ * Price a size against a Solana offer. Throws `AmountOutOfRange` outside `min_xmr..max_xmr` and
+ * `CapacityExceeded` above `capacity_xmr` (what the program checks at lock): the **maker's**
+ * limits. With `caps` (the asset's, from `SolanaClient.getCaps`) a size over the per-swap cap or
+ * the remaining open value throws `CapReached` (`SwapCapExceeded` / `OpenCapExceeded`): the
+ * **deployment's** limit, which no other maker can lift.
+ */
+export function priceOffer(o: Offer, xmr: bigint, caps?: AssetCaps): Pricing {
+  if (xmr < o.minXmr || xmr > o.maxXmr) throw new SdkError('AmountOutOfRange', `${xmr} piconero is outside the offer's ${o.minXmr}..${o.maxXmr}`);
+  if (xmr > o.capacityXmr) throw new SdkError('CapacityExceeded', `${xmr} piconero is over the offer's capacity ${o.capacityXmr}`);
+  return capped(price('solana', o.direction, xmr, o.priceAbove, o.prices, o.depthAbove, [...o.depths], o.depBps), o.direction, caps);
+}
+
+/** Price a size against an Ethereum quote. Throws `AmountOutOfRange` outside `minXmr..maxXmr`, and `CapReached` against `caps` (`EthereumClient.capsOf(token)`). */
+export function priceEthQuote(q: EthQuote, xmr: bigint, caps?: AssetCaps): Pricing {
   if (xmr < q.minXmr || xmr > q.maxXmr) throw new SdkError('AmountOutOfRange', `${xmr} piconero is outside the quote's ${q.minXmr}..${q.maxXmr}`);
-  return price('ethereum', q.direction, xmr, q.tierXmr, q.tierPrice, q.depthXmr, q.depth, q.depositBps);
+  return capped(price('ethereum', q.direction, xmr, q.tierXmr, q.tierPrice, q.depthXmr, q.depth, q.depositBps), q.direction, caps);
 }
 
 /** What the taker ends up with on a completed swap, in the escrowed asset's base units (direction B), after the fee and with its deposit back. */

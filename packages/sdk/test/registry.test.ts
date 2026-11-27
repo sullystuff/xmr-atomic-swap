@@ -228,7 +228,7 @@ describe('registry reader over fake chains', () => {
     fe.views.getMaker = ([m]) => (String(m).toLowerCase() === quoteMaker ? ethMaker(honest) : { ...ethMaker(null), operator: '0x0000000000000000000000000000000000000000' });
     return { fs, fe, solana, ethereum, honest, thief, plain };
   }
-  const board = (maker: PublicKey, slots: { quote: Uint8Array; sig: Uint8Array }[]): EthBoard => ({ maker: maker.toBase58(), bump: 1, slots: Array.from({ length: 4 }, (_, i) => (slots[i] ? { used: 1, updatedAt: 1n, quote: slots[i]!.quote, sig: slots[i]!.sig } : { used: 0, updatedAt: 0n, quote: z(251), sig: z(65) })) });
+  const board = (maker: PublicKey, slots: { quote: Uint8Array; sig: Uint8Array }[]): EthBoard => ({ maker: maker.toBase58(), bump: 1, slots: Array.from({ length: 4 }, (_, i) => (slots[i] ? { used: 1, updatedAt: 1n, quote: slots[i]!.quote, sig: slots[i]!.sig } : { used: 0, updatedAt: 0n, quote: z(255), sig: z(65) })) });
 
   it('lists makers with their link status, merged history and blob routes', async () => {
     const { solana, ethereum, honest, thief, plain } = setup();
@@ -298,8 +298,8 @@ describe('registry reader over fake chains', () => {
     const quote = q();
     const sig = unhex(v.cases[0].output.signature);
     const compact = encodeSignedQuote(quote, sig);
-    const slot = { quote: compact.subarray(0, 251), sig };
-    const tampered = { quote: compact.slice(0, 251), sig };
+    const slot = { quote: compact.subarray(0, 255), sig };
+    const tampered = { quote: compact.slice(0, 255), sig };
     tampered.quote[105]! ^= 1;
     for (const m of [honest, thief]) fs.setAccount(ethBoardPda(PROGRAM, makerPda(PROGRAM, m)).toBase58(), P, encodeAccount('EthBoard', board(makerPda(PROGRAM, m), [slot, tampered]), ACCOUNT_SIZE.EthBoard));
     const profiles = await listMakerProfiles(solana, ethereum, { solana: T, ethereum: T });
@@ -322,7 +322,7 @@ describe('registry reader over fake chains', () => {
     const { fs, solana, ethereum, honest, plain } = setup();
     const X = 10n ** 12n;
     const offer = (maker: PublicKey, over: Partial<Offer> = {}): Offer => {
-      const base = { maker: makerPda(PROGRAM, maker).toBase58(), asset: 0, direction: 0, enabled: 1, mode: 0, bump: 1, seq: 3n, updatedAt: T, validSecs: 60, minXmr: X / 10n, maxXmr: 10n * X, capacityXmr: 10n * X, priceAbove: [0n, 0n, 0n], prices: [150_000_000n, 0n, 0n], depthAbove: [0n, X, 0n], depths: Uint8Array.of(2, 10, 0), depBps: 100, wA: 60, wN: 600, dC: 5400, wC: 1800, wF: 604_800, termsHash: z(32), poolFilled: 0, poolUsed: 0, pool: Array.from({ length: 16 }, () => z(32)), reserved: z(34), ...over } as Offer;
+      const base = { maker: makerPda(PROGRAM, maker).toBase58(), asset: 0, direction: 0, enabled: 1, mode: 0, bump: 1, seq: 3n, updatedAt: T, validSecs: 60, minXmr: X / 10n, maxXmr: 10n * X, capacityXmr: 10n * X, priceAbove: [0n, 0n, 0n], prices: [150_000_000n, 0n, 0n], depthAbove: [0n, X, 0n], depths: Uint8Array.of(2, 10, 0), depBps: 100, wA: 60, wN: 600, dC: 5400, wC: 1800, wF: 604_800, termsHash: z(32), poolFilled: 0, poolUsed: 0, pool: Array.from({ length: 16 }, () => z(32)), wZ: 0, reserved: z(30), ...over } as Offer;
       return { ...base, termsHash: offerTermsHash(base) };
     };
     const put = (o: Offer) => fs.setAccount(offerPda(PROGRAM, o.maker, o.asset, o.direction).toBase58(), P, encodeAccount('Offer', o, ACCOUNT_SIZE.Offer));

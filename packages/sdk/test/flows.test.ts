@@ -41,6 +41,8 @@ function view(chain: ChainName, s: ModelSwap): SwapView {
     evidenceTxid: zero32,
     evidenceView: zero32,
     revealed: zero32,
+    payoutAddress: s.payout === 'none' ? null : s.payout === 'taker' ? 'taker' : 'payout',
+    watcherAddress: s.watcher ? 'watcher' : null,
   };
 }
 
@@ -54,7 +56,7 @@ function probeTimes(chain: ChainName, s: ModelSwap): bigint[] {
   const c = CHAIN_CONSTS[chain];
   const d = deadlinesOf(chain, s);
   const M = d.margin;
-  const marks = [s.tLock, d.tPend, d.tNote, s.tNotice || null, d.tReadyMin, d.tCut, d.tCo, s.tReady || null, d.tCd, d.tNl, d.tFinal, d.tExp, d.tHold, d.tSplit, d.tNote === null ? null : d.tNote - BigInt(c.finalitySecs)];
+  const marks = [s.tLock, d.tPend, d.tNote, s.tNotice || null, d.tReadyMin, d.tCut, d.tCo, s.tReady || null, d.tCd, d.tNl, d.tFinal, d.tExp, d.tHold, d.tSplit, d.tNote === null ? null : d.tNote - BigInt(c.finalitySecs), d.tFreeze, d.tFf, d.tFf === null ? null : d.tFf - 2n * M];
   const out = new Set<bigint>();
   for (const m of marks) {
     if (m === null) continue;
@@ -71,6 +73,8 @@ const takerFactSets: Partial<TakerFacts>[] = [
   { noticeOpens: true, lock: BAD, makerProofOk: true },
   { noticeOpens: false, makerProofOk: false },
   { noticeOpens: true, lock: GOOD, paid: true, makerProofOk: true, swept: true, cancel: true },
+  { freeze: true },
+  { freeze: true, cancel: true, noticeOpens: true, lock: MISSING },
 ];
 const makerFactSets: Partial<MakerFacts>[] = [
   {},
@@ -81,6 +85,8 @@ const makerFactSets: Partial<MakerFacts>[] = [
   { approval: { approve: false, reason: 0 }, takerProofOk: true, commitmentsOk: false, lockTx: 'none', noticeOpens: false },
   { approval: { approve: true }, takerProofOk: false, commitmentsOk: true, lockTx: 'unavailable', lockFailed: true, lock: BAD, noticeOpens: true },
   { approval: { approve: true }, takerProofOk: true, commitmentsOk: true, lockTx: 'relayed', lock: GOOD, noticeOpens: true, backOut: true, swept: true },
+  { freeze: true, commitmentsOk: true, lockTx: 'relayed', noticeOpens: true, lock: SHALLOW },
+  { freeze: true, backOut: true, lockTx: 'relayed' },
 ];
 
 /** The model call behind a decision, with the secret and evidence the flow would attach. */
@@ -96,7 +102,7 @@ describe('flows propose only what the reference model accepts', () => {
     it(`${chain}: corpus covers every state in both directions`, () => {
       for (const dir of [0, 1]) {
         const seen = new Set(states.filter((s) => s.direction === dir).map((s) => SWAP_STATE_NAMES[s.state]));
-        for (const name of ['PENDING', 'ACTIVE', 'NOTICED', 'READY', 'ABORTED_HOLD', 'HOLD', 'WITHHELD', 'DONE']) expect(seen.has(name as never), `${chain} dir ${dir} ${name}`).toBe(true);
+        for (const name of ['PENDING', 'ACTIVE', 'NOTICED', 'READY', 'FROZEN', 'ABORTED_HOLD', 'HOLD', 'WITHHELD', 'DONE']) expect(seen.has(name as never), `${chain} dir ${dir} ${name}`).toBe(true);
       }
       expect(states.length).toBeGreaterThan(150);
     });

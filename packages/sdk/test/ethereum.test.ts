@@ -4,6 +4,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { deadlinesOf } from '../src/machine/view.js';
 import { ethSwapId, init, twinCommitments } from '@xmrswap/core-wasm';
 import { type Address, ETH_ERROR_NAMES, ETH_SWAP_EVENT_NAMES, type Hex, IXmrSwapAbi } from '@xmrswap/protocol';
 import { type Abi, decodeFunctionData, parseTransaction, recoverTransactionAddress, toFunctionSelector } from 'viem';
@@ -69,7 +70,11 @@ describe('calldata builders against the frozen ABI', () => {
       postMessage: contract.postMessage(addr(), swapId, r.bytes(900)),
       fund: contract.fund({ swapId, expectedOpen: b32(), key: addr(), key2: addr(), spendPub: b32(), viewShare: b32(), amount: 5n, token: '0x0000000000000000000000000000000000000000' }),
       lock: contract.lock({ quote: q(), sig, xmr: 2n * 10n ** 12n, amount: 121n * 10n ** 15n, maxPay: 122n * 10n ** 15n, swapNonce: r.bytes(16), sessionKey: addr(), sessionBudget: 7n, takerKeys: keys(), leaf: { index: 3, key: addr(), key2: addr(), spendPub: b32(), proof: [b32(), b32()] } }),
-      take: contract.take({ quote: { ...q(), direction: 1 }, sig, xmr: 10n ** 12n, deposit: 9n, minReceive: 1n, swapNonce: r.bytes(16), sessionKey: addr(), sessionBudget: 7n, takerKeys: keys() }),
+      take: contract.take({ quote: { ...q(), direction: 1 }, sig, xmr: 10n ** 12n, deposit: 9n, minReceive: 1n, swapNonce: r.bytes(16), sessionKey: addr(), sessionBudget: 7n, takerKeys: keys(), payout: addr() }),
+      freeze: contract.freeze(swapId),
+      pushOwed: contract.pushOwed(addr(), addr()),
+      setCaps: contract.setCaps(addr(), 5n, 50n),
+      setCapsOn: contract.setCapsOn(false),
     };
     for (const [name, call] of Object.entries(calls)) {
       const d = decode(call.data);
@@ -119,9 +124,9 @@ describe('calldata builders against the frozen ABI', () => {
     const a = decode(call.data).args as any[];
     expect(a[9].approvalId).toBe(approvalCase.input.typed_data.message.approvalId);
     expect(a[10]).toBe(approvalCase.output.signature);
-    const take = contract.take({ quote: { ...quote, direction: 1 }, sig, xmr: quote.minXmr, deposit: 77n, minReceive: 1n, swapNonce: r.bytes(16), sessionKey: addr(), sessionBudget: 600n, takerKeys: tk });
+    const take = contract.take({ quote: { ...quote, direction: 1 }, sig, xmr: quote.minXmr, deposit: 77n, minReceive: 1n, swapNonce: r.bytes(16), sessionKey: addr(), sessionBudget: 600n, takerKeys: tk, payout: addr() });
     expect(take.value).toBe(600n);
-    expect(contract.take({ quote: { ...q(), direction: 1 }, sig, xmr: 10n ** 12n, deposit: 77n, minReceive: 1n, swapNonce: r.bytes(16), sessionKey: addr(), sessionBudget: 600n, takerKeys: tk }).value).toBe(677n);
+    expect(contract.take({ quote: { ...q(), direction: 1 }, sig, xmr: 10n ** 12n, deposit: 77n, minReceive: 1n, swapNonce: r.bytes(16), sessionKey: addr(), sessionBudget: 600n, takerKeys: tk, payout: addr() }).value).toBe(677n);
     // fund: ETH carries the amount, USDC carries nothing.
     const f = { swapId, expectedOpen: b32(), key: addr(), key2: addr(), spendPub: b32(), viewShare: b32(), amount: 5n };
     expect(contract.fund({ ...f, token: '0x0000000000000000000000000000000000000000' }).value).toBe(5n);
@@ -149,10 +154,10 @@ describe('calldata builders against the frozen ABI', () => {
     expect(BigInt((decode(contract.postMessage(addr(), null, r.bytes(4)).data).args as Hex[])[1]!)).toBe(0n);
     expect(codeOf(() => contract.approve(r.bytes(31), b32()))).toBe('BadLength');
     // Four calls, each sized as the dearest measured session-key call plus 25%.
-    expect(ETH_SESSION_GAS_PER_CALL).toBe(271_000n);
+    expect(ETH_SESSION_GAS_PER_CALL).toBe(273_000n);
     expect(ETH_SESSION_GAS_PER_CALL >= (ETH_SESSION_GAS.postNotice * (100n + ETH_SESSION_GAS_MARGIN_PCT)) / 100n).toBe(true);
     expect(Object.values(ETH_SESSION_GAS).every((g) => g <= ETH_SESSION_GAS.postNotice)).toBe(true);
-    expect(ethSessionBudget(30_000_000_000n)).toBe(30_000_000_000n * 271_000n * 4n);
+    expect(ethSessionBudget(30_000_000_000n)).toBe(30_000_000_000n * 273_000n * 4n);
     expect(ethSessionBudget(1n, 100n, 2n)).toBe(200n);
   });
 
@@ -182,6 +187,7 @@ function swapStruct(over: Partial<EthSwapStruct> = {}): EthSwapStruct {
     lockerView: `0x${'23'.repeat(32)}`, takerEncKey: `0x${'24'.repeat(32)}`, makerEncKey: `0x${'25'.repeat(32)}`, noticeCommitment: `0x${'26'.repeat(32)}`, noticeCiphertext: `0x${'27'.repeat(104)}`,
     evidenceTxid: zero32, evidenceView: zero32, keyLeaf: `0x${'28'.repeat(32)}`, openHash: `0x${'29'.repeat(32)}`, revealed: 0n,
     tLock: 1_800_000_000n, tPendingDeadline: 1_800_000_120n, tActive: 1_800_000_020n, tNoteDeadline: 1_800_001_820n, tNotice: 1_800_000_120n, tCut: 1_800_004_020n, tClaimOpen: 1_800_010_920n, tReady: 0n, tClaimDeadline: 0n, tFinal: 1_800_604_800n, tRefund: 0n, tSettled: 0n,
+    payout: zeroAddr, watcher: zeroAddr, freezeSecs: 0, tFreeze: 0n,
     ...over,
   };
 }
@@ -227,6 +233,32 @@ describe('EthereumClient over a fake transport', () => {
     expect(calls.every((q) => q.params![1] === 'finalized')).toBe(true);
     await client.getSwap(swapId, 'latest');
     expect(fake.requests.at(-1)!.params![1]).toBe('latest');
+  });
+
+  it('reads the payout address, the watcher and the freeze fields; parked claim proceeds are the payout address\'s', async () => {
+    const { fake, client } = setup();
+    const taker = '0x0f8183aefdf068dd8489b6edbf4e07965cf29246';
+    const fresh = '0x00000000000000000000000000000000000000f1';
+    const watcher = '0x00000000000000000000000000000000000000e2';
+    fake.views.getMaker = () => makerRecord();
+    fake.views.owedOf = ([, account]) => (String(account).toLowerCase() === fresh ? 123n : String(account).toLowerCase() === taker ? 5n : 0n);
+    // Direction A: no payout (zero on chain); the watcher named at lock; frozen.
+    fake.views.getSwap = () => swapStruct({ state: 10, watcher: watcher.toUpperCase().replace('0X', '0x'), freezeSecs: 86_400, tFreeze: 1_800_004_500n });
+    const a = (await client.getSwap(swapId))!;
+    expect(a).toMatchObject({ state: 10, payout: 'none', payoutAddress: null, watcher: true, watcherAddress: watcher, wZ: 86_400, tFreeze: 1_800_004_500n });
+    expect(deadlinesOf('ethereum', a).tFf).toBe(1_800_004_500n + 86_400n);
+    // A freeze more than W_z before T_co never shortens the wait: T_ff is at least T_co.
+    fake.views.getSwap = () => swapStruct({ state: 10, watcher, freezeSecs: 3_600, tFreeze: 1_800_000_200n });
+    expect(deadlinesOf('ethereum', (await client.getSwap(swapId))!).tFf).toBe(1_800_010_920n);
+    // Direction B, default payout: getSwap reports the taker.
+    fake.views.getSwap = () => swapStruct({ direction: 1, state: 9, flags: 4, payout: taker });
+    expect(await client.getSwap(swapId, 'finalized', true)).toMatchObject({ payout: 'taker', payoutAddress: taker, watcher: false, watcherAddress: null, owedTaker: 5n });
+    // Direction B claimed to a fresh address: what is parked for the "taker side" is that address's balance.
+    fake.views.getSwap = () => swapStruct({ direction: 1, state: 9, flags: 4, payout: fresh });
+    expect(await client.getSwap(swapId, 'finalized', true)).toMatchObject({ payout: 'other', payoutAddress: fresh, owedTaker: 123n });
+    // The same swap ended by the maker's refund (flags 4 | 8): the deposit is the taker's own.
+    fake.views.getSwap = () => swapStruct({ direction: 1, state: 9, flags: 12, payout: fresh });
+    expect(await client.getSwap(swapId, 'finalized', true)).toMatchObject({ payout: 'other', owedTaker: 5n });
   });
 
   it('reads parked payouts when asked', async () => {

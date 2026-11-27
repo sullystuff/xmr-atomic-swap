@@ -12,8 +12,8 @@ export * from './util.js';
 
 // The state machine and the chain-neutral swap view.
 export * as machine from './machine/model.js';
-export type { Call, CallName, Effects, Env, MakerRecord, ModelErrorName, ModelSwap, OpenArgs, Party, Payout, Role, SwapParams } from './machine/model.js';
-export { ModelError, NO_SWAP, apply, enabled, errorOf, isSecretBearing, pendingKind } from './machine/model.js';
+export type { Call, CallName, Effects, Env, MakerRecord, ModelErrorName, ModelSwap, OpenArgs, Party, Payout, PayoutKind, Role, SwapParams } from './machine/model.js';
+export { ModelError, NO_SWAP, apply, enabled, errorOf, isSecretBearing, pendingKind, tFf } from './machine/model.js';
 export * from './machine/view.js';
 
 // Flows.
@@ -52,9 +52,15 @@ export * from './signing/eip712.js';
 
 // Registry, reputation, pricing.
 export * from './registry/pricing.js';
+export * from './registry/caps.js';
 export * from './registry/reputation.js';
 export * from './registry/reader.js';
 
 // Router and recovery file.
 export * from './router/plan.js';
 export * from './recovery/file.js';
+
+// Amendment 1: the watcher protocol and the wallet-derived key.
+export * from './watcher/protocol.js';
+export * from './watcher/step.js';
+export * from './wallet/seed.js';

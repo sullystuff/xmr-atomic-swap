@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PublicKey } from '@solana/web3.js';
 import { init } from '@xmrswap/core-wasm';
 import { type DerivedKeys, type JointAddress } from '@xmrswap/core-wasm';
-import { type ApprovalResponse, COUNTER, DEPOSIT_STATE, PROGRAM_ID, SWAP_FLAG, SWAP_STATE, base58Decode } from '@xmrswap/protocol';
+import { ACCOUNT_SIZE, type ApprovalResponse, COUNTER, DEPOSIT_STATE, PROGRAM_ID, SWAP_FLAG, SWAP_STATE, base58Decode } from '@xmrswap/protocol';
 import { solanaInstruction } from '../../src/flows/execute.js';
 import { buildNotice, checkCounterpartyShare, contactKeys, jointSpendKey, openNotice, solanaMakerShare, swapJointAddress, takerSwapKeys } from '../../src/flows/keys.js';
 import { makerStep } from '../../src/flows/maker.js';
@@ -349,7 +349,7 @@ describe('refund paths (direction A)', () => {
     // and the refund the session key paid from its budget) and the swap account's rent (returned at close).
     expect(pricing.deposit > 0n).toBe(true);
     expect(await w.balance(session.publicKey)).toBe(0n);
-    expect(takerBefore - (await w.balance(w.taker.publicKey))).toBe(10_000n + (await w.transport.getMinimumBalanceForRentExemption(736)));
+    expect(takerBefore - (await w.balance(w.taker.publicKey))).toBe(10_000n + (await w.transport.getMinimumBalanceForRentExemption(ACCOUNT_SIZE.Swap)));
     // After a refund the operator may close; the rent goes to the taker.
     d = makerStep({ swap: s, now: await w.now(), lockTx: 'prepared' });
     expect(d).toMatchObject({ do: 'call', call: { name: 'close_swap' }, caller: 'operator' });
@@ -476,7 +476,7 @@ describe('taker-bound quote and advance approval', () => {
     const now = await w.now();
     const xmrAmount = 2000n * X; // above the offer's max_xmr
     const quoteId = 9001n;
-    const terms = { quoteId, taker: w.taker.publicKey, asset: 0, direction: 0, depth: 25, xmr: xmrAmount, amount: 280_000_000_000n, depBps: 50, wN: 600, dC: 6060, wC: 1800, wF: 604_800, makerSpendPub: share.spendPub, makerPok: solanaMakerShare(share, base58Decode(w.makerPda)).pok, expiresAt: now + 100n };
+    const terms = { quoteId, taker: w.taker.publicKey, asset: 0, direction: 0, depth: 25, xmr: xmrAmount, amount: 280_000_000_000n, depBps: 50, wN: 600, dC: 6060, wC: 1800, wF: 604_800, wZ: 0, makerSpendPub: share.spendPub, makerPok: solanaMakerShare(share, base58Decode(w.makerPda)).pok, expiresAt: now + 100n };
     await w.svm.airdrop(w.taker.publicKey, 400_000_000_000n);
     await w.send([w.client.program.postQuote(w.operator.publicKey, w.makerPda, terms)], [w.operator]);
     // The quote_response only names the account; the client reads it and checks it is what it asked for.
@@ -568,7 +568,7 @@ describe('taker-bound quote and advance approval', () => {
     await w.send(plan.instructions, [w.taker]);
     const s = (await w.swap(plan.swapPda))!;
     expect(s).toMatchObject({ state: SWAP_STATE.ACTIVE, mode: 2 });
-    const rentSwap = await w.transport.getMinimumBalanceForRentExemption(736);
+    const rentSwap = await w.transport.getMinimumBalanceForRentExemption(ACCOUNT_SIZE.Swap);
     expect(plan.feeLamports).toBe(10_000n);
     expect(before - (await w.balance(w.taker.publicKey))).toBe(s.amount + plan.sessionLamports + rentSwap + plan.feeLamports);
     // The approval is reusable until it expires…
@@ -633,7 +633,7 @@ describe('batched locks in one v0 transaction (the protocol lookup table)', () =
     const program = w.client.program;
     const maker2 = program.makerPda(owner2.publicKey).toBase58();
     await w.send([program.registerMaker({ owner: owner2.publicKey, operator: operator2.publicKey, payout: owner2.publicKey, encKey: w.makerEnc.encPub })], [owner2]);
-    const terms = { mode: 0, minXmr: X / 100n, maxXmr: 1000n * X, validSecs: 3600, priceAbove: [0n, 0n, 0n], depthAbove: [0n, 0n, 0n], depths: Uint8Array.of(2, 0, 0), depBps: 100, wA: 60, wN: 600, dC: 3600, wC: 1800, wF: 604_800 };
+    const terms = { mode: 0, minXmr: X / 100n, maxXmr: 1000n * X, validSecs: 3600, priceAbove: [0n, 0n, 0n], depthAbove: [0n, 0n, 0n], depths: Uint8Array.of(2, 0, 0), depBps: 100, wA: 60, wN: 600, dC: 3600, wC: 1800, wF: 604_800, wZ: 0 };
     await w.send([program.setOffer(operator2.publicKey, maker2, 1, 0, terms)], [operator2]);
     await w.send([program.refillKeys(operator2.publicKey, maker2, 1, [0, 1].map((index) => ({ index, ...solanaMakerShare(w.newShare(), base58Decode(maker2)) })))], [operator2]);
     await w.send([program.refreshOffers(operator2.publicKey, maker2, [{ asset: 1, direction: 0, enabled: true, prices: [151_000_000n, 0n, 0n], capacityXmr: 1000n * X }])], [operator2]);
@@ -657,7 +657,7 @@ describe('batched locks in one v0 transaction (the protocol lookup table)', () =
     const usdcBefore = await w.tokenBalance(w.taker.publicKey);
     const tx = await w.client.prepareV0(w.taker.publicKey, instructions, [table]);
     expect(tx.message.staticAccountKeys.length).toBe(14);
-    expect(tx.serialize().length).toBe(1156);
+    expect(tx.serialize().length).toBe(1158);
     const signature = await w.client.signAndSend(tx, [w.taker]);
     await w.client.waitConfirmed(signature, { intervalMs: 20 });
 
@@ -717,7 +717,7 @@ describe('refund requested after the lock is confirmed (BUG-1 of tests/e2e/BUGS.
     expect(held).toMatchObject({ state: SWAP_STATE.HOLD, depositState: DEPOSIT_STATE.HELD });
     // Row 4 of the refund table: amount − D back at once, the deposit in the hold.
     const out = before - (await w.balance(w.taker.publicKey));
-    expect(out).toBe(pricing.deposit + 10_000n + (await w.transport.getMinimumBalanceForRentExemption(736)));
+    expect(out).toBe(pricing.deposit + 10_000n + (await w.transport.getMinimumBalanceForRentExemption(ACCOUNT_SIZE.Swap)));
     // The maker recovers its XMR with the share the refund revealed.
     expect(makerStep({ swap: held, now: await w.now(), lockTx: 'relayed' })).toEqual({ do: 'offchain', action: 'sweep', notAfter: null });
     const swept = await xmr.sweep({ spendKey: jointSpendKey(held, share.spend, 'maker'), viewKey: joint.viewPriv, lock, txid });

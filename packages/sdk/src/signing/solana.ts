@@ -166,6 +166,7 @@ export function offerTermsHash(o: Offer): Bytes {
     dC: o.dC,
     wC: o.wC,
     wF: o.wF,
+    wZ: o.wZ,
     depthAbove: [o.depthAbove[0]!, o.depthAbove[1]!, o.depthAbove[2]!],
     depths: [o.depths[0]!, o.depths[1]!, o.depths[2]!],
   });

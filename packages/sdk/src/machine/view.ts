@@ -8,7 +8,10 @@
  */
 import { CHAIN_CONSTS, type ChainConsts, type ChainName, SWAP_FLAG, SWAP_STATE, type Swap as SolanaSwap, base58Decode } from '@xmrswap/protocol';
 import { type Bytes, bigToLe, unhex } from '../util.js';
-import { type ModelSwap, tExp, tHold, tNl, tReadyMin, tSplit } from './model.js';
+import { type ModelSwap, tExp, tFf, tHold, tNl, tReadyMin, tSplit } from './model.js';
+
+const SOLANA_DEFAULT_KEY = '11111111111111111111111111111111';
+const ETH_ZERO = '0x0000000000000000000000000000000000000000';
 
 export interface SwapView extends ModelSwap {
   chain: ChainName;
@@ -40,6 +43,13 @@ export interface SwapView extends ModelSwap {
   evidenceView: Bytes;
   /** The revealed spend share as 32 little-endian bytes; zeros when nothing was revealed. */
   revealed: Bytes;
+  /**
+   * Amendment 1 (SPEC 11.2). Where a direction-B claim pays: an address in the chain's own
+   * spelling (the taker's own by default), `null` in direction A. `payout` says which case.
+   */
+  payoutAddress: string | null;
+  /** Amendment 1 (SPEC 11.6). The key that may freeze, or `null` when the swap names none. `watcher` is `watcherAddress !== null`. */
+  watcherAddress: string | null;
   /** Ethereum only. */
   eth?: { takerKey: string; takerKey2: string; makerKey: string; makerKey2: string; keyLeaf: Bytes; openHash: Bytes };
 }
@@ -95,6 +105,12 @@ export function viewFromSolana(swapPda: string, a: SolanaSwap): SwapView {
     owedTaker: a.owedTaker,
     owedMaker: a.owedMaker,
     owedTreasury: a.owedTreasury,
+    payout: a.direction === 0 || a.payout === SOLANA_DEFAULT_KEY ? 'none' : a.payout === a.taker ? 'taker' : 'other',
+    payoutAddress: a.direction === 0 || a.payout === SOLANA_DEFAULT_KEY ? null : a.payout,
+    watcher: a.watcher !== SOLANA_DEFAULT_KEY,
+    watcherAddress: a.watcher === SOLANA_DEFAULT_KEY ? null : a.watcher,
+    wZ: a.wZ,
+    tFreeze: a.tFreeze,
   };
 }
 
@@ -149,13 +165,25 @@ export interface EthSwapStruct {
   tFinal: bigint;
   tRefund: bigint;
   tSettled: bigint;
+  /** Amendment 1: the address a direction-B claim pays (the taker when none was named); zero in direction A. */
+  payout: string;
+  /** The watcher named at `lock` or `fund`; zero = none. */
+  watcher: string;
+  /** `W_z`. */
+  freezeSecs: number;
+  tFreeze: bigint;
 }
 
 /**
  * `owed` is what `owedOf(token, …)` reports for the taker, the maker side and the treasury; the
- * contract keeps parked payouts per account, not per swap, so pass zeros when not read.
+ * contract keeps parked payouts per account, not per swap, so pass zeros when not read. On a
+ * direction-B swap that ended in a claim with another payout address, `owed.taker` is that
+ * address's balance (`EthereumClient.getSwap` reads it so).
  */
 export function viewFromEthereum(swapId: string, a: EthSwapStruct, owed: { taker?: bigint; maker?: bigint; treasury?: bigint } = {}): SwapView {
+  const payout = a.payout.toLowerCase();
+  const watcher = a.watcher.toLowerCase();
+  const noPayout = a.direction === 0 || payout === ETH_ZERO;
   return {
     chain: 'ethereum',
     swapRef: unhex(swapId),
@@ -206,6 +234,12 @@ export function viewFromEthereum(swapId: string, a: EthSwapStruct, owed: { taker
     owedTaker: owed.taker ?? 0n,
     owedMaker: owed.maker ?? 0n,
     owedTreasury: owed.treasury ?? 0n,
+    payout: noPayout ? 'none' : payout === a.taker.toLowerCase() ? 'taker' : 'other',
+    payoutAddress: noPayout ? null : payout,
+    watcher: watcher !== ETH_ZERO,
+    watcherAddress: watcher === ETH_ZERO ? null : watcher,
+    wZ: a.freezeSecs,
+    tFreeze: a.tFreeze,
     eth: { takerKey: a.takerKey.toLowerCase(), takerKey2: a.takerKey2.toLowerCase(), makerKey: a.makerKey.toLowerCase(), makerKey2: a.makerKey2.toLowerCase(), keyLeaf: unhex(a.keyLeaf), openHash: unhex(a.openHash) },
   };
 }
@@ -218,6 +252,10 @@ export interface SwapDeadlines {
   tCo: bigint | null;
   tReadyMin: bigint | null;
   tCd: bigint | null;
+  /** `t_Z`: when the swap was frozen. */
+  tFreeze: bigint | null;
+  /** `T_ff = max(t_Z + W_z, T_co)`: the frozen-final time. `null` unless the swap was frozen. */
+  tFf: bigint | null;
   tFinal: bigint;
   tNl: bigint;
   tExp: bigint;
@@ -239,6 +277,8 @@ export function deadlinesOf(chain: ChainName, s: ModelSwap, consts: ChainConsts 
     tCo: orNull(s.tClaimOpen),
     tReadyMin: s.tNotice === 0n ? null : tReadyMin(s, consts),
     tCd: orNull(s.tClaimDeadline),
+    tFreeze: orNull(s.tFreeze),
+    tFf: tFf(s),
     tFinal: s.tFinal,
     tNl: tNl(s),
     tExp: tExp(s, consts),
@@ -253,4 +293,8 @@ export const hasFlag = (s: ModelSwap, flag: number): boolean => (s.flags & flag)
 export const endedInRefund = (s: ModelSwap): boolean => hasFlag(s, SWAP_FLAG.REVEALED) && hasFlag(s, SWAP_FLAG.REVEALER_LOCKER);
 /** A spend share was revealed by the claimer: the swap ended in a claim. */
 export const endedInClaim = (s: ModelSwap): boolean => hasFlag(s, SWAP_FLAG.REVEALED) && !hasFlag(s, SWAP_FLAG.REVEALER_LOCKER);
+/** The swap is counted in its asset's open value (SPEC 11.1). */
+export const isCounted = (s: ModelSwap): boolean => hasFlag(s, SWAP_FLAG.COUNTED);
+/** The swap was frozen at some point (`t_Z` is kept after an unfreeze). */
+export const wasFrozen = (s: ModelSwap): boolean => s.tFreeze !== 0n;
 export const isSettled = (s: ModelSwap): boolean => s.state === SWAP_STATE.DONE || s.state === SWAP_STATE.NONE;

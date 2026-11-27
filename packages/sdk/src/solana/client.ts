@@ -4,10 +4,13 @@
  * polling and subscription watchers. Everything goes through a `SolanaTransport`.
  */
 import { ed25519 } from '@noble/curves/ed25519.js';
+import { sha256 } from '@noble/hashes/sha2.js';
 import { AddressLookupTableAccount, Keypair, PublicKey, Transaction, type TransactionInstruction, type VersionedTransaction } from '@solana/web3.js';
 import {
   ACCOUNTS,
   type AccountName,
+  type AssetCaps,
+  PROGRAM_HASH,
   type AccountTypes,
   type Config,
   type DecodedEvent,
@@ -25,11 +28,42 @@ import {
   parseEventLogs,
 } from '@xmrswap/protocol';
 import { type SwapView, viewFromSolana } from '../machine/view.js';
-import { type Bytes, SdkError, bytesEqual, leToBig } from '../util.js';
-import { XmrSwapProgram } from './instructions.js';
-import { type Key, ethBoardPda, pk } from './pdas.js';
+import { solanaPayoutInvalid } from '../flows/open.js';
+import { solanaCaps } from '../registry/caps.js';
+import { type Bytes, SdkError, bytesEqual, hex, leToBig } from '../util.js';
+import { BPF_LOADER_UPGRADEABLE, XmrSwapProgram } from './instructions.js';
+import { type Key, TOKEN_PROGRAM_ID, ata, ethBoardPda, pk } from './pdas.js';
 import { type Level, type ProgramFilter, type SolanaAccount, type SolanaTransport, matchesFilters } from './transport.js';
 import { SIMULATION_CU_LIMIT, assertFits, cuLimitFromSimulation, legacyTransaction, v0Transaction } from './tx.js';
+
+const SYSTEM_PROGRAM = '11111111111111111111111111111111';
+const TOKEN_2022_PROGRAM = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
+const LOADERS = new Set(['BPFLoaderUpgradeab1e11111111111111111111111', 'BPFLoader2111111111111111111111111111111111', 'BPFLoader1111111111111111111111111111111111', 'LoaderV411111111111111111111111111111111111', 'NativeLoader1111111111111111111111111111111']);
+/** An SPL token account is 165 bytes. */
+export const TOKEN_ACCOUNT_SIZE = 165;
+const PROGRAM_DATA_HEADER = 45;
+
+/** SHA-256 of a ProgramData account's executable: the data after the 45-byte header, trailing zero bytes stripped. Lowercase hex. */
+export function programHashOf(programData: Bytes): string {
+  let end = programData.length;
+  while (end > PROGRAM_DATA_HEADER && programData[end - 1] === 0) end--;
+  return hex(sha256(programData.subarray(PROGRAM_DATA_HEADER, end)));
+}
+
+/** The verdict of `SolanaClient.payoutProblem`. */
+export interface PayoutCheck {
+  verdict: 'ok' | 'warn' | 'refuse';
+  /**
+   * `invalid-address`: the program itself refuses it (`PayoutInvalid`). `token-account`,
+   * `program`: an on-curve address the program accepts but that is not a wallet; the proceeds
+   * would be parked for it. `program-owned`: an account owned by some other program; it can
+   * hold the asset only if that program lets it.
+   */
+  reason: 'invalid-address' | 'token-account' | 'program' | 'program-owned' | null;
+  /** USDC: the payout address has no token account; the claim creates it if the claiming key holds `tokenAccountRent` more. */
+  tokenAccountMissing: boolean;
+  tokenAccountRent: bigint;
+}
 
 /** Anything that can sign a transaction message: a derived session key, the daemon's operator key, a test key. */
 export interface SolanaSigner {
@@ -150,6 +184,57 @@ export class SolanaClient {
   }
   getMaker(makerPda: Key, level?: Level): Promise<Maker | null> {
     return this.read('Maker', makerPda, level);
+  }
+
+  /**
+   * The beta caps of one asset (0 SOL, 1 USDC) from `Config` (SPEC 11.1): the switch, the
+   * per-swap cap, the open-value cap and the open value. A fresh deployment reads switched on
+   * with zero caps: nothing opens. Plan an open against `confirmed`, the state it executes on.
+   */
+  async getCaps(asset: number, level: Level = 'confirmed'): Promise<AssetCaps> {
+    const config = await this.getConfig(level);
+    if (!config) throw new SdkError('NotInitialized', 'the program has no Config account');
+    return solanaCaps(config, asset);
+  }
+
+  /**
+   * Check a payout address before a `take` (SPEC 11.2). The program refuses the default key,
+   * its own id and every off-curve address, but it cannot tell an **on-curve token account or
+   * program** from a wallet: the claim would succeed and the proceeds would sit parked for a
+   * key nobody may hold. That case is found here, by reading the account's owner.
+   *
+   * `refuse`: do not build the take. `warn`: possible, but say why. For USDC it also reports
+   * whether the payout's token account is missing and what creating it costs
+   * (`planSolanaOpen({ payoutTokenRent })` adds that to the session budget).
+   */
+  async payoutProblem(payout: string, asset: number, level: Level = 'confirmed'): Promise<PayoutCheck> {
+    const base = { tokenAccountMissing: false, tokenAccountRent: 0n };
+    if (solanaPayoutInvalid(payout, this.programId)) return { verdict: 'refuse', reason: 'invalid-address', ...base };
+    const account = await this.transport.getAccount(payout, level);
+    if (account) {
+      const owner = account.owner;
+      if (owner === TOKEN_PROGRAM_ID.toBase58() || owner === TOKEN_2022_PROGRAM) return { verdict: 'refuse', reason: 'token-account', ...base };
+      if (LOADERS.has(owner)) return { verdict: 'refuse', reason: 'program', ...base };
+      if (owner !== SYSTEM_PROGRAM) return { verdict: 'warn', reason: 'program-owned', ...base };
+    }
+    if (asset !== 1) return { verdict: 'ok', reason: null, ...base };
+    if (!this.program.usdcMint) throw new SdkError('NoUsdcMint', 'a USDC payout check needs the mint of Config.usdc_mint');
+    const token = await this.transport.getAccount(ata(payout, this.program.usdcMint).toBase58(), level);
+    if (token) return { verdict: 'ok', reason: null, ...base };
+    return { verdict: 'ok', reason: null, tokenAccountMissing: true, tokenAccountRent: await this.transport.getMinimumBalanceForRentExemption(TOKEN_ACCOUNT_SIZE) };
+  }
+
+  /**
+   * The executable hash of the deployed program (SPEC 11.5): SHA-256 of the ProgramData account
+   * without its 45-byte header and trailing zero bytes, lowercase hex; and how it compares
+   * with the published build (`PROGRAM_HASH`; `unpublished` until a release sets it).
+   */
+  async programBuild(level?: Level): Promise<{ hash: string; published: string | null; status: 'match' | 'mismatch' | 'unpublished' }> {
+    const programData = PublicKey.findProgramAddressSync([pk(this.programId).toBytes()], BPF_LOADER_UPGRADEABLE)[0];
+    const a = await this.transport.getAccount(programData.toBase58(), level);
+    if (!a || a.data.length < PROGRAM_DATA_HEADER) throw new SdkError('NoProgramData', 'the program has no ProgramData account (not an upgradeable deployment?)');
+    const hash = programHashOf(a.data);
+    return { hash, published: PROGRAM_HASH, status: PROGRAM_HASH === null ? 'unpublished' : PROGRAM_HASH === hash ? 'match' : 'mismatch' };
   }
   getMakerByOwner(owner: Key, level?: Level): Promise<Maker | null> {
     return this.read('Maker', this.program.makerPda(owner), level);

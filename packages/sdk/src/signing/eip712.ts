@@ -47,6 +47,7 @@ export function quoteMessage(q: EthQuote): EthQuoteMessage {
     epoch: q.epoch,
     keyRoot: hex0x(q.keyRoot),
     quoteId: q.quoteId,
+    freezeWindow: q.freezeWindow,
   };
 }
 /** The byte form the core uses, from a viem message (or the typed-data JSON of a vector). */
@@ -73,6 +74,7 @@ export function quoteFromMessage(m: EthQuoteMessage): EthQuote {
     epoch: Number(m.epoch),
     keyRoot: unhex(m.keyRoot),
     quoteId: BigInt(m.quoteId),
+    freezeWindow: Number(m.freezeWindow),
   };
 }
 export function approvalMessage(a: EthApproval): EthApprovalMessage {
@@ -216,7 +218,7 @@ export const EMPTY_ETH_APPROVAL: EthApproval = Object.freeze({
 
 // ------------------------------------------------------------------ compact form (the Solana board, quote responses)
 
-/** `encodeEthQuoteCompact(quote, sig)`: 316 bytes, the form of a board slot and of an Ethereum `quote_response`. */
+/** `encodeEthQuoteCompact(quote, sig)`: 320 bytes (255 of quote, 65 of signature), the form of a board slot and of an Ethereum `quote_response`. */
 export function encodeSignedQuote(q: EthQuote, sig: Bytes): Bytes {
   if (sig.length !== 65) throw new SdkError('BadSignature', 'an Ethereum signature is 65 bytes');
   return encodeEthQuoteCompact(q, sig);

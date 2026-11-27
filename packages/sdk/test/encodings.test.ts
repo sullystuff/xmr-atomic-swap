@@ -41,6 +41,8 @@ function baseView(over: Partial<SwapView>): SwapView {
     evidenceTxid: z32,
     evidenceView: z32,
     revealed: z32,
+    payoutAddress: null,
+    watcherAddress: null,
     ...over,
   };
 }
@@ -315,18 +317,21 @@ describe('terms.json', () => {
       // An offer has no fee field: the program hashes its own FEE_BPS. The one vector with another fee is the core's.
       if (i.fee_bps !== CHAIN_CONSTS.solana.feeBps) continue;
       n++;
-      const offer = { asset: i.asset, direction: i.direction, mode: i.mode, depBps: i.dep_bps, wA: i.w_a, wN: i.w_n, dC: i.d_c, wC: i.w_c, wF: i.w_f, depthAbove: i.depth_above.map(BigInt), depths: Uint8Array.from(i.depths) } as unknown as Offer;
+      const offer = { asset: i.asset, direction: i.direction, mode: i.mode, depBps: i.dep_bps, wA: i.w_a, wN: i.w_n, dC: i.d_c, wC: i.w_c, wF: i.w_f, wZ: i.w_z, depthAbove: i.depth_above.map(BigInt), depths: Uint8Array.from(i.depths) } as unknown as Offer;
       expect(hex(offerTermsHash(offer)), c.name).toBe(c.output.terms_hash);
     }
-    expect(n).toBe(6);
+    expect(n).toBe(vector('terms').cases.length - 1);
+    // Amendment 1: the freeze window is a term; two offers that differ only in it hash differently.
+    expect(vector('terms').cases.some((c: any) => c.input.w_z > 0)).toBe(true);
   });
 });
 
 describe('open hashes (sol_signed.json, eip712.json)', () => {
   it('computes expected_open for a pending Solana swap', () => {
     const cases = vector('sol_signed').cases.filter((c: any) => c.name.startsWith('open-hash'));
-    expect(cases.length).toBe(3);
+    expect(cases.length).toBe(5);
     const seen = new Set<string>();
+    const key = (h: string): string | null => (/^0+$/.test(h) ? null : base58Encode(unhex(h)));
     for (const c of cases) {
       const i = c.input;
       const s = baseView({
@@ -343,18 +348,24 @@ describe('open hashes (sol_signed.json, eip712.json)', () => {
         lockerView: unhex(i.locker_view),
         takerEncKey: unhex(i.taker_enc_key),
         makerEncKey: unhex(i.maker_enc_key),
+        // Amendment 1: the payout named at take (B) and the watcher named at lock (A) are covered.
+        payout: key(i.payout) === null ? 'none' : 'other',
+        payoutAddress: key(i.payout),
+        watcher: key(i.watcher) !== null,
+        watcherAddress: key(i.watcher),
       });
       expect(hex(expectedOpen(s)), c.name).toBe(c.output.open_hash);
       seen.add(c.output.open_hash);
       expect(codeOf(() => expectedOpen({ ...s, state: SWAP_STATE.ACTIVE }))).toBe('BadState');
     }
-    // A re-lock at the same PDA with another size has another open hash (M-4).
-    expect(seen.size).toBe(3);
+    // A re-lock at the same PDA with another size has another open hash (M-4); so has another payout or watcher.
+    expect(seen.size).toBe(5);
   });
 
   it('computes expected_open for a pending Ethereum swap and checks it against storage', () => {
     const cases = vector('eip712').cases.filter((c: any) => c.name.startsWith('open-hash'));
-    expect(cases.length).toBe(3);
+    expect(cases.length).toBe(5);
+    expect(new Set(cases.map((c: any) => c.output.open_hash)).size).toBe(5);
     for (const c of cases) {
       const i = c.input;
       const zero = `0x${'00'.repeat(32)}`;
@@ -366,6 +377,7 @@ describe('open hashes (sol_signed.json, eip712.json)', () => {
         lockerView: i.taker_view, takerEncKey: i.taker_enc_key, makerEncKey: i.maker_enc_key, noticeCommitment: zero, noticeCiphertext: '0x', evidenceTxid: zero, evidenceView: zero,
         keyLeaf: i.key_leaf, openHash: c.output.open_hash, revealed: 0n,
         tLock: BigInt(i.t_lock), tPendingDeadline: BigInt(i.t_lock) + 120n, tActive: 0n, tNoteDeadline: 0n, tNotice: 0n, tCut: 0n, tClaimOpen: 0n, tReady: 0n, tClaimDeadline: 0n, tFinal: BigInt(i.t_lock) + 604800n, tRefund: 0n, tSettled: 0n,
+        payout: i.payout, watcher: i.watcher, freezeSecs: 0, tFreeze: 0n,
       };
       const s = viewFromEthereum(i.swap_id, struct);
       expect(`0x${hex(expectedOpen(s))}`, c.name).toBe(c.output.open_hash);
@@ -376,7 +388,7 @@ describe('open hashes (sol_signed.json, eip712.json)', () => {
 
   it('reads Ethereum\'s revealed uint256 as the 32 little-endian bytes Monero uses', () => {
     for (const c of vector('twin').cases.filter((c: any) => c.valid)) {
-      const s = viewFromEthereum(`0x${'ab'.repeat(32)}`, { revealed: BigInt(`0x${c.input.secret_uint256}`), noticeCiphertext: '0x', swapNonce: `0x${'00'.repeat(16)}`, taker: '0xAA', maker: '0xBB', token: '0xCC', sessionKey: '0xDD', takerKey: '0x', takerKey2: '0x', makerKey: '0x', makerKey2: '0x', takerSpendPub: '0x', makerSpendPub: '0x', lockerView: '0x', takerEncKey: '0x', makerEncKey: '0x', noticeCommitment: '0x', evidenceTxid: '0x', evidenceView: '0x', keyLeaf: '0x', openHash: '0x', direction: 0 } as unknown as EthSwapStruct);
+      const s = viewFromEthereum(`0x${'ab'.repeat(32)}`, { revealed: BigInt(`0x${c.input.secret_uint256}`), noticeCiphertext: '0x', swapNonce: `0x${'00'.repeat(16)}`, taker: '0xAA', maker: '0xBB', token: '0xCC', sessionKey: '0xDD', takerKey: '0x', takerKey2: '0x', makerKey: '0x', makerKey2: '0x', takerSpendPub: '0x', makerSpendPub: '0x', lockerView: '0x', takerEncKey: '0x', makerEncKey: '0x', noticeCommitment: '0x', evidenceTxid: '0x', evidenceView: '0x', keyLeaf: '0x', openHash: '0x', direction: 0, payout: '0x', watcher: '0x' } as unknown as EthSwapStruct);
       expect(hex(s.revealed), c.name).toBe(c.input.s);
       expect(s.taker).toBe('0xaa');
     }
@@ -453,7 +465,8 @@ describe('deadlines.json', () => {
 
   it('a swap driven through the model stores exactly the derived deadlines', () => {
     const derive = v.cases.filter((c: any) => c.valid && c.input.op === 'derive' && c.input.t_ready != null);
-    expect(derive.length).toBe(8);
+    expect(derive.length).toBe(14);
+    let frozen = 0;
     for (const c of derive) {
       const i = c.input;
       const chain = i.chain as 'solana' | 'ethereum';
@@ -461,11 +474,20 @@ describe('deadlines.json', () => {
       // "funding" = a direction-B take outside window mode. "approval" = a swap that waits for approval:
       // direction A, or (the Ethereum extremes, whose notice lands at T_note) a direction-B take.
       const funding = i.pending === 'funding' || i.t_notice >= c.output.t_note;
-      const args = { offerMode: i.pending === 'funding' ? 0 : 1, approval: false, amount: 1_500_000_000n, wA: p.w_a, wN: p.w_n, dC: p.d_c, wC: p.w_c, wF: p.w_f, depth: p.depth, depBps: p.dep_bps };
+      // A frozen case names a watcher (at lock in A, at fund in B) and is frozen at t_freeze before ready.
+      const freezes = i.t_freeze != null;
+      const args = { offerMode: i.pending === 'funding' ? 0 : 1, approval: false, amount: 1_500_000_000n, wA: p.w_a, wN: p.w_n, dC: p.d_c, wC: p.w_c, wF: p.w_f, depth: p.depth, depBps: p.dep_bps, wZ: p.w_z ?? 0, watcher: freezes && !funding };
       let s = apply(chain, NO_SWAP, { name: funding ? 'take' : 'lock', args }, 'taker', BigInt(i.t_lock)).swap;
       expect(deadlinesOf(chain, s).tPend, c.name).toBe(BigInt(c.output.t_pend));
-      s = apply(chain, s, { name: funding ? 'fund' : 'approve' }, 'operator', BigInt(i.t_active)).swap;
+      s = apply(chain, s, funding ? { name: 'fund', watcher: freezes } : { name: 'approve' }, 'operator', BigInt(i.t_active)).swap;
       s = apply(chain, s, { name: 'post_notice' }, funding ? 'session' : 'operator', BigInt(i.t_notice)).swap;
+      if (freezes) {
+        s = apply(chain, s, { name: 'freeze' }, 'watcher', BigInt(i.t_freeze)).swap;
+        expect(s.state, c.name).toBe(SWAP_STATE.FROZEN);
+        expect(deadlinesOf(chain, s).tFf, c.name).toBe(BigInt(c.output.t_ff));
+        expect(deadlinesOf(chain, s).tFf! >= deadlinesOf(chain, s).tCo!, c.name).toBe(true);
+        frozen++;
+      } else expect(deadlinesOf(chain, s).tFf, c.name).toBe(null);
       s = apply(chain, s, { name: 'set_ready' }, funding ? 'operator' : 'taker', BigInt(i.t_ready)).swap;
       const d = deadlinesOf(chain, s);
       const o = c.output;
@@ -482,6 +504,7 @@ describe('deadlines.json', () => {
       expect(deadlinesOf(chain, refunded).tHold).toBe(BigInt(o.t_hold));
       expect(deadlinesOf(chain, refunded).tSplit).toBe(BigInt(o.t_split));
     }
+    expect(frozen).toBe(6);
   });
 
   it('refuses at lock every parameter set the vectors refuse, with the same error', () => {
@@ -493,7 +516,7 @@ describe('deadlines.json', () => {
       const direction = i.pending === 'funding' ? 'take' : 'lock';
       const offerMode = i.pending === 'approval' ? 1 : 0;
       if (i.chain === 'ethereum' && i.pending !== 'approval') continue; // every Ethereum swap starts PENDING for approval
-      const args = { offerMode, approval: false, amount: 1_000_000n, wA: p.w_a, wN: p.w_n, dC: p.d_c, wC: p.w_c, wF: p.w_f, depth: p.depth, depBps: p.dep_bps };
+      const args = { offerMode, approval: false, amount: 1_000_000n, wA: p.w_a, wN: p.w_n, dC: p.d_c, wC: p.w_c, wF: p.w_f, depth: p.depth, depBps: p.dep_bps, wZ: p.w_z ?? 0 };
       const got = codeOf(() => apply(i.chain, NO_SWAP, { name: direction, args }, 'taker', 1_800_000_000n));
       expect(got, c.name).toBe(c.valid ? null : c.error);
       if (!c.valid) refused++;
