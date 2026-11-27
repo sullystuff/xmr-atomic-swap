@@ -6,11 +6,13 @@
  * The server holds no key and keeps no request log. It serves files from one directory, the
  * generated `config.json`, and nothing else.
  */
-import { createReadStream, existsSync, statSync } from 'node:fs';
+import { createReadStream, existsSync, readdirSync, statSync } from 'node:fs';
 import http, { type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { type RelayDeps, type RunningRelay, isLoopback, startRelay } from '@xmrswap/relay';
+import { treeEntries, treeHash } from '../scripts/sums.mjs';
+import { MANIFEST_FILE, type Manifest, type ServedRelease, readRecord, servedRelease } from './release/manifest.js';
 import type { BundleSettings } from './settings.js';
 
 export class BundleError extends Error {}
@@ -56,12 +58,40 @@ export function pageConfig(s: BundleSettings, origin: string): Record<string, un
   };
 }
 
+/** Every valid record under `dir` (`<dir>/<version>/release.json`). A record that does not check out is ignored. */
+export function loadRecords(dir: string): Manifest[] {
+  const out: Manifest[] = [];
+  let names: string[] = [];
+  try {
+    names = readdirSync(dir).sort();
+  } catch {
+    return out;
+  }
+  for (const name of names) {
+    if (!existsSync(path.join(dir, name, MANIFEST_FILE))) continue;
+    try {
+      out.push(readRecord(path.join(dir, name)).manifest);
+    } catch {
+      // A damaged or foreign record cannot vouch for anything; the served UI is then simply "not recorded".
+    }
+  }
+  return out;
+}
+
+/** What `/release.json` says: the tree hash of the UI directory as it is now, and the record that has it, if any. */
+export async function describeServed(uiDir: string, releasesDir: string): Promise<ServedRelease> {
+  const entries = await treeEntries(uiDir);
+  return servedRelease({ tree_hash: treeHash(entries), files: entries.length, bytes: entries.reduce((n, e) => n + e.size, 0) }, loadRecords(releasesDir));
+}
+
 export interface BundleDeps {
   /** Passed to the relay (tests inject a registry and a log sink). */
   relay?: RelayDeps;
 }
 
 export interface RunningBundle {
+  /** What the bundle serves at `/release.json`. */
+  served: ServedRelease;
   /** `http://host:port` of the UI server, as a client on this machine reaches it. */
   url: string;
   host: string;
@@ -89,6 +119,10 @@ export async function startBundle(s: BundleSettings, deps: BundleDeps = {}): Pro
   const root = s.ui.dist;
   if (!existsSync(path.join(root, 'index.html')))
     throw new BundleError(`no built web UI in ${root} (index.html is missing). Build it with "pnpm --filter @xmrswap/web build", or set [ui] dist to an unpacked release.`);
+
+  // Hash what is about to be served, before serving it, and find the record that has it.
+  const served = await describeServed(root, s.ui.releases);
+  const servedBody = `${JSON.stringify(served, null, 2)}\n`;
 
   const relay = await startRelay(s.relay, deps.relay);
   const relayHost = connectHost(relay.host);
@@ -175,6 +209,8 @@ export async function startBundle(s: BundleSettings, deps: BundleDeps = {}): Pro
       const body = JSON.stringify(pageConfig(s, origin), null, 2);
       return req.method === 'HEAD' ? void res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': MIME['.json']!, 'Cache-Control': 'no-store' }).end() : send(res, 200, body);
     }
+    // Reserved path: what this server is serving, by its own count (not a file of the UI).
+    if (pathname === '/release.json') return req.method === 'HEAD' ? void res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': MIME['.json']!, 'Cache-Control': 'no-store' }).end() : send(res, 200, servedBody);
     serveFile(req, res, pathname);
   });
   server.on('clientError', (_err, socket) => socket.destroy());
@@ -195,6 +231,7 @@ export async function startBundle(s: BundleSettings, deps: BundleDeps = {}): Pro
     url: `http://${hostForUrl(connectHost(addr.address))}:${addr.port}`,
     host: addr.address,
     port: addr.port,
+    served,
     relay,
     server,
     close: async () => {

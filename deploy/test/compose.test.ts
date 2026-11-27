@@ -81,9 +81,14 @@ describe('deploy/compose.yaml', () => {
     expect(source).not.toMatch(/api[-_]?key\s*[=:]/i);
   });
 
-  it('says in the file that it was not run here', () => {
-    expect(source).toContain('NOT RUN on the machine where this was written');
-    for (const f of ['docker/Dockerfile', 'docker/tor.Dockerfile']) expect(read(f), f).toContain('NOT BUILT on the machine where this was written');
+  it('says in the file what was and was not run on the build machine', () => {
+    expect(source).toContain('both images were built');
+    expect(source).toContain('`docker compose up` (which publishes the');
+    expect(source).toContain('was NOT run there');
+    expect(read('docker/tor.Dockerfile')).toContain('never started there');
+    // Secrets and local state never enter the image build.
+    const ignore = read('docker/Dockerfile.dockerignore');
+    for (const line of ['.git', '**/node_modules', '**/target', '**/.env', '**/*.keypair.json', 'deploy/xmrswap.toml', 'deploy/xmrswap.env']) expect(ignore.split('\n'), line).toContain(line);
   });
 });
 

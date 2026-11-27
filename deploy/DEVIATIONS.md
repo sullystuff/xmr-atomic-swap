@@ -30,6 +30,58 @@ pnpm --filter @xmrswap/deploy test           # acceptance: loopback fakes only
 | D14 | 8.8 "pinned program id and contract address" | Note | `PROGRAM_ID` is still the development id and `CONTRACT_ADDRESS` is `null`. The docs say nothing is deployed and no published value exists to compare with. When the owner deploys, `verifying-the-download.md` needs the place the ids are published. | |
 | D15 | Work order: "every command in the docs must be one you actually ran" | Note | Marked "Not run" in the docs: `rustup`/`cargo install`, `tor …`, the systemd unit installation, `docker compose …`, `git pull`, `monerod …`, `pnpm --filter @xmrswap/web build` and `@xmrswap/console build` (not re-run, so as not to replace build output others were using; the web build was run into a scratch directory instead), `@xmrswap/daemon start`, the nginx example. The start and status commands were run with the relay port and Tor port overridden, because 8787 and 9050 were in use on the build machine; the expected output in the docs shows the defaults. | |
 
+## The checkable build (Amendment 1, SPEC 11.5, work package A9)
+
+Commands: `run release`, `run verify <record>`, `bash deploy/scripts/program-docker-build.sh`, `run test:determinism`. Records: `releases/<version>/`.
+
+| # | Spec | Kind | What was done | Why |
+| --- | --- | --- | --- | --- |
+| E1 | 11.5 "`releases/<version>/`: `release.json`, `web.SHA256SUMS`, `console.SHA256SUMS`" | Note | Built as written, at the repository root (A9 owns `releases/`). The first work order named `deploy/releases/<version>.json`; the later specification wins. `release.json` carries the fields 11.5 lists under the names it gives (`program_executable_hash`, `program_hash_source`, `web_tree_hash`, `console_tree_hash`, `program_id`, `contract`) and, beyond them, `web_cid`/`console_cid`/`cid_params`, `program_builds` (every build with its `method`: `local-sbf` or `solana-verify-docker`), `tools`, `build` (`host`, `wasm_rustflags`, `lockfile`), `status`, `onchain`. Schema: `deploy/release.schema.json`. | |
+| E2 | 11.5 "Docker is not installed ... **Specified, not run**" | Deviation | The Docker build **was run** (rootless Docker 29.10.1 arrived after the amendment was written): `solana-verify build --library-name xmr_swap` in `solana/program`, twice, in two directories, identical. The snapshot's `program_executable_hash` is that build's, `program_hash_source` = `docker`. No workaround was needed for the rootless daemon. | |
+| E3 | 11.5 `solana-verify` (0.2.11 is the installed one) | Deviation | `solana-verify` **0.4.11** is required for `build`: 0.2.11 fails with "invalid Cargo.lock format version: `4`". It was installed with `cargo install solana-verify --version 0.4.11 --locked --root deploy/.tools` (ignored by git); the tools use `$SOLANA_VERIFY`, then `deploy/.tools/bin`, then the PATH. `get-executable-hash` and `get-program-hash` of 0.2.11 and 0.4.11 print the same values. `solana-verify build` needs an absolute mount path or to be run inside the directory; the relative form in the first draft of the docs fails. | |
+| E4 | 11.5 "IPFS CID (`ipfs add -r --only-hash ...`) ... specified, not run" | Deviation | The CID is always computed, offline, with `ipfs-unixfs-importer` 17.1.1 (CIDv1, SHA-256, raw leaves, 262,144-byte chunks, balanced layout, wrapped in a directory; recorded as `cid_params`). No IPFS node is started and nothing is published. It was **not** compared with the `ipfs` program (not installed); the tests check the empty-directory CID against its well-known value and a one-file directory against a block built by hand. | The work order asks for a CID computed offline with a library. |
+| E5 | 11.5 front ends: "`pnpm --filter @xmrswap/web build` ... then `run release`" | Deviation | `run release` does not package whatever is in `apps/web/dist`. It exports the commit with `git archive` into a temporary directory, runs each package's own build there (`pnpm install --frozen-lockfile`, core-wasm, web, console, `cargo build-sbf -- --locked`), does it a second time in another directory, and refuses unless all three artefacts are identical. `--prebuilt` assembles from supplied artefacts and records `double_build: not-run`, `lockfile: prebuilt`. | "Built from a given commit" is only true of a build made from the commit, and other packages' build output in a shared checkout must not be replaced. |
+| E6 | 11.5 "Reproducibility of the wasm step across machines is unproven" | Deviation | **Found and worked around inside `deploy/`.** The wasm of `packages/core-wasm` contains absolute paths: the cargo registry (`<home>/.cargo/registry/src/...`, about 100 strings) and the build directory (`<checkout>/target/.../build/monero-bulletproofs-*/out/generators*.rs`). Two builds of one commit in two directories differ. The release and verify steps set `RUSTFLAGS="--remap-path-prefix=<checkout>=/xmrswap --remap-path-prefix=<cargo home>=/cargo"` for the wasm build only; with that, two directories and two cargo-home paths give the same wasm, hence the same taker UI. Consequence: `apps/web/dist` built the ordinary way never matches a record. Still untested: another machine, OS or CPU. | |
+| E7 | 11.5 program, local build | Note | `cargo build-sbf` gave the same `.so` in two directories without any help (it strips each crate's working-directory prefix). A cargo home reached through a symbolic link defeats that: registry paths then appear in the `.so` and the hash changes. So the alternate cargo-home path of the double build is applied to the wasm step only. Local hash 5ef2576c… (cargo-build-sbf 3.0.9, platform-tools v1.51) differs from the Docker hash edae8238… (image: cargo-build-sbf 2.3.0, platform-tools v1.48): different compilers, as expected. | |
+| E8 | 11.5 "`run verify <release directory>`" | Choice | `run verify <dir>`: with artefacts beside the record (a release directory) it checks the files (`SHA256SUMS`, tree hashes, CIDs, the program against every recorded build); with the record alone (`releases/<version>`) or `--rebuild` it rebuilds from the record's commit and compares; `--prebuilt name=path` checks supplied artefacts. A program built by a method the record lacks is reported `NOT COMPARED`, never as a match or mismatch. `--onchain` reads the deployed program through `SOLANA_RPC_URL` (two `getAccountInfo` calls) and compares; tested against the fake RPC only, and against the real `solana-verify get-program-hash` pointed at that fake. Exit 1 on any mismatch. | |
+| E9 | 10.1 lockfile rule ("between milestones ... `--no-frozen-lockfile`") | Choice | A staging build first installs with `--frozen-lockfile`. If the commit's lockfile is behind its `package.json` files, a development snapshot installs without it and records `build.lockfile: "updated"`; a record with `status: "release"` is refused unless `lockfile` is `frozen` and the program hash is the Docker one. | A build whose dependencies are resolved at build time is not pinned by the commit; between milestones the lockfile lags by design, and the acceptance test must still run. |
+| E10 | 11.9 A9 acceptance | Note | `test/determinism.test.ts` (in `pnpm --filter @xmrswap/deploy test`, alone as `run test:determinism`) builds HEAD twice, offline, about 140 s, and asks the installed `solana-verify` for the local program hash. It therefore fails when HEAD does not build or when `solana-verify` is missing. Uncommitted work in the checkout does not affect it (it builds the commit). | |
+| E11 | 11.5 "What the UIs show" | Note | The bundle additionally serves `GET /release.json` (shape below) and the status command reports it. This is the server describing itself; the docs say it is not a defence against a tampered bundle. | Work order item 5. |
+| E12 | 11.9 A9 "docs ... for running a watcher" | Gap | Not written: `packages/watcher` (A5) does not exist yet, and the docs only contain commands that were run. | |
+| E13 | Compose | Note | `docker compose -f deploy/compose.yaml build` was run once with rootless Docker (see the hand-over report for what was and was not exercised). The `web` image must be built from a tree that compiles: the build context is the working tree, not a commit. `deploy/docker/Dockerfile.dockerignore` now excludes every `target/`, `.state/` and build output (the first attempt sent 3.3 GB of context). | |
+
+### `GET /release.json` (request to `apps/web`, A8)
+
+Served by the bundle at a fixed path next to `config.json`; `Cache-Control: no-store`. The Status page can show version, commit, UI tree hash and the expected program hash from it. `release` is `null` when no record in `[ui] releases` has the served UI's tree hash.
+
+```json
+{
+  "format": "xmrswap-served/1",
+  "ui": { "tree_hash": "<64 hex>", "files": 6, "bytes": 2987889 },
+  "recorded": true,
+  "release": {
+    "version": "dev-snapshot",
+    "status": "development-snapshot",
+    "commit": "<40 hex>",
+    "commit_time": "2026-11-27T18:01:38Z",
+    "program_id": "<base58>",
+    "contract": null,
+    "chain_id": null,
+    "web_tree_hash": "<64 hex>",
+    "web_cid": "<CIDv1>",
+    "program_executable_hash": "<64 hex>",
+    "program_hash_source": "docker",
+    "program_builds": [
+      { "method": "local-sbf", "executable_hash": "<64 hex>" },
+      { "method": "solana-verify-docker", "executable_hash": "<64 hex>" }
+    ],
+    "onchain_deployed": false
+  }
+}
+```
+
+`status` is `development-snapshot` or `release`; `program_hash_source` is `docker` or `local`. The page should say "development snapshot" and "local build" in words when those apply, and should treat `DEPLOYMENT.programHash` (A1) as the value to compare the chain with; `/release.json` tells the user which build the files are, not what to trust.
+
 ## Requests to other packages
 
 | # | To | Request |
@@ -38,4 +90,8 @@ pnpm --filter @xmrswap/deploy test           # acceptance: loopback fakes only
 | Q2 | WP10 (web) | Accept a site-relative path (`/monero/0`) as a Monero node, as the Settings hint already suggests and as `relayUrl` does (D6). |
 | Q3 | WP10 (web) | `saveSettings` stores the whole settings object, so after the first save the deployment's `config.json` is shadowed for every key, including the pinned program id of a later release. Store only what the user changed. The docs warn about this in three places. |
 | Q4 | WP10 (web) | `pollMs` has no field on the Settings page; the bundle exposes it as `[ui] poll_ms`, which only helps before the first save (Q3). |
-| Q5 | WP1 / owner | Publish the release's program id, contract address and the digest of `SHA256SUMS` somewhere the docs can name. |
+| Q5 | WP1 / owner | Publish the release's program id, contract address and record somewhere the docs can name. |
+| Q6 | `packages/core-wasm` (A1) | Make the wasm build path-independent in the package itself: pass `--remap-path-prefix` for the workspace root and the cargo home in `scripts/build.mjs` (E6). Until then only builds made through `run release`/`run verify` are comparable, and `apps/web/dist` from the ordinary build differs per directory and per user. |
+| Q7 | `apps/web` (A8), `apps/console` (A7) | Show the served build from `GET /release.json` (shape above). Both front-end builds are already deterministic given the same inputs; nothing to change there. |
+| Q8 | Integrator | A release commit needs an up-to-date `pnpm-lock.yaml`; the release step refuses otherwise (E9). The lockfile at HEAD does not yet contain this package's new dependencies (`ipfs-unixfs-importer`, `blockstore-core`, `multiformats`; `ajv` and `tsx` moved to runtime). |
+| Q9 | Owner | `solana/program` builds differently under the local tools (platform-tools v1.51) and the pinned Docker image (v1.48). Decide which the deployment uses; the published hash must be the Docker one (SPEC 11.5), so the deployed binary must be the Docker build's. |

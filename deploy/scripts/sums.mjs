@@ -1,7 +1,7 @@
 // Shared by checksums.mjs and verify.mjs. Plain Node, no dependencies, so a download can be
 // verified before anything is installed.
 import { createHash } from 'node:crypto';
-import { createReadStream, readdirSync } from 'node:fs';
+import { createReadStream, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 export const SUMS_FILE = 'SHA256SUMS';
@@ -48,4 +48,39 @@ export function parseSums(text) {
     entries.push({ hash: m[1], file });
   }
   return entries;
+}
+
+/**
+ * The entries of a file tree: every regular file under `dir` with its SHA-256 and size, sorted
+ * by path in byte order. File order on disk, timestamps, owners and permissions play no part.
+ */
+export async function treeEntries(dir) {
+  const out = [];
+  for (const file of listFiles(dir)) out.push({ path: file, sha256: await sha256(path.join(dir, file)), size: statSync(path.join(dir, file)).size });
+  return out;
+}
+
+/** The canonical listing of a tree: one `<sha256>  <path>` line per file, as `sha256sum` prints it. */
+export function listingText(entries) {
+  return entries.map((e) => `${e.sha256}  ${e.path}\n`).join('');
+}
+
+/**
+ * The tree hash: the SHA-256 of the canonical listing. Two trees have the same tree hash exactly
+ * when they hold the same paths with the same contents. It can be recomputed with coreutils:
+ *   cd <dir> && find . -type f -printf '%P\n' | LC_ALL=C sort | xargs -d '\n' sha256sum | sha256sum
+ */
+export function treeHash(entries) {
+  return createHash('sha256').update(listingText(entries)).digest('hex');
+}
+
+/**
+ * The executable hash of a Solana program, as `solana-verify get-executable-hash` computes it:
+ * the SHA-256 of the file with its trailing zero bytes removed. (A deployed program sits in an
+ * account that is padded with zeros, so the padding must not count.)
+ */
+export function executableHash(bytes) {
+  let end = bytes.length;
+  while (end > 0 && bytes[end - 1] === 0) end -= 1;
+  return createHash('sha256').update(bytes.subarray(0, end)).digest('hex');
 }

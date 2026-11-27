@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { PROGRAM_ID } from '@xmrswap/protocol';
 import { describe, expect, it } from 'vitest';
 import { loadSettings } from '../src/settings.js';
+import { tmp } from './tmp.js';
 
 const scripts = fileURLToPath(new URL('../scripts/', import.meta.url));
 const node = (script: string, ...args: string[]) => {
@@ -15,12 +16,13 @@ const node = (script: string, ...args: string[]) => {
   const r = spawnSync(process.execPath, [path.join(scripts, script), ...args], { encoding: 'utf8', cwd: tmpdir(), env: { PATH: process.env['PATH'] ?? '' } });
   return { code: r.status, out: r.stdout, err: r.stderr };
 };
-const tmp = (): string => mkdtempSync(path.join(tmpdir(), 'xmrswap-sums-'));
 
-/** A release directory made from the real built UI. */
+/** A directory to checksum, made from the real built UI. */
 function release(): string {
   const dir = path.join(tmp(), 'release');
-  const r = node('release.mjs', dir);
+  cpSync(loadSettings().ui.dist, path.join(dir, 'web'), { recursive: true });
+  writeFileSync(path.join(dir, 'release.json'), `${JSON.stringify({ name: 'xmrswap-web', programId: PROGRAM_ID })}\n`);
+  const r = node('checksums.mjs', dir);
   expect(r.code, r.err).toBe(0);
   return dir;
 }

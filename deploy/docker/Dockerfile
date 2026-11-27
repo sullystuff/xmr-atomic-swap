@@ -1,6 +1,7 @@
 # The web UI and the relay in one image, built from this repository's source.
-# NOT BUILT on the machine where this was written (it has no Docker).
-# Build context: the repository root (see deploy/compose.yaml).
+# Build context: the repository root (see deploy/compose.yaml). Needs BuildKit.
+# Built on the machine where this was written with rootless Docker; the UI it produced had the
+# tree hash of the recorded snapshot. The context is the working tree: it must be one that compiles.
 
 # ---- build: Rust (for the wasm core) and Node
 FROM rust:1.94.1-bookworm AS build
@@ -10,25 +11,18 @@ RUN rustup target add wasm32-unknown-unknown \
  && npm install --global pnpm@9.15.0
 WORKDIR /src
 COPY . .
-RUN pnpm install --no-frozen-lockfile \
+# The same path remapping the release step uses, so the wasm does not carry this image's paths.
+RUN (pnpm install --frozen-lockfile || pnpm install --no-frozen-lockfile) \
+ && RUSTFLAGS="--remap-path-prefix=/src=/xmrswap --remap-path-prefix=/usr/local/cargo=/cargo" pnpm --filter @xmrswap/core-wasm build \
  && pnpm --filter @xmrswap/web build \
- && pnpm --filter @xmrswap/deploy run release /release \
- && node deploy/scripts/verify.mjs /release
+ && pnpm --filter @xmrswap/deploy deploy --prod /app
 
 # ---- run: Node only
 FROM node:22-bookworm-slim
-RUN npm install --global pnpm@9.15.0
-WORKDIR /app
-ENV CI=true
-COPY --from=build /src/package.json /src/pnpm-workspace.yaml /src/pnpm-lock.yaml /src/tsconfig.base.json ./
-COPY --from=build /src/packages/protocol ./packages/protocol
-COPY --from=build /src/packages/relay ./packages/relay
-COPY --from=build /src/deploy ./deploy
-COPY --from=build /release/web /ui
-# Only what the bundle needs. The packages were compiled in the build stage, so their install scripts are skipped.
-RUN pnpm install --no-frozen-lockfile --ignore-scripts --filter @xmrswap/deploy... \
- && pnpm store prune
-ENV XMRSWAP_UI_DIST=/ui
+COPY --from=build /app /app/deploy
+COPY --from=build /src/apps/web/dist /app/ui
+COPY --from=build /src/releases /app/releases
+ENV XMRSWAP_UI_DIST=/app/ui XMRSWAP_UI_RELEASES=/app/releases
 USER node
 EXPOSE 8780
 WORKDIR /app/deploy

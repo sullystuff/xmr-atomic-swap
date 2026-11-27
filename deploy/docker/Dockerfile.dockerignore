@@ -1,15 +1,21 @@
 # Used by BuildKit for deploy/docker/Dockerfile (context: the repository root).
 # Everything is rebuilt from source inside the image; nothing built or installed on the host,
-# and no local settings or secrets, go into the build context.
+# and no local settings, state or secrets, go into the build context.
 .git
 **/node_modules
 **/dist
-target
+**/target
+**/out
+**/cache
+**/.state
+**/.build-logs
 packages/core-wasm/pkg
 deploy/release
+deploy/.tools
 deploy/xmrswap.toml
 deploy/xmrswap.env
 **/.env
 **/.env.*
 **/*.keypair.json
+**/*-keypair.json
 .scratch

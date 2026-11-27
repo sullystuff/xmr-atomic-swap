@@ -74,6 +74,9 @@ async function recheck(page: Page): Promise<void> {
 describe("the UI's Status page, served by the bundle", () => {
   it('shows Tor reachable, RPC connected and Monero nodes in agreement, using only this origin and the configured RPC', async () => {
     const s = await stack();
+    // The program is deployed with an upgrade authority, as it will be at launch.
+    const authority = s.solana.makers[0]!.pubkey;
+    s.solana.deploy(PROGRAM_ID, Buffer.from('\x7fELF program', 'latin1'), authority);
     await s.page.goto(`${s.bundle.url}/#/status`);
     await check(s.page, 'monero').waitFor();
 
@@ -88,8 +91,9 @@ describe("the UI's Status page, served by the bundle", () => {
     expect(await state(s.page, 'tor-maker')).toMatch(/^ok: .*Maker reachable over Tor/);
     expect(s.socks.connects).toContain(s.onion);
     expect(s.maker.seen.some((r) => r.url === '/xs/v1/info')).toBe(true);
-    // While the upgrade status cannot be confirmed the page says to treat the code as upgradable.
-    expect(await state(s.page, 'upgrade-solana')).toMatch(/^warn: /);
+    // The page reads the upgrade authority from the chain and says who can still change the program.
+    expect(await state(s.page, 'upgrade-solana')).toMatch(/^warn: .*still upgradable/);
+    expect(await state(s.page, 'upgrade-solana')).toContain(authority);
 
     // The browser talked to this origin and to the configured RPC, nothing else.
     expect(s.offLoopback).toEqual([]);

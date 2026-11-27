@@ -32,7 +32,20 @@ const REQUIRED: Record<string, string[]> = {
     '4. Let the interface fall back',
   ],
   'who-sees-what.md': ['Who sees what', 'What a relay operator can and cannot do', 'The four ways to connect', 'Each way of running the interface, party by party'],
-  'verifying-the-download.md': ['Verifying the download', 'Checksums', 'Building from source and comparing', 'Checking the program id and contract address'],
+  'verifying-the-download.md': [
+    'Verifying the download',
+    'What exists today, stated plainly',
+    'What each hash covers',
+    'Checking files you downloaded',
+    'Rebuilding from source and comparing',
+    'How far this is known to reproduce',
+    'The program: local build and Docker build',
+    'Comparing the program on-chain',
+    'What a mismatch means',
+    'The bundle says what it serves',
+    'Checking the program id and contract address',
+    'Making a record',
+  ],
   'checking-it-works.md': ['Checking it works', 'The status command', 'The Status page'],
   'troubleshooting.md': ['Troubleshooting', 'Tor unreachable', 'The fallback to on-chain messaging', 'RPC rate limits', 'A Monero node out of sync, or nodes disagreeing'],
   'backups-and-upgrades.md': ['Backups and upgrades', 'Where swap state and recovery files live', 'Upgrades', 'If a swap is in progress and you cannot wait'],
@@ -94,6 +107,32 @@ describe('docs/self-hosting', () => {
     for (const line of torGuidance('127.0.0.1:9050')) expect(page('quick-start.md'), line).toContain(line);
   });
 
+  it('the verification page states the limits and quotes the recorded snapshot exactly', () => {
+    const text = page('verifying-the-download.md');
+    for (const phrase of [
+      '**Nothing is deployed.**',
+      '**There is no release yet.**',
+      '**Nobody independent has verified anything.**',
+      'It does not prove the source is safe.',
+      'unaudited',
+      'Never compare a hash of one method with a hash of the other.',
+      '| Any of them on a second machine, another operating system or another CPU type | **Not tested** | Unknown |',
+      'upgrade authority',
+      'there is no on-chain program to verify yet',
+      'solana-verify get-program-hash',
+      'cargo install solana-verify --version 0.4.11 --locked',
+    ])
+      expect(text, phrase).toContain(phrase);
+    // The hashes printed on the page are the ones in the tracked snapshot, not stale copies.
+    const record = JSON.parse(readFileSync(path.join(repoDir, 'releases/dev-snapshot/release.json'), 'utf8')) as { status: string; commit: string; web_tree_hash: string; console_tree_hash: string; web_cid: string; program_builds: { method: string; executable_hash: string }[] };
+    expect(record.status).toBe('development-snapshot');
+    for (const value of [record.commit, record.web_tree_hash, record.console_tree_hash, record.web_cid, ...record.program_builds.map((b) => b.executable_hash)]) expect(text, value).toContain(value);
+    expect(record.program_builds.map((b) => b.method)).toEqual(['local-sbf', 'solana-verify-docker']);
+    // The deploy README carries the same limits.
+    const readme = readFileSync(path.join(deployDir, 'README.md'), 'utf8');
+    for (const phrase of ['It is not a release.', 'Nothing is deployed', 'unaudited', 'never compared with each other']) expect(readme, phrase).toContain(phrase);
+  });
+
   it('every link between pages, and every file a page names, exists', () => {
     for (const name of pages) {
       const text = page(name);
@@ -112,7 +151,7 @@ describe('docs/self-hosting', () => {
         expect(anchors, `${name} links to ${m[1]}`).toContain(m[1]!.slice(1));
       }
       // Repository files named in backticks.
-      for (const m of text.matchAll(/`((?:deploy|docs|apps|packages)\/[A-Za-z0-9_./-]+)`/g)) {
+      for (const m of text.matchAll(/`((?:deploy|docs|apps|packages|releases|solana)\/[A-Za-z0-9_./-]+)`/g)) {
         const rel = m[1]!;
         // The user's own settings file and release directory do not exist until they create them.
         if (rel === 'deploy/xmrswap.toml' || rel.startsWith('deploy/release')) continue;
@@ -152,20 +191,21 @@ describe('docs/self-hosting', () => {
         const before = lines.slice(Math.max(0, i - 6), i).join('\n');
         if (fence[2] === 'not-run') {
           notRun += 1;
-          expect(before, `${name}:${i + 1}`).toMatch(/Not run (in this form )?on the machine where this was written/);
+          expect(before, `${name}:${i + 1}`).toMatch(/Not run (in this form |against a real cluster )?on the machine where this was written/);
         }
         // Commands that can only be "not run" here must be marked: Docker, a real Tor, systemd, a real node, git.
         if (fence[1] === 'sh' && fence[2] !== 'not-run') {
           const end = lines.findIndex((l, j) => j > i && /^\s*```\s*$/.test(l));
           const body = lines.slice(i + 1, end).join('\n');
-          expect(body, `${name}:${i + 1} must be marked not-run`).not.toMatch(/\b(docker|systemctl|monerod|git (pull|fetch|checkout)|rustup|cargo)\b|^\s*tor /m);
+          expect(body, `${name}:${i + 1} must be marked not-run`).not.toMatch(/\b(docker compose .* up|docker run|systemctl|monerod|git (pull|fetch|checkout)|rustup|cargo install|--onchain|get-program-hash)\b|^\s*tor /m);
           expect(body, `${name}:${i + 1} must be marked not-run`).not.toMatch(/@xmrswap\/(web|console) build|@xmrswap\/daemon start/);
         }
       });
     }
-    expect(notRun).toBeGreaterThanOrEqual(8);
-    // The compose path as a whole is declared unrun where it is introduced.
-    expect(page('quick-start.md')).toContain('**This path has not been run.**');
+    expect(notRun).toBeGreaterThanOrEqual(10);
+    // The compose path says exactly how far it was exercised.
+    expect(page('quick-start.md')).toContain('**This path was built but not fully run.**');
+    expect(page('quick-start.md')).toContain('with the port published on localhost and the Tor client running, was **not** run');
   });
 
   it('contains nothing from the machine it was written on, and no secret', () => {

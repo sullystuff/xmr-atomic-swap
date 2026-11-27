@@ -1,8 +1,11 @@
 # The self-hosting bundle for people who use containers: the web UI with the relay, and a Tor
 # client, on a private network. Equivalent to `pnpm --filter @xmrswap/deploy start`.
 #
-# NOT RUN on the machine where this was written (it has no Docker). The file is checked as YAML
-# against deploy/compose.schema.json by the tests; the images have never been built.
+# What was run on the machine where this was written (rootless Docker): both images were built
+# with `docker compose -f deploy/compose.yaml build`, and the web container was started once
+# with no published port and answered from inside. `docker compose up` (which publishes the
+# port and starts the Tor client, which would join the real Tor network) was NOT run there.
+# The file is also checked as YAML against deploy/compose.schema.json by the tests.
 # Read docs/self-hosting/quick-start.md ("With containers") before using it.
 #
 #   SOLANA_RPC_URL=<your Solana RPC URL> docker compose -f deploy/compose.yaml up --build

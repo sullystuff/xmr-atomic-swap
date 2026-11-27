@@ -1,5 +1,5 @@
 # A Tor client whose SOCKS port is reachable from the other container on the private network.
-# NOT BUILT on the machine where this was written (it has no Docker).
+# Built on the machine where this was written; never started there (it would join the real Tor network).
 FROM debian:bookworm-slim
 RUN apt-get update \
  && apt-get install --yes --no-install-recommends tor \

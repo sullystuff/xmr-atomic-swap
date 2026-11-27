@@ -10,7 +10,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PROGRAM_ID } from '@xmrswap/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
+import { loadSettings } from '../src/settings.js';
+import { recordFor } from './records.js';
 import { type FakeMonero, type FakeSocks, type FakeSolana, call, closeAll, closedPort, fakeOnion, onClose, startFakeMaker, startFakeMonero, startFakeSocks, startFakeSolana } from './fakes.js';
+import { tmp } from './tmp.js';
 
 afterEach(closeAll);
 
@@ -63,7 +66,7 @@ async function fakes(): Promise<Fakes> {
   const nodes = [await startFakeMonero(), await startFakeMonero()];
   const uiPort = await closedPort();
   // The settings file is the one a user would write; only the secret URL comes from the environment.
-  const dir = mkdtempSync(path.join(tmpdir(), 'xmrswap-deploy-'));
+  const dir = tmp();
   const file = path.join(dir, 'xmrswap.toml');
   writeFileSync(
     file,
@@ -77,7 +80,9 @@ async function fakes(): Promise<Fakes> {
       '',
     ].join('\n'),
   );
-  return { socks, solana, nodes, uiPort, env: { XMRSWAP_SELFHOST_CONFIG: file, SOLANA_RPC_URL: `${solana.url}/?api-key=SECRET-KEY-123` } };
+  // A record of exactly the UI being served, as a release would ship one.
+  const { releases } = await recordFor(loadSettings().ui.dist);
+  return { socks, solana, nodes, uiPort, env: { XMRSWAP_SELFHOST_CONFIG: file, XMRSWAP_UI_RELEASES: releases, SOLANA_RPC_URL: `${solana.url}/?api-key=SECRET-KEY-123` } };
 }
 
 describe('pnpm --filter @xmrswap/deploy start', () => {
@@ -102,6 +107,8 @@ describe('pnpm --filter @xmrswap/deploy start', () => {
     expect(p.out()).toContain(`    ${open}/\n`);
     expect(p.out()).toContain(`Status page:  ${open}/#/status`);
     expect(p.out()).toContain('this software is unaudited');
+    expect(p.out()).toContain(`Build:        recorded build dev-snapshot (development-snapshot), commit ${'cd'.repeat(6)}`);
+    expect(p.out()).toMatch(/ {14}UI tree hash [0-9a-f]{64}\n/);
     expect(p.out()).toContain(`Tor: a SOCKS proxy answers at 127.0.0.1:${f.socks.port}`);
     expect(p.out()).toMatch(/\[relay\] listening on 127\.0\.0\.1:\d+/);
     // An RPC URL carries an API key and is never printed.
@@ -120,6 +127,8 @@ describe('pnpm --filter @xmrswap/deploy start', () => {
     expect(await st.exited, st.out() + st.err()).toBe(0);
     const text = st.out();
     expect(text).toContain('ok    Web UI served');
+    expect(text).toContain('ok    Served UI is the recorded build dev-snapshot');
+    expect(text).toContain(`A development snapshot (not a release), built from commit ${'cd'.repeat(20)}. UI tree hash `);
     expect(text).toContain('ok    Relay reachable');
     expect(text).toContain('It knows 1 maker');
     expect(text).toContain('ok    Tor proxy reachable');
@@ -135,7 +144,7 @@ describe('pnpm --filter @xmrswap/deploy start', () => {
     // --json gives the same checks for scripts.
     const js = run(['status', '--json'], f.env);
     expect(await js.exited).toBe(0);
-    expect((JSON.parse(js.out()) as { id: string; state: string }[]).map((c) => `${c.id}:${c.state}`)).toEqual(['ui:ok', 'relay:ok', 'tor:ok', 'solana:ok', 'ethereum:off', 'monero:ok', 'pinned:ok']);
+    expect((JSON.parse(js.out()) as { id: string; state: string }[]).map((c) => `${c.id}:${c.state}`)).toEqual(['ui:ok', 'release:ok', 'relay:ok', 'tor:ok', 'solana:ok', 'ethereum:off', 'monero:ok', 'pinned:ok']);
 
     // A Monero node falls behind: the check fails and says which.
     f.nodes[1]!.height = 3_299_990;
@@ -214,14 +223,17 @@ describe('pnpm --filter @xmrswap/deploy start', () => {
 
   it('with nothing configured it starts on the default address rules and says what is missing', async () => {
     const uiPort = await closedPort();
-    const env = { XMRSWAP_SELFHOST_CONFIG: '/dev/null', XMRSWAP_UI_LISTEN: `127.0.0.1:${uiPort}`, RELAY_BIND: `127.0.0.1:${await closedPort()}`, RELAY_TOR_SOCKS: `127.0.0.1:${await closedPort()}` };
+    const env = { XMRSWAP_SELFHOST_CONFIG: '/dev/null', XMRSWAP_UI_LISTEN: `127.0.0.1:${uiPort}`, XMRSWAP_UI_RELEASES: tmp(), RELAY_BIND: `127.0.0.1:${await closedPort()}`, RELAY_TOR_SOCKS: `127.0.0.1:${await closedPort()}` };
     const p = run(['start'], env);
     await waitFor(p, 'Press Ctrl-C to stop');
+    expect(p.out()).toContain('Build:        not a recorded build (your own build, or changed files)');
     expect(p.out()).toContain('Solana RPC: not set.');
     expect(p.out()).toContain('Monero nodes: none set.');
     expect(p.out()).toContain('no Solana RPC URL or program id is set');
     const st = run(['status'], env);
     expect(await st.exited).toBe(1);
+    expect(st.out()).toContain('warn  Served UI is not a recorded build');
+    expect(st.out()).toContain('matches no record in the releases directory');
     expect(st.out()).toContain('warn  Relay reachable, but it has no maker list');
     expect(st.out()).toContain('FAIL  Solana RPC');
     expect(st.out()).toContain('No Monero node is configured');
@@ -279,7 +291,7 @@ describe('pnpm --filter @xmrswap/deploy start', () => {
     expect(await bad.exited).toBe(2);
     expect(bad.err()).toContain('configuration error: ui.listen');
 
-    const dir = mkdtempSync(path.join(tmpdir(), 'xmrswap-deploy-'));
+    const dir = tmp();
     const write = (text: string): string => {
       const file = path.join(dir, `${Math.random().toString(36).slice(2)}.toml`);
       writeFileSync(file, text);
@@ -361,7 +373,7 @@ describe('scripts/ensure-ui.mjs', () => {
       return out.trim().split('\n').map((l) => l.split(' ')[0]!);
     };
     expect(await plan({}, deployDir)).toEqual(['@xmrswap/protocol', '@xmrswap/relay', '@xmrswap/web']);
-    const dir = mkdtempSync(path.join(tmpdir(), 'xmrswap-deploy-'));
+    const dir = tmp();
     writeFileSync(path.join(dir, 'xmrswap.toml'), '[ui]\ndist = "/srv/verified-release/web"\n');
     const withoutUi = ['@xmrswap/protocol', '@xmrswap/relay'];
     expect(await plan({ XMRSWAP_UI_DIST: '/srv/verified-release/web' }, deployDir)).toEqual(withoutUi);

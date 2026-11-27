@@ -10,24 +10,31 @@
     "settings": "tsx src/cli.ts settings",
     "pinned": "tsx src/cli.ts pinned",
     "docs": "tsx src/cli.ts docs",
-    "release": "node scripts/ensure-ui.mjs && node scripts/release.mjs",
+    "release": "tsx src/release/cli.ts release",
     "checksums": "node scripts/checksums.mjs",
-    "verify": "node scripts/verify.mjs",
+    "verify": "tsx src/release/cli.ts verify",
+    "add-program": "tsx src/release/cli.ts add-program",
+    "verify-sums": "node scripts/verify.mjs",
     "build": "tsc -p tsconfig.json",
-    "test": "node scripts/ensure-ui.mjs && tsc -p tsconfig.json && vitest run"
+    "test": "node scripts/ensure-ui.mjs && tsc -p tsconfig.json && vitest run",
+    "test:determinism": "vitest run test/determinism.test.ts",
+    "program:docker": "bash scripts/program-docker-build.sh"
   },
   "dependencies": {
     "@xmrswap/protocol": "workspace:*",
     "@xmrswap/relay": "workspace:*",
-    "smol-toml": "1.9.1"
+    "smol-toml": "1.9.1",
+    "ajv": "8.20.0",
+    "ipfs-unixfs-importer": "17.1.1",
+    "blockstore-core": "7.0.1",
+    "multiformats": "14.0.8",
+    "tsx": "4.23.15"
   },
   "devDependencies": {
     "typescript": "7.0.2",
-    "tsx": "4.23.15",
     "vitest": "5.1.1",
     "@types/node": "22.20.5",
     "yaml": "2.9.1",
-    "ajv": "8.20.0",
     "playwright-core": "1.56.1",
     "@solana/web3.js": "1.98.4"
   }

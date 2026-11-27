@@ -70,6 +70,14 @@ export const SETTINGS: readonly SettingDef[] = [
   },
   {
     table: 'ui',
+    key: 'releases',
+    env: 'XMRSWAP_UI_RELEASES',
+    defaultToml: '"../releases"',
+    effect:
+      'Directory of recorded builds: one sub-directory per version, each holding a release.json. At start the bundle hashes the UI it is about to serve and looks there for a record with the same tree hash. The result is served at /release.json and shown by the status command. A relative path is taken from the deploy/ directory.',
+  },
+  {
+    table: 'ui',
     key: 'public_origin',
     env: 'XMRSWAP_UI_PUBLIC_ORIGIN',
     defaultToml: '""',
@@ -227,6 +235,8 @@ export interface UiSettings {
   listenPort: number;
   /** Absolute path of the built UI. */
   dist: string;
+  /** Absolute path of the directory of recorded builds. */
+  releases: string;
   /** Empty = derived from the request's Host. */
   publicOrigin: string;
   /** Whether `config.json` carries the RPC URLs. */
@@ -322,6 +332,8 @@ export function loadSettings(opts: LoadOptions = {}): BundleSettings {
   const listen = hostPort(pick('listen'), 'ui.listen');
   const distRaw = str(pick('dist'), 'ui.dist');
   if (distRaw === '') throw new ConfigError('ui.dist: expected a directory');
+  const releasesRaw = str(pick('releases'), 'ui.releases');
+  if (releasesRaw === '') throw new ConfigError('ui.releases: expected a directory');
   let publicOrigin = str(pick('public_origin'), 'ui.public_origin');
   if (publicOrigin !== '') {
     let u: URL | null = null;
@@ -372,6 +384,7 @@ export function loadSettings(opts: LoadOptions = {}): BundleSettings {
       listenHost: listen.host,
       listenPort: listen.port,
       dist: path.resolve(DEPLOY_DIR, distRaw),
+      releases: path.resolve(DEPLOY_DIR, releasesRaw),
       publicOrigin,
       givePageRpcUrls,
       ethereumRpcUrl,

@@ -2,3 +2,5 @@
 /xmrswap.toml
 /xmrswap.env
 /release/
+/.tools/
+/.build/

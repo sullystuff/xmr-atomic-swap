@@ -214,6 +214,10 @@ export function makerAccount(onion: string): Uint8Array {
 export interface FakeSolana extends Backend {
   /** Program ids that exist on this cluster. */
   programs: Set<string>;
+  /** Deployed program bytes by program id (upgradeable loader); programs without an entry get a small default. */
+  deployed: Map<string, { bytes: Uint8Array; authority: string | null; padding: number }>;
+  /** Deploy `bytes` at `programId`, as the upgradeable loader stores it, followed by `padding` zero bytes. */
+  deploy(programId: string, bytes: Uint8Array, authority?: string | null, padding?: number): void;
   /** The registered makers: account address and the onion address the account lists. */
   makers: { pubkey: string; onion: string }[];
   /** HTTP status to answer every request with instead of serving it (e.g. 429). */
@@ -223,6 +227,26 @@ export interface FakeSolana extends Backend {
 }
 
 const CLOCK_SYSVAR = 'SysvarC1ock11111111111111111111111111111111';
+const UPGRADEABLE_LOADER = 'BPFLoaderUpgradeab1e11111111111111111111111';
+/**
+ * A Config account written byte by byte: discriminator, admin, treasury authority, cluster tag,
+ * USDC mint, split mode and the two bumps, then zeros up to its fixed 256 bytes. The fields after
+ * the bumps are zero (caps off) under the layout of SPEC 11.8 and reserved under the earlier one,
+ * so the same bytes decode under both.
+ */
+function configAccount(): Uint8Array {
+  const data = Buffer.alloc(256);
+  Buffer.from(ACCOUNTS.Config.discriminator).copy(data, 0);
+  randomBytes(32).copy(data, 8);
+  randomBytes(32).copy(data, 40);
+  randomBytes(32).copy(data, 104);
+  data[137] = 255;
+  data[138] = 255;
+  return data;
+}
+
+/** Where the upgradeable loader keeps a program's bytes. */
+const programDataAddress = (program: string): PublicKey => PublicKey.findProgramAddressSync([new PublicKey(program).toBuffer()], new PublicKey(UPGRADEABLE_LOADER))[0];
 const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': 'POST, OPTIONS' };
 
 /**
@@ -249,6 +273,7 @@ export async function startFakeSolana(onions: string[] = []): Promise<FakeSolana
     rpc.methods.push(call.method);
     const ok = (result: unknown): void => reply(200, { jsonrpc: '2.0', id: call.id, result });
     if (call.method === 'getGenesisHash') return ok('FakeGenesis1111111111111111111111111111111111');
+    if (call.method === 'getVersion') return ok({ 'solana-core': '2.3.0', 'feature-set': 1 });
     if (call.method === 'getAccountInfo') {
       const address = String(call.params[0]);
       const value = (): unknown => {
@@ -258,10 +283,29 @@ export async function startFakeSolana(onions: string[] = []): Promise<FakeSolana
           clock.writeBigInt64LE(BigInt(Math.floor(Date.now() / 1000)), 32);
           return account(clock, 'Sysvar1111111111111111111111111111111111111');
         }
-        if (rpc.programs.has(address)) return account(new Uint8Array(36), 'BPFLoaderUpgradeab1e11111111111111111111111', true);
+        if (rpc.programs.has(address)) {
+          // UpgradeableLoaderState::Program { programdata_address }
+          const data = Buffer.alloc(36);
+          data.writeUInt32LE(2, 0);
+          programDataAddress(address).toBuffer().copy(data, 4);
+          return account(data, UPGRADEABLE_LOADER, true);
+        }
         for (const program of rpc.programs) {
-          if (address === configPda(program))
-            return account(encodeAccount('Config', { admin: key(), treasuryAuthority: key(), clusterTag: new Uint8Array(32), usdcMint: key(), splitMode: 0, bump: 255, treasuryBump: 255, reserved: new Uint8Array(117) }), program);
+          if (address !== programDataAddress(program).toBase58()) continue;
+          // UpgradeableLoaderState::ProgramData { slot, upgrade_authority_address }, then the program, then padding.
+          const d = rpc.deployed.get(program) ?? { bytes: Buffer.from('\x7fELF default program'), authority: null, padding: 0 };
+          const data = Buffer.alloc(45 + d.bytes.length + d.padding);
+          data.writeUInt32LE(3, 0);
+          data.writeBigUInt64LE(123_456n, 4);
+          if (d.authority) {
+            data[12] = 1;
+            new PublicKey(d.authority).toBuffer().copy(data, 13);
+          }
+          Buffer.from(d.bytes).copy(data, 45);
+          return account(data, UPGRADEABLE_LOADER);
+        }
+        for (const program of rpc.programs) {
+          if (address === configPda(program)) return account(configAccount(), program);
         }
         const maker = rpc.makers.find((m) => m.pubkey === address);
         if (maker) return account(makerAccount(maker.onion), PROGRAM_ID);
@@ -279,7 +323,17 @@ export async function startFakeSolana(onions: string[] = []): Promise<FakeSolana
     }
     reply(200, { jsonrpc: '2.0', id: call.id, error: { code: -32601, message: 'Method not found' } });
   })) as FakeSolana;
-  Object.assign(rpc, { programs: new Set([PROGRAM_ID]), makers: onions.map((onion) => ({ pubkey: key(), onion })), refuseWith: null, methods: [] });
+  Object.assign(rpc, {
+    programs: new Set([PROGRAM_ID]),
+    deployed: new Map(),
+    deploy: (programId: string, bytes: Uint8Array, authority: string | null = null, padding = 0) => {
+      rpc.programs.add(programId);
+      rpc.deployed.set(programId, { bytes, authority, padding });
+    },
+    makers: onions.map((onion) => ({ pubkey: key(), onion })),
+    refuseWith: null,
+    methods: [],
+  });
   return rpc;
 }
 

@@ -22,6 +22,7 @@ const sorted = (xs: Iterable<string>): string[] => [...xs].sort();
 const SAMPLES: Record<string, { toml: string; env: string }> = {
   'ui.listen': { toml: '"127.0.0.1:9999"', env: '127.0.0.1:9999' },
   'ui.dist': { toml: '"/srv/ui"', env: '/srv/ui' },
+  'ui.releases': { toml: '"/srv/records"', env: '/srv/records' },
   'ui.public_origin': { toml: '"https://swap.example.org"', env: 'https://swap.example.org' },
   'ui.give_page_rpc_urls': { toml: 'false', env: 'false' },
   'ui.ethereum_rpc_url_env': { toml: '"MY_ETH_URL"', env: 'MY_ETH_URL' },

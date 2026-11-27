@@ -26,6 +26,7 @@ function describe(s: BundleSettings): string[] {
     `settings file      ${s.file ?? '(none: defaults and environment only)'}`,
     `ui.listen          ${s.ui.listenHost}:${s.ui.listenPort}`,
     `ui.dist            ${s.ui.dist}`,
+    `ui.releases        ${s.ui.releases}`,
     `ui.public_origin   ${s.ui.publicOrigin || '(same as listen)'}`,
     `RPC URLs to page   ${s.ui.givePageRpcUrls ? 'yes (anyone who can load the page can read them)' : 'no'}`,
     `Solana RPC URL     ${set(s.relay.solanaRpcUrl)}`,
@@ -58,10 +59,15 @@ async function start(): Promise<number> {
   out(`    ${open}/`);
   out('');
   out(`Status page:  ${open}/#/status`);
+  out(bundle.served.recorded && bundle.served.release ? `Build:        recorded build ${bundle.served.release.version} (${bundle.served.release.status}), commit ${bundle.served.release.commit.slice(0, 12)}` : 'Build:        not a recorded build (your own build, or changed files)');
+  out(`              UI tree hash ${bundle.served.ui.tree_hash}`);
   out(`Status check: pnpm --filter @xmrswap/deploy run status`);
   out('');
-  if (!isLoopback(s.ui.listenHost)) out(`WARNING: the UI is listening on ${s.ui.listenHost}, not on localhost. Anyone who can reach it can use your relay. Read docs/self-hosting/exposing-the-relay.md.`);
+
   const publicHost = s.ui.publicOrigin ? new URL(s.ui.publicOrigin).hostname.replace(/^\[|\]$/g, '') : s.ui.listenHost;
+  // Inside a container the server listens on every address of the container while the port is published on localhost only; then the public origin says so.
+  if (!isLoopback(s.ui.listenHost) && !isLoopback(publicHost)) out(`WARNING: the UI is listening on ${s.ui.listenHost} and is not declared to be reachable on localhost only. Anyone who can reach it can use your relay. Read docs/self-hosting/exposing-the-relay.md.`);
+  else if (!isLoopback(s.ui.listenHost)) out(`Note: listening on ${s.ui.listenHost}; [ui] public_origin says it is reached on localhost only (a container port mapping). Make sure the port is not published on any other address.`);
   if (!isLoopback(publicHost) && s.ui.givePageRpcUrls && (s.relay.solanaRpcUrl || s.ui.ethereumRpcUrl))
     out('WARNING: the page is reachable from other machines and is given your RPC URLs. Every visitor can read them, including any API key. Set [ui] give_page_rpc_urls = false.');
   if (!s.relay.solanaRpcUrl) out(`Solana RPC: not set. Export SOLANA_RPC_URL before starting, or type a URL into the Settings page. Until then the relay knows no makers and forwards nothing.`);

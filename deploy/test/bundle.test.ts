@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { BundleError, type RunningBundle, startBundle } from '../src/server.js';
 import { loadSettings } from '../src/settings.js';
 import { type Backend, type FakeMonero, type FakeSocks, type FakeSolana, call, closeAll, fakeOnion, onClose, startFakeMaker, startFakeMonero, startFakeSocks, startFakeSolana } from './fakes.js';
+import { tmp } from './tmp.js';
 
 afterEach(closeAll);
 
@@ -158,14 +159,14 @@ describe('the static web UI', () => {
   });
 
   it('refuses to start without a built UI and says how to get one', async () => {
-    const empty = mkdtempSync(path.join(tmpdir(), 'xmrswap-deploy-'));
+    const empty = tmp();
     const settings = loadSettings({ env: { XMRSWAP_UI_LISTEN: '127.0.0.1:0', RELAY_BIND: '127.0.0.1:0', XMRSWAP_UI_DIST: empty } });
     await expect(startBundle(settings)).rejects.toThrow(BundleError);
     await expect(startBundle(settings)).rejects.toThrow(/pnpm --filter @xmrswap\/web build/);
   });
 
   it('serves an unpacked release from another directory', async () => {
-    const dir = mkdtempSync(path.join(tmpdir(), 'xmrswap-deploy-'));
+    const dir = tmp();
     writeFileSync(path.join(dir, 'index.html'), '<!doctype html><div id="root"></div>');
     const s = await stack({ XMRSWAP_UI_DIST: dir });
     expect((await call(s.bundle.port, '/')).text).toBe('<!doctype html><div id="root"></div>');

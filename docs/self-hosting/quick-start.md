@@ -154,17 +154,32 @@ systemctl --user enable --now xmrswap-selfhost.service
 
 `deploy/compose.yaml` runs the same two programs, plus a Tor client, in containers. The UI is published on `127.0.0.1:8780` only.
 
-**This path has not been run.** The machine this bundle was written on has no Docker. The compose file is checked by the tests as a document (valid YAML, valid against `deploy/compose.schema.json`, ports bound to localhost only), but the images have never been built. Expect to fix small things. Not run on the machine where this was written:
+**This path was built but not fully run.** On the machine where this was written, with rootless Docker:
+
+- Both images were built:
+
+  ```sh
+  docker compose -f deploy/compose.yaml build
+  ```
+
+  The first build compiles the Rust core and takes several minutes. The build uses the files in your checkout as they are, so it fails if the checkout does not compile.
+- The web container was started once **without** a published port and checked from inside: it served the page, the relay answered, and the UI it had built had the same tree hash as the recorded snapshot (see [Verifying the download](verifying-the-download.md)).
+- The Tor container was built but never started, because it would connect to the real Tor network.
+- The full `up` below, with the port published on localhost and the Tor client running, was **not** run.
+
+The compose file is also checked by the tests as a document: valid YAML, valid against `deploy/compose.schema.json`, ports bound to localhost only.
+
+Not run on the machine where this was written:
 
 ```sh not-run
-SOLANA_RPC_URL='<your Solana RPC URL>' RELAY_MONERO_NODES='<node URL>,<node URL>' docker compose -f deploy/compose.yaml up --build
+SOLANA_RPC_URL='<your Solana RPC URL>' RELAY_MONERO_NODES='<node URL>,<node URL>' docker compose -f deploy/compose.yaml up
 ```
 
 Things to know before you try it:
 
-- The first build compiles the Rust core and can take a long time.
 - A Monero node running on the same machine is not `127.0.0.1` from inside a container. Use an address the container can reach.
 - Here the Tor client is part of the bundle and is started by Docker, in its own container with no published port.
+- The start-up output says "listening on 0.0.0.0" with a note. That is the address inside the container; the compose file publishes the port on `127.0.0.1` only. Do not remove the `127.0.0.1:` prefix from the `ports` line.
 
 ## Stopping
 

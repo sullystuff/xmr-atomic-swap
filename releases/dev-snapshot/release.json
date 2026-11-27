@@ -1,0 +1,69 @@
+{
+  "format": "xmrswap-release/1",
+  "version": "dev-snapshot",
+  "status": "development-snapshot",
+  "note": "Development snapshot. Not a release: the program and both front ends are still changing, nothing is deployed, and no third party has verified this build.",
+  "commit": "e3c18fa65d69d635f1c490636c2f4ba4a60a1885",
+  "commit_time": "2026-11-27T18:01:38Z",
+  "program_id": "5SDDBJfrRbEehBjzKwZKRLdRNyqHi6sNynGwmmUW947u",
+  "contract": null,
+  "chain_id": null,
+  "program_executable_hash": "edae8238d4429ed6b0bbdce34ad761062f2cb5acd80affa8feaa130ba45e13ad",
+  "program_hash_source": "docker",
+  "web_tree_hash": "db2ab83ad6f806497374788c6e9cfbafb0cfda55996e309485ce5bb1bc4c69a3",
+  "console_tree_hash": "c97baf4c2a8fa4c288e34a2a4d84a841b6d9ed504dbfeec514cfb1a0bcde9f03",
+  "web_cid": "bafybeihgmq4wczciqlclwbvxdrl2wxjionrbssjymc5yibd4dki4j2upyq",
+  "console_cid": "bafybeihkfavpshczzosk6vpx2v24ram3c5teukn32r4jfpn2aoqpse6gem",
+  "cid_params": "unixfs; cidv1; sha2-256; raw-leaves; chunker=size-262144; layout=balanced-174; wrap-with-directory",
+  "onchain": {
+    "deployed": false
+  },
+  "tools": {
+    "node": "v22.21.0",
+    "pnpm": "9.15.0",
+    "rustc_wasm": "1.94.1",
+    "wasm_bindgen": "0.2.130",
+    "cargo_build_sbf": "3.0.9",
+    "platform_tools": "v1.51",
+    "rustc_sbf": "1.84.1",
+    "solana_verify": "0.4.11",
+    "vite": "8.3.8"
+  },
+  "build": {
+    "host": "linux-x64",
+    "wasm_rustflags": "--remap-path-prefix=<checkout>=/xmrswap --remap-path-prefix=<cargo home>=/cargo",
+    "lockfile": "frozen"
+  },
+  "program_builds": [
+    {
+      "method": "local-sbf",
+      "size": 813528,
+      "sha256": "a2a9c6f92e77840060c0d1d341ac2a09ebee8c5ab598452975175ae9e3b8a1a3",
+      "executable_hash": "5ef2576ca8fcb4d4131d416ee21e1227b949b852467f6d9716ad13accc3e074e",
+      "command": "cargo build-sbf -- --locked",
+      "double_build": "identical"
+    },
+    {
+      "method": "solana-verify-docker",
+      "size": 810296,
+      "sha256": "d359dbcd17c0ebd1bd6a69207875fab7d8e5ed54b5b18fd37aca9b45b63c0f2e",
+      "executable_hash": "edae8238d4429ed6b0bbdce34ad761062f2cb5acd80affa8feaa130ba45e13ad",
+      "command": "(cd solana/program && solana-verify build --library-name xmr_swap)",
+      "double_build": "identical",
+      "image": "solanafoundation/solana-verifiable-build@sha256:1e6f3097794495fa968c9e07d4da6adcdabf28efc6ddb0314c2e9e72b57a7a34",
+      "tool": "0.4.11"
+    }
+  ],
+  "web": {
+    "files": 6,
+    "bytes": 2987889,
+    "command": "pnpm --filter @xmrswap/core-wasm build && pnpm --filter @xmrswap/web build",
+    "double_build": "identical"
+  },
+  "console": {
+    "files": 3,
+    "bytes": 495472,
+    "command": "pnpm --filter @xmrswap/console build",
+    "double_build": "identical"
+  }
+}

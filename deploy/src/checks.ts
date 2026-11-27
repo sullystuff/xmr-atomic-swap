@@ -13,7 +13,7 @@ import type { BundleSettings } from './settings.js';
 
 export type CheckState = 'ok' | 'warn' | 'fail' | 'off';
 export interface Check {
-  id: 'ui' | 'relay' | 'tor' | 'solana' | 'ethereum' | 'monero' | 'pinned';
+  id: 'ui' | 'release' | 'relay' | 'tor' | 'solana' | 'ethereum' | 'monero' | 'pinned';
   label: string;
   state: CheckState;
   detail: string;
@@ -130,6 +130,20 @@ export async function runChecks(s: BundleSettings): Promise<Check[]> {
     } else out.push({ id: 'ui', label: 'Web UI', state: 'fail', detail: `${base}/ answered, but not with the web UI (HTTP ${index.status}). Another program may be using the port.` });
   } catch (e) {
     out.push({ id: 'ui', label: 'Web UI not running', state: 'fail', detail: `Nothing answers at ${base}/ (${msg(e)}). ${startHint}` });
+  }
+
+  // ---- which build is being served
+  if (running) {
+    try {
+      const r = (await getJson(`${base}/release.json`)).json as { format?: string; recorded?: boolean; ui?: { tree_hash?: string }; release?: { version: string; status: string; commit: string } | null } | null;
+      if (!r || r.format !== 'xmrswap-served/1' || typeof r.ui?.tree_hash !== 'string') throw new Error('unexpected answer');
+      if (r.recorded && r.release) {
+        const kind = r.release.status === 'release' ? 'release' : 'development snapshot (not a release)';
+        out.push({ id: 'release', label: `Served UI is the recorded build ${r.release.version}`, state: 'ok', detail: `A ${kind}, built from commit ${r.release.commit}. UI tree hash ${r.ui.tree_hash}. This is the server's own count of its files; see "Verifying the download" to check it yourself.` });
+      } else out.push({ id: 'release', label: 'Served UI is not a recorded build', state: 'warn', detail: `UI tree hash ${r.ui.tree_hash} matches no record in the releases directory. That is normal for your own build of a newer commit; it means no record vouches for these files.` });
+    } catch (e) {
+      out.push({ id: 'release', label: 'Served build unknown', state: 'warn', detail: `${base}/release.json could not be read (${msg(e)}).` });
+    }
   }
 
   // ---- relay and Tor

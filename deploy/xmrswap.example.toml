@@ -20,6 +20,13 @@ listen = "127.0.0.1:8780"
 # Environment: XMRSWAP_UI_DIST
 dist = "../apps/web/dist"
 
+# Directory of recorded builds: one sub-directory per version, each holding a release.json. At
+# start the bundle hashes the UI it is about to serve and looks there for a record with the same
+# tree hash. The result is served at /release.json and shown by the status command. A relative
+# path is taken from the deploy/ directory.
+# Environment: XMRSWAP_UI_RELEASES
+releases = "../releases"
+
 # The origin the browser uses to reach the UI, for example "https://swap.example.org", when that
 # differs from `listen` (a reverse proxy or a container port mapping). The server answers only
 # requests whose Host header matches `listen` or this origin, and the Monero proxy addresses given
