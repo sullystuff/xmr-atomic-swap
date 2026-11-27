@@ -162,6 +162,8 @@ export interface TermsHashFields {
   wF: number;
   depthAbove: [bigint, bigint, bigint];
   depths: [number, number, number];
+  /** `W_z`, the freeze window (Amendment 1, SPEC 11.6): 0 = the offer accepts no watcher. Required: it is a term of the offer. */
+  wZ: number;
 }
 
 export interface OpenHashSolanaFields {
@@ -178,6 +180,10 @@ export interface OpenHashSolanaFields {
   lockerView: Bytes;
   takerEncKey: Bytes;
   makerEncKey: Bytes;
+  /** `Swap.payout` (Amendment 1, SPEC 11.2): the address named at `take`, the taker's own by default. Omit in direction A (zeros). */
+  payout?: Bytes;
+  /** The watcher the taker named at `lock` (SPEC 11.6). Omit when none, and in direction B (zeros). */
+  watcher?: Bytes;
 }
 
 export interface OpenHashEthereumFields {
@@ -196,6 +202,10 @@ export interface OpenHashEthereumFields {
   takerEncKey: Bytes;
   makerEncKey: Bytes;
   keyLeaf: Bytes;
+  /** The `payout` argument of `take`, 20 bytes (the taker's own address by default). Omit in direction A (zero). */
+  payout?: Bytes;
+  /** The `watcher` argument of `lock`, 20 bytes. Omit when none, and in direction B (zero). */
+  watcher?: Bytes;
 }
 
 export interface Eip712Domain {
@@ -229,6 +239,8 @@ export interface EthQuote {
   epoch: number;
   keyRoot: Bytes;
   quoteId: bigint;
+  /** `W_z` (Amendment 1, SPEC 11.6): 0 = no watcher accepted; else 3,600 to 259,200. The last field of the struct and of the 255-byte compact form. */
+  freezeWindow: number;
 }
 
 /** The EIP-712 `Approval` (SPEC 2.10). */
@@ -257,9 +269,13 @@ export interface DeadlineParams {
   wF: number;
   depth: number;
   depBps: number;
+  /** `W_z`; 0 (the default) = no freeze window. Extends the final-window bound and moves `T_nl` earlier. */
+  wZ?: number;
   tLock: bigint;
   tActive?: bigint;
   tNotice?: bigint;
+  /** The freeze time `t_Z`. */
+  tFreeze?: bigint;
   tReady?: bigint;
   tRefund?: bigint;
 }
@@ -279,6 +295,8 @@ export interface Deadlines {
   tCut: bigint | null;
   tCo: bigint | null;
   tReadyMin: bigint | null;
+  /** `T_ff = max(t_Z + W_z, T_co)`: a frozen swap's claim-without-ready opens; the locker's refund and ready close. */
+  tFf: bigint | null;
   tCd: bigint | null;
   tFinal: bigint;
   tNl: bigint;
@@ -323,10 +341,15 @@ export interface SweepOutcome {
 // The shapes are those of interfaces/vectors/transitions.json, so a vector row can be fed to
 // the model as it stands: snake_case keys, amounts as decimal strings, times as Unix seconds.
 
-export type ModelState = 'NONE' | 'PENDING' | 'ACTIVE' | 'NOTICED' | 'READY' | 'ABORTED_FREE' | 'ABORTED_HOLD' | 'HOLD' | 'WITHHELD' | 'DONE';
-/** Who signs a call. `owner`: Solana, the maker's owner key; Ethereum, the account a parked payout is owed to. */
-export type ModelCaller = 'taker' | 'session' | 'operator' | 'owner' | 'anyone';
-export type ModelParty = 'taker' | 'maker' | 'treasury';
+export type ModelState = 'NONE' | 'PENDING' | 'ACTIVE' | 'NOTICED' | 'READY' | 'ABORTED_FREE' | 'ABORTED_HOLD' | 'HOLD' | 'WITHHELD' | 'DONE' | 'FROZEN';
+/**
+ * Who signs a call. `owner`: Solana, the maker's owner key; Ethereum, the account a parked payout
+ * is owed to. `watcher`: the watcher key the swap names. `payout`: the payout address of a
+ * direction-B swap, when it is not the taker's own.
+ */
+export type ModelCaller = 'taker' | 'session' | 'operator' | 'owner' | 'watcher' | 'payout' | 'anyone';
+/** A payout destination. There is no `watcher`: a watcher can never be paid. */
+export type ModelParty = 'taker' | 'maker' | 'treasury' | 'payout';
 
 /** The swap record the model reads and writes (the `swap` object of a vector step). */
 export interface ModelSwap {
@@ -358,9 +381,18 @@ export interface ModelSwap {
   t_final: number;
   t_refund: number;
   t_settled: number;
+  /** On a direction-B swap that ended in a claim with `payout` = `other`, this is owed to the payout address. */
   owed_taker: string;
   owed_maker: string;
   owed_treasury: string;
+  /** Where a direction-B claim pays: `none` (direction A), the `taker`'s own address, or an`other`. */
+  payout: 'none' | 'taker' | 'other';
+  /** A watcher key is named. */
+  watcher: boolean;
+  /** `W_z`; 0 = the swap cannot be frozen. */
+  w_z: number;
+  /** When the swap was frozen; 0 = never. */
+  t_freeze: number;
 }
 
 /** Arguments of `lock` (direction A) and `take` (direction B). */
@@ -381,31 +413,58 @@ export interface ModelOpenArgs {
   w_f: number;
   depth: number;
   dep_bps: number;
+  /** `W_z` of the offer or quote; 0 (the default) = no watcher accepted. */
+  w_z?: number;
+  /** `take`: the payout address. Default `taker` (the taker's own). `invalid` is refused (`PayoutInvalid` / `BadValue`). */
+  payout?: 'taker' | 'other' | 'invalid';
+  /** `lock`: the taker names a watcher. Refused against `w_z` = 0 (`WatcherNotAllowed`). */
+  watcher?: boolean;
 }
 
 /** A call into the state machine: its name and arguments. */
 export type ModelCall =
   | { call: 'lock' | 'take'; args: ModelOpenArgs }
   /** `open_ok`: `expected_open` equals the swap's open hash. */
-  | { call: 'approve' | 'fund'; args: { open_ok: boolean } }
+  | { call: 'approve'; args: { open_ok: boolean } }
+  /** `watcher`: the maker names a watcher at `fund` (direction B). */
+  | { call: 'fund'; args: { open_ok: boolean; watcher?: boolean } }
   | { call: 'reject'; args: { open_ok: boolean; reason: 0 | 1 | 2 } }
   /** `secret_ok`: the scalar opens the commitment. */
   | { call: 'refund' | 'claim'; args: { secret_ok: boolean } }
   | { call: 'withhold'; args: { evidence: 'absent' | 'opens' | 'mismatch' } }
   | { call: 'publish_evidence'; args: { opens: boolean } }
-  | { call: 'withdraw_owed'; args: { who: ModelParty } }
+  /** `push_owed`: Ethereum `pushOwed(token, account)`, callable by anyone. */
+  | { call: 'withdraw_owed' | 'push_owed'; args: { who: ModelParty } }
   | {
-      call: 'cancel_pending' | 'expire_pending' | 'post_notice' | 'set_ready' | 'abort' | 'refund_unnoticed' | 'expire_unnoticed' | 'release_deposit' | 'split_deposit';
+      call: 'cancel_pending' | 'expire_pending' | 'post_notice' | 'set_ready' | 'freeze' | 'abort' | 'refund_unnoticed' | 'expire_unnoticed' | 'release_deposit' | 'split_deposit';
       args?: Record<string, never>;
     };
 
-/** What the model cannot know. Everything defaults to "can receive" and no pending swaps. */
+/** The beta caps of the swap's asset (SPEC 11.1); amounts are decimal strings. */
+export interface ModelCaps {
+  /** The global switch. */
+  on: boolean;
+  max_swap: string;
+  max_open: string;
+  /** The asset's open value before the call. */
+  open_value: string;
+}
+
+/**
+ * What the model cannot know. Everything defaults to "can receive", no pending swaps, not
+ * paused, and caps switched on but out of reach with an open value of zero.
+ */
 export interface ModelEnv {
   taker_can_receive?: boolean;
   maker_can_receive?: boolean;
+  /** Solana: `false` at `split_deposit` also stands for a `treasury` slot the current `split_mode` does not name (the half is parked). */
   treasury_can_receive?: boolean;
+  payout_can_receive?: boolean;
   /** The maker's `open_pending` before a `lock` or `take`. */
   open_pending?: number;
+  /** The maker's pause that applies to this open. It refuses `lock` and `take` and nothing else. */
+  maker_paused?: boolean;
+  caps?: ModelCaps;
 }
 
 export interface ModelPayout {
@@ -431,6 +490,8 @@ export interface ModelEffects {
   open_pending: number;
   /** A row marked "closed" with nothing parked: Solana closes the account in the same instruction. */
   closed: boolean;
+  /** The asset's open value after the call (SPEC 11.1), decimal. */
+  open_value_after: string;
   /** The swap after the call. */
   swap: ModelSwap;
 }
@@ -485,6 +546,10 @@ interface Raw {
   passphraseSeal(passphrase: Bytes, plaintext: Bytes): Bytes;
   passphraseOpen(passphrase: Bytes, sealed: Bytes): Bytes;
   sweepJoint(params: SweepParams): Promise<SweepOutcome>;
+  walletSeed(chainTag: number, wallet: Bytes, signature: Bytes): Bytes;
+  walletKeySolanaMessage(site: string, genesisHash: Bytes, programId: Bytes, wallet: Bytes): Bytes;
+  walletKeyDigest(domain: Eip712Domain, site: string, wallet: Bytes): Bytes;
+  normalizeEthSignature(signature: Bytes): Bytes;
   modelApplyJson(input: string): string;
   tierValue(above: readonly bigint[], values: readonly bigint[], xmr: bigint): bigint;
   coreVersion(): string;
@@ -656,6 +721,34 @@ export const passphraseSeal = (passphrase: string | Bytes, plaintext: Bytes): By
   call((r) => r.passphraseSeal(utf8(passphrase), plaintext));
 export const passphraseOpen = (passphrase: string | Bytes, sealed: Bytes): Bytes =>
   call((r) => r.passphraseOpen(utf8(passphrase), sealed));
+
+// ------------------------------------------------------------------ SPEC 11.3 wallet-derived key
+
+/**
+ * `walletSeed(chainTag, wallet, signature)`: the 32-byte swap seed derived from one wallet
+ * signature over the fixed wallet-key message (Amendment 1, SPEC 11.3).
+ *
+ * Solana (`CHAIN_TAG.solana`): `wallet` is the 32-byte address, `signature` the 64 bytes that
+ * `signMessage` returned for `walletKeySolanaMessage`. Ethereum (`CHAIN_TAG.ethereum`): `wallet`
+ * is the 20-byte address, `signature` the 65 bytes of `eth_signTypedData_v4` over the
+ * `WalletKey` message; a high-s or 0/1-`v` spelling is normalised first, so every spelling of
+ * one signature gives one seed.
+ *
+ * `seed = HKDF-SHA256(ikm = sig, salt = DS("wallet-seed"), info = chain_tag ‖ wallet, L = 32)`.
+ * The signature is as secret as the seed: pass it here and drop it; never store or send it.
+ * The function does not verify the signature. The caller proves the seed by the determinism
+ * check (sign twice, compare) and by re-deriving the spend commitments of the wallet's swaps.
+ */
+export const walletSeed = (chainTag: ChainTag, wallet: Bytes, signature: Bytes): Bytes =>
+  call((r) => r.walletSeed(chainTag, wallet, signature));
+/** The exact bytes a Solana wallet signs (UTF-8, LF, no trailing newline). The three keys are raw 32-byte values. */
+export const walletKeySolanaMessage = (site: string, genesisHash: Bytes, programId: Bytes, wallet: Bytes): Bytes =>
+  call((r) => r.walletKeySolanaMessage(site, genesisHash, programId, wallet));
+/** The EIP-712 digest of the `WalletKey(string notice,string site,uint32 keyVersion,address wallet)` message under the contract's domain. */
+export const walletKeyDigest = (domain: Eip712Domain, site: string, wallet: Bytes): Bytes =>
+  call((r) => r.walletKeyDigest(domain, site, wallet));
+/** An Ethereum signature in its canonical spelling: `r ‖ s ‖ v`, 65 bytes, low s, `v` in {27, 28}. */
+export const normalizeEthSignature = (signature: Bytes): Bytes => call((r) => r.normalizeEthSignature(signature));
 
 // ------------------------------------------------------------------ SPEC 3 state machine
 

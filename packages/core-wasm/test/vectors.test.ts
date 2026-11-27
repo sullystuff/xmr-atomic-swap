@@ -317,11 +317,13 @@ describe('sol_signed.json', () => {
   });
   it('open hashes', () => {
     const open = s.cases.filter((c: any) => c.output?.open_hash);
-    expect(open.length).toBe(3);
+    // Three before Amendment 1, plus a watcher (direction A) and a payout address (direction B).
+    expect(open.length).toBe(5);
+    expect(new Set(open.map((c: any) => c.output.open_hash)).size).toBe(5);
     for (const c of open) {
       const i = c.input;
       expect(
-        hex(core.openHashSolana({ swap: hx(i.swap), tLock: BigInt(i.t_lock), direction: i.direction, asset: i.asset, xmr: BigInt(i.xmr), amount: BigInt(i.amount), deposit: BigInt(i.deposit), takerSpendPub: hx(i.taker_spend_pub), lockerView: hx(i.locker_view), takerEncKey: hx(i.taker_enc_key), makerEncKey: hx(i.maker_enc_key) })),
+        hex(core.openHashSolana({ swap: hx(i.swap), tLock: BigInt(i.t_lock), direction: i.direction, asset: i.asset, xmr: BigInt(i.xmr), amount: BigInt(i.amount), deposit: BigInt(i.deposit), takerSpendPub: hx(i.taker_spend_pub), lockerView: hx(i.locker_view), takerEncKey: hx(i.taker_enc_key), makerEncKey: hx(i.maker_enc_key), payout: hx(i.payout), watcher: hx(i.watcher) })),
         c.name,
       ).toBe(c.output.open_hash);
     }
@@ -337,7 +339,7 @@ describe('eip712.json', () => {
     minXmr: BigInt(m.minXmr), maxXmr: BigInt(m.maxXmr), tierXmr: triple(m.tierXmr.map(BigInt)), tierPrice: triple(m.tierPrice.map(BigInt)),
     depthXmr: triple(m.depthXmr.map(BigInt)), depth: triple(m.depth), depositBps: m.depositBps, approvalWindow: m.approvalWindow,
     noticeWindow: m.noticeWindow, claimDelay: m.claimDelay, claimWindow: m.claimWindow, finalWindow: m.finalWindow,
-    validUntil: BigInt(m.validUntil), epoch: m.epoch, keyRoot: hx(m.keyRoot), quoteId: BigInt(m.quoteId),
+    validUntil: BigInt(m.validUntil), epoch: m.epoch, keyRoot: hx(m.keyRoot), quoteId: BigInt(m.quoteId), freezeWindow: m.freezeWindow,
   });
   const approvalOf = (m: any): core.EthApproval => ({
     maker: hx(m.maker), taker: hx(m.taker), token: hx(m.token), direction: m.direction, maxXmr: BigInt(m.maxXmr),
@@ -358,6 +360,7 @@ describe('eip712.json', () => {
         expect('0x' + hex(core.quoteDigest(domainOf(td.domain), q)), c.name).toBe(expected);
         if (c.output?.compact) {
           expect(hex(core.encodeEthQuoteCompact(q)), c.name).toBe(c.output.compact);
+          expect(core.encodeEthQuoteCompact(q).length, c.name).toBe(s.compact_len);
           expect(hex(core.encodeEthQuoteCompact(q, hx(c.output.signature))), c.name).toBe(c.output.compact_signed);
           const back = core.decodeEthQuoteCompact(hx(c.output.compact_signed));
           expect('0x' + hex(core.quoteDigest(domain, back.quote))).toBe(c.output.digest);
@@ -369,32 +372,102 @@ describe('eip712.json', () => {
         approvals++;
       }
     }
-    expect(quotes).toBeGreaterThanOrEqual(8);
+    expect(s.compact_len).toBe(255);
+    expect(s.quote_type.endsWith(',uint64 quoteId,uint32 freezeWindow)')).toBe(true);
+    expect(quotes).toBeGreaterThanOrEqual(10);
     expect(approvals).toBeGreaterThanOrEqual(5);
   });
   it('swap id and open hashes', () => {
     const id = s.cases.find((c: any) => c.name === 'swap-id');
     expect('0x' + hex(core.ethSwapId(hx(id.input.taker), hx(id.input.swap_nonce)))).toBe(id.output.swap_id);
     const open = s.cases.filter((c: any) => c.output?.open_hash);
-    expect(open.length).toBe(3);
+    expect(open.length).toBe(5);
+    expect(new Set(open.map((c: any) => c.output.open_hash)).size).toBe(5);
     for (const c of open) {
       const i = c.input;
       expect(
-        '0x' + hex(core.openHashEthereum({ swapId: hx(i.swap_id), tLock: BigInt(i.t_lock), direction: i.direction, token: hx(i.token), xmr: BigInt(i.xmr), amount: BigInt(i.amount), deposit: BigInt(i.deposit), takerSpendPub: hx(i.taker_spend_pub), takerKey: hx(i.taker_key), takerKey2: hx(i.taker_key2), takerView: hx(i.taker_view), takerEncKey: hx(i.taker_enc_key), makerEncKey: hx(i.maker_enc_key), keyLeaf: hx(i.key_leaf) })),
+        '0x' + hex(core.openHashEthereum({ swapId: hx(i.swap_id), tLock: BigInt(i.t_lock), direction: i.direction, token: hx(i.token), xmr: BigInt(i.xmr), amount: BigInt(i.amount), deposit: BigInt(i.deposit), takerSpendPub: hx(i.taker_spend_pub), takerKey: hx(i.taker_key), takerKey2: hx(i.taker_key2), takerView: hx(i.taker_view), takerEncKey: hx(i.taker_enc_key), makerEncKey: hx(i.maker_enc_key), keyLeaf: hx(i.key_leaf), payout: hx(i.payout), watcher: hx(i.watcher) })),
         c.name,
       ).toBe(c.output.open_hash);
     }
   });
 });
 
+describe('wallet_seed.json (SPEC 11.3)', () => {
+  const s = suite('wallet_seed');
+  const input = (c: any) => ({ tag: c.input.chain_tag as core.ChainTag, wallet: hx(c.input.wallet), sig: hx(c.input.signature) });
+
+  it('every case: the seed, or the refusal', () => {
+    expect(valid(s).length).toBeGreaterThanOrEqual(6);
+    expect(invalid(s).length).toBeGreaterThanOrEqual(9);
+    for (const c of valid(s)) {
+      const { tag, wallet, sig } = input(c);
+      const seed = core.walletSeed(tag, wallet, sig);
+      expect(hex(seed), c.name).toBe(c.output.seed);
+      // From the seed on, SPEC 2.2 unchanged: the spend commitment a returning user compares.
+      expect(hex(core.deriveKeys(seed, tag, hx(c.output.swap_nonce)).spendPub), c.name).toBe(c.output.spend_pub);
+      if (c.output.normalised_signature) expect('0x' + hex(core.normalizeEthSignature(sig)), c.name).toBe(c.output.normalised_signature);
+    }
+    for (const c of invalid(s)) {
+      const { tag, wallet, sig } = input(c);
+      expect(codeOf(() => core.walletSeed(tag, wallet, sig)), c.name).toBe(c.error);
+    }
+  });
+
+  it('Solana: the message is the exact text, the signature verifies and is deterministic', () => {
+    const c = s.cases.find((x: any) => x.name === 'solana');
+    const m = c.message;
+    const wallet = hx(c.input.wallet);
+    const bytes = core.walletKeySolanaMessage(m.site, hx(m.genesis_hash), hx(m.program_id), wallet);
+    expect(hex(bytes)).toBe(m.bytes);
+    expect(new TextDecoder().decode(bytes)).toBe(m.text);
+    expect(m.text).toBe(
+      `Sign this only on ${m.site} to unlock your XMR swap keys.\nAnyone who gets this signature can take XMR you have not collected and act on your open swaps.\n\nxmrswap wallet key v1\ncluster: ${m.genesis_hash_base58}\nprogram: ${m.program_id_base58}\nwallet: ${m.wallet_base58}`,
+    );
+    expect(m.text.endsWith('\n')).toBe(false);
+    // An independent Ed25519 signs the same bytes to the same signature, twice.
+    const key = hx(m.wallet_private_seed);
+    expect(hex(ed25519.getPublicKey(key))).toBe(c.input.wallet);
+    expect(hex(ed25519.sign(bytes, key))).toBe(c.input.signature);
+    expect(hex(ed25519.sign(bytes, key))).toBe(c.input.signature);
+    expect(ed25519.verify(hx(c.input.signature), bytes, wallet)).toBe(true);
+    // Another site, cluster, program or wallet: other bytes.
+    expect(hex(core.walletKeySolanaMessage('other.example', hx(m.genesis_hash), hx(m.program_id), wallet))).not.toBe(m.bytes);
+    expect(hex(core.walletKeySolanaMessage(m.site, hx(m.program_id), hx(m.genesis_hash), wallet))).not.toBe(m.bytes);
+  });
+
+  it('Ethereum: the digest is the typed-data digest; every spelling of the signature gives one seed', () => {
+    const c = s.cases.find((x: any) => x.name === 'ethereum');
+    const td = c.message.typed_data;
+    const domain = { chainId: BigInt(td.domain.chainId), verifyingContract: hx(td.domain.verifyingContract) };
+    expect('0x' + hex(core.walletKeyDigest(domain, td.message.site, hx(c.input.wallet)))).toBe(c.message.digest);
+    expect(td.primaryType).toBe('WalletKey');
+    expect(td.types.WalletKey).toEqual([
+      { name: 'notice', type: 'string' }, { name: 'site', type: 'string' }, { name: 'keyVersion', type: 'uint32' }, { name: 'wallet', type: 'address' },
+    ]);
+    expect(td.message.notice).toBe(s.wallet_key_notice);
+    expect(td.message.keyVersion).toBe(1);
+    // The type hash is the WalletKey type's own.
+    expect('0x' + hex(keccak_256(new TextEncoder().encode(s.wallet_key_type)))).toBe(s.wallet_key_type_hash);
+    const seeds = new Set(s.cases.filter((x: any) => x.valid && x.name.startsWith('ethereum')).map((x: any) => x.output.seed));
+    expect(seeds.size).toBe(1);
+    const high = s.cases.find((x: any) => x.name === 'ethereum-high-s-normalised');
+    expect(high.input.signature).not.toBe(c.input.signature);
+    expect(high.output.normalised_signature).toBe(c.input.signature);
+    // The two chains never share a seed.
+    expect(s.cases.find((x: any) => x.name === 'solana').output.seed).not.toBe(c.output.seed);
+  });
+});
+
 describe('terms.json', () => {
   it('terms hashes', () => {
     const s = suite('terms');
-    expect(s.cases.length).toBeGreaterThanOrEqual(6);
+    expect(s.cases.length).toBeGreaterThanOrEqual(10);
+    expect(s.cases.some((c: any) => c.input.w_z > 0)).toBe(true);
     for (const c of s.cases) {
       const i = c.input;
       expect(
-        hex(core.termsHash({ asset: i.asset, direction: i.direction, mode: i.mode, depBps: i.dep_bps, feeBps: i.fee_bps, wA: i.w_a, wN: i.w_n, dC: i.d_c, wC: i.w_c, wF: i.w_f, depthAbove: i.depth_above.map(BigInt), depths: i.depths })),
+        hex(core.termsHash({ asset: i.asset, direction: i.direction, mode: i.mode, depBps: i.dep_bps, feeBps: i.fee_bps, wA: i.w_a, wN: i.w_n, dC: i.d_c, wC: i.w_c, wF: i.w_f, depthAbove: i.depth_above.map(BigInt), depths: i.depths, wZ: i.w_z })),
         c.name,
       ).toBe(c.output.terms_hash);
     }
@@ -460,10 +533,11 @@ describe('deadlines.json', () => {
       const i = c.input;
       const p = i.params;
       const params: core.DeadlineParams = {
-        chain: i.chain, pending: i.pending, wA: p.w_a, wN: p.w_n, dC: p.d_c, wC: p.w_c, wF: p.w_f, depth: p.depth, depBps: p.dep_bps,
+        chain: i.chain, pending: i.pending, wA: p.w_a, wN: p.w_n, dC: p.d_c, wC: p.w_c, wF: p.w_f, depth: p.depth, depBps: p.dep_bps, wZ: p.w_z,
         tLock: BigInt(i.t_lock ?? 0),
         ...(i.t_active != null ? { tActive: BigInt(i.t_active) } : {}),
         ...(i.t_notice != null ? { tNotice: BigInt(i.t_notice) } : {}),
+        ...(i.t_freeze != null ? { tFreeze: BigInt(i.t_freeze) } : {}),
         ...(i.t_ready != null ? { tReady: BigInt(i.t_ready) } : {}),
         ...(i.t_refund != null ? { tRefund: BigInt(i.t_refund) } : {}),
       };
@@ -478,13 +552,20 @@ describe('deadlines.json', () => {
         derived++;
         const n = (v: bigint | null) => (v === null ? null : Number(v));
         expect(
-          { t_pend: n(d.tPend), t_note: n(d.tNote), t_cut: n(d.tCut), t_co: n(d.tCo), t_ready_min: n(d.tReadyMin), t_cd: n(d.tCd), t_final: n(d.tFinal), t_nl: n(d.tNl), t_exp: n(d.tExp), t_hold: n(d.tHold), t_split: n(d.tSplit) },
+          { t_pend: n(d.tPend), t_note: n(d.tNote), t_cut: n(d.tCut), t_co: n(d.tCo), t_ready_min: n(d.tReadyMin), t_ff: n(d.tFf), t_cd: n(d.tCd), t_final: n(d.tFinal), t_nl: n(d.tNl), t_exp: n(d.tExp), t_hold: n(d.tHold), t_split: n(d.tSplit) },
           c.name,
         ).toEqual(c.output);
       }
     }
-    expect(bounds).toBeGreaterThanOrEqual(60);
-    expect(derived).toBeGreaterThanOrEqual(12);
+    expect(bounds).toBeGreaterThanOrEqual(80);
+    expect(derived).toBeGreaterThanOrEqual(18);
+    // Amendment 1: the freeze-window bounds, and a derived T_ff.
+    const byName = (name: string) => s.cases.find((c: any) => c.name === name);
+    expect(byName('solana-freeze-window-below-floor').error).toBe('FreezeWindowOutOfRange');
+    expect(byName('ethereum-freeze-window-over-cap').error).toBe('FreezeWindowOutOfRange');
+    expect(byName('solana-freeze-window-final-window-below-floor-approval').error).toBe('FinalWindowOutOfRange');
+    expect(byName('solana-derive-extreme-frozen-depth-10').output.t_ff).toBeGreaterThan(byName('solana-derive-extreme-frozen-depth-10').output.t_co);
+    expect(s.bound_check_order).toEqual(['DepositTooHigh', 'ApprovalWindowOutOfRange', 'NoticeWindowOutOfRange', 'DepthInvalid', 'ClaimDelayTooShort', 'ClaimWindowTooShort', 'FreezeWindowOutOfRange', 'FinalWindowOutOfRange']);
   });
 });
 
@@ -505,7 +586,8 @@ describe('transitions.json through the wasm model', () => {
   };
 
   it('every row: the wasm model gives the native result', () => {
-    expect(t.rows.length).toBeGreaterThanOrEqual(800);
+    expect(t.rows.length).toBe(t.summary.solana.rows + t.summary.ethereum.rows);
+    expect(t.rows.length).toBeGreaterThanOrEqual(1_150);
     let accepted = 0;
     let rejected = 0;
     for (const row of t.rows) {
@@ -517,22 +599,58 @@ describe('transitions.json through the wasm model', () => {
       if (row.ok) accepted++;
       else rejected++;
     }
-    expect(accepted).toBeGreaterThan(350);
-    expect(rejected).toBeGreaterThan(350);
+    expect(accepted).toBeGreaterThan(500);
+    expect(rejected).toBeGreaterThan(500);
   });
 
   it('every sequence: states, payouts and counters step by step', () => {
-    expect(t.sequences.length).toBe(364);
+    // 182 per chain before Amendment 1; the amendment's exit, invariant-3, payout and freeze sequences since.
+    expect(t.sequences.length).toBe(t.summary.solana.sequences + t.summary.ethereum.sequences);
+    expect(t.sequences.length).toBeGreaterThanOrEqual(640);
     for (const seq of t.sequences) {
       let state: core.ModelSwap | null = null;
+      let openValue = '0';
       for (const [i, step] of seq.steps.entries()) {
+        // The open value is threaded through the env, like the maker record by the caller.
+        expect(step.env.caps.open_value, `${seq.chain} ${seq.name} step ${i}`).toBe(openValue);
         const got = run(seq.chain, state, step);
         // The maker record is kept by the caller, not by the model: compare everything else.
         const { maker: _maker, ...want } = step.expect;
         expect(got, `${seq.chain} ${seq.name} step ${i} ${step.call}`).toEqual(want);
-        if (got.ok) state = got.swap;
+        if (got.ok) {
+          state = got.swap;
+          openValue = got.open_value_after;
+        }
       }
       expect(state, `${seq.chain} ${seq.name}`).toEqual(seq.final.swap);
+      expect(openValue, `${seq.chain} ${seq.name}`).toBe(seq.final.open_value);
+    }
+  });
+
+  it('multi-swap sequences: the open value is the sum of the counted values of the open swaps', () => {
+    expect(t.multi_sequences.length).toBe(4);
+    const open = new Set(['PENDING', 'ACTIVE', 'NOTICED', 'READY', 'FROZEN', 'ABORTED_FREE', 'ABORTED_HOLD']);
+    for (const seq of t.multi_sequences) {
+      const swaps: (core.ModelSwap | null)[] = Array.from({ length: seq.swaps }, () => null);
+      let openValue = 0n;
+      for (const [i, step] of seq.steps.entries()) {
+        const label = `${seq.chain} ${seq.name} step ${i} ${step.call}`;
+        expect(BigInt(step.env.caps.open_value), label).toBe(openValue);
+        const got = run(seq.chain, swaps[step.swap]!, step);
+        const { maker: _maker, ...want } = step.expect;
+        expect(got, label).toEqual(want);
+        if (got.ok) {
+          swaps[step.swap] = got.swap;
+          openValue = BigInt(got.open_value_after);
+        } else {
+          // A cap refuses only lock and take.
+          expect(['lock', 'take'], label).toContain(step.call);
+        }
+        const sum = swaps.reduce((acc, s) => acc + (s && open.has(s.state) ? BigInt(s.amount) + (s.direction === 'B' ? BigInt(s.deposit) : 0n) : 0n), 0n);
+        expect(openValue, label).toBe(sum);
+      }
+      expect(swaps, seq.name).toEqual(seq.final.swaps);
+      expect(openValue.toString()).toBe(seq.final.open_value);
     }
   });
 

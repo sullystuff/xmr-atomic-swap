@@ -64,6 +64,10 @@ window.coreTest = async (input) => {
   out.modelRefused = refused;
   out.modelEnabled = core.modelEnabled(input.modelChain, out.model[0].swap, { call: 'claim', args: { secret_ok: true } }, 'operator', input.modelSteps[0].at + 5);
   out.tier = core.tierValue([0n, 1_000_000_000_000n, 50_000_000_000_000n], [2n, 10n, 25n], 1_000_000_000_000n).toString();
+  // The wallet-derived seed (SPEC 11.3): the web build derives the vector seeds, and a high-s
+  // spelling of the Ethereum signature gives the same one.
+  out.walletSeeds = input.walletSeeds.map((c) => hex(core.walletSeed(c.tag, unhex(c.wallet), unhex(c.signature))));
+  out.terms = hex(core.termsHash({ asset: 0, direction: 0, mode: 0, depBps: 100, wA: 60, wN: 600, dC: 5400, wC: 1800, wF: 604800, depthAbove: [0n, 0n, 0n], depths: [10, 0, 0], wZ: 86_400 }));
   return out;
 };
 document.getElementById('status').textContent = 'ready';

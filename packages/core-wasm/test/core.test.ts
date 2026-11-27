@@ -1,6 +1,7 @@
 // The nodejs wasm build behind the typed wrapper, checked against independent implementations:
 // @noble (HKDF, ed25519, x25519, secp256k1, keccak) and viem (EIP-712). These are test oracles
 // only; product code never re-implements SPEC section 2 in TypeScript.
+import { readFileSync } from 'node:fs';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { ed25519, x25519 } from '@noble/curves/ed25519.js';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
@@ -292,8 +293,9 @@ describe('Solana byte formats (SPEC 2.9, 4.2, 3.12)', () => {
   });
 
   it('termsHash and openHashSolana are SHA-256 over the documented bytes', () => {
-    const terms = core.termsHash({ asset: 0, direction: 1, mode: 0, depBps: 250, wA: 60, wN: 600, dC: 5400, wC: 1800, wF: 604800, depthAbove: [0n, 10n ** 12n, 50n * 10n ** 12n], depths: [2, 10, 25] });
-    const pre = new Uint8Array(54);
+    const terms = core.termsHash({ asset: 0, direction: 1, mode: 0, depBps: 250, wA: 60, wN: 600, dC: 5400, wC: 1800, wF: 604800, depthAbove: [0n, 10n ** 12n, 50n * 10n ** 12n], depths: [2, 10, 25], wZ: 86_400 });
+    // Amendment 1 appended w_z (u32): 58 bytes after the tag.
+    const pre = new Uint8Array(58);
     const dv = new DataView(pre.buffer);
     pre.set([0, 1, 0]);
     dv.setUint16(3, 250, true);
@@ -303,12 +305,17 @@ describe('Solana byte formats (SPEC 2.9, 4.2, 3.12)', () => {
       dv.setBigUint64(27 + 9 * i, above as bigint, true);
       pre[35 + 9 * i] = depth as number;
     });
+    dv.setUint32(54, 86_400, true);
     expect(bytesToHex(terms)).toBe(bytesToHex(sha256(concatBytes(ds('terms'), pre))));
 
-    const open = core.openHashSolana({ swap: fill(1), tLock: 1_800_000_000n, direction: 0, asset: 1, xmr: 2n * 10n ** 12n, amount: 300_000_000n, deposit: 3_000_000n, takerSpendPub: fill(2), lockerView: fill(3), takerEncKey: fill(4), makerEncKey: fill(5) });
+    const openFields = { swap: fill(1), tLock: 1_800_000_000n, direction: 0, asset: 1, xmr: 2n * 10n ** 12n, amount: 300_000_000n, deposit: 3_000_000n, takerSpendPub: fill(2), lockerView: fill(3), takerEncKey: fill(4), makerEncKey: fill(5) };
+    const open = core.openHashSolana({ ...openFields, payout: fill(6), watcher: fill(7) });
     const u64 = (n: bigint) => toLe(n, 8);
-    const expected = sha256(concatBytes(ds('open'), fill(1), u64(1_800_000_000n), Uint8Array.of(0, 1), u64(2n * 10n ** 12n), u64(300_000_000n), u64(3_000_000n), fill(2), fill(3), fill(4), fill(5)));
-    expect(bytesToHex(open)).toBe(bytesToHex(expected));
+    const head = concatBytes(ds('open'), fill(1), u64(1_800_000_000n), Uint8Array.of(0, 1), u64(2n * 10n ** 12n), u64(300_000_000n), u64(3_000_000n), fill(2), fill(3), fill(4), fill(5));
+    // Amendment 1 appended payout and watcher (32 bytes each; zeros when absent).
+    expect(bytesToHex(open)).toBe(bytesToHex(sha256(concatBytes(head, fill(6), fill(7)))));
+    expect(bytesToHex(core.openHashSolana(openFields))).toBe(bytesToHex(sha256(concatBytes(head, new Uint8Array(64)))));
+    expect(bytesToHex(core.openHashSolana({ ...openFields, watcher: fill(7) }))).toBe(bytesToHex(sha256(concatBytes(head, new Uint8Array(32), fill(7)))));
   });
 });
 
@@ -323,6 +330,7 @@ describe('EIP-712 (SPEC 2.10) against viem', () => {
       { name: 'depositBps', type: 'uint16' }, { name: 'approvalWindow', type: 'uint32' }, { name: 'noticeWindow', type: 'uint32' },
       { name: 'claimDelay', type: 'uint32' }, { name: 'claimWindow', type: 'uint32' }, { name: 'finalWindow', type: 'uint32' },
       { name: 'validUntil', type: 'uint64' }, { name: 'epoch', type: 'uint32' }, { name: 'keyRoot', type: 'bytes32' }, { name: 'quoteId', type: 'uint64' },
+      { name: 'freezeWindow', type: 'uint32' },
     ],
     Approval: [
       { name: 'maker', type: 'address' }, { name: 'taker', type: 'address' }, { name: 'token', type: 'address' },
@@ -337,7 +345,7 @@ describe('EIP-712 (SPEC 2.10) against viem', () => {
     tierPrice: [61n * 10n ** 15n, 605n * 10n ** 14n, 60n * 10n ** 15n],
     depthXmr: [0n, 10n ** 12n, 50n * 10n ** 12n], depth: [2, 10, 25],
     depositBps: 100, approvalWindow: 120, noticeWindow: 1800, claimDelay: 10800, claimWindow: 5400, finalWindow: 604800,
-    validUntil: 1_800_000_150n, epoch: 3, keyRoot: fill(0xab), quoteId: 42n,
+    validUntil: 1_800_000_150n, epoch: 3, keyRoot: fill(0xab), quoteId: 42n, freezeWindow: 86_400,
   };
   const domain: core.Eip712Domain = { chainId: 31337n, verifyingContract: fill(0xcc, 20) };
   const viemDomain = { name: 'XmrAtomicSwap', version: '1', chainId: 31337n, verifyingContract: hex0x(domain.verifyingContract) } as const;
@@ -353,6 +361,9 @@ describe('EIP-712 (SPEC 2.10) against viem', () => {
     // Changing one array element changes it.
     const other = { ...quote, tierPrice: [quote.tierPrice[0], quote.tierPrice[1], quote.tierPrice[2] + 1n] as [bigint, bigint, bigint] };
     expect(hex0x(core.quoteDigest(domain, other))).not.toBe(viemDigest);
+    // The freeze window is signed: a quote that accepts a watcher is not the same quote without.
+    expect(hex0x(core.quoteDigest(domain, { ...quote, freezeWindow: 0 }))).not.toBe(viemDigest);
+    expect(hex0x(core.quoteDigest(domain, { ...quote, freezeWindow: 0 }))).toBe(hashTypedData({ domain: viemDomain, types, primaryType: 'Quote', message: { ...viemQuote, freezeWindow: 0 } }));
   });
 
   it('approvalDigest equals viem hashTypedData, and a viem signature recovers the signer', async () => {
@@ -366,13 +377,18 @@ describe('EIP-712 (SPEC 2.10) against viem', () => {
 
   it('compact form round-trips', () => {
     const compact = core.encodeEthQuoteCompact(quote);
-    expect(compact.length).toBe(251);
+    // Amendment 1: 255 bytes; the freeze window is the last four, little-endian.
+    expect(compact.length).toBe(255);
+    expect(new DataView(compact.buffer, compact.byteOffset).getUint32(251, true)).toBe(86_400);
+    expect(new DataView(compact.buffer, compact.byteOffset).getBigUint64(243, true)).toBe(42n);
     const signed = core.encodeEthQuoteCompact(quote, fill(7, 65));
-    expect(signed.length).toBe(316);
+    expect(signed.length).toBe(320);
+    expect(() => core.decodeEthQuoteCompact(compact.subarray(0, 251))).toThrow(/BadLength/);
     const back = core.decodeEthQuoteCompact(signed);
     expect(back.quote.tierPrice).toEqual(quote.tierPrice);
     expect(back.quote.validUntil).toBe(quote.validUntil);
     expect(back.quote.depth).toEqual([2, 10, 25]);
+    expect(back.quote.freezeWindow).toBe(86_400);
     expect(bytesToHex(back.sig!)).toBe(bytesToHex(fill(7, 65)));
     expect(hex0x(core.quoteDigest(domain, back.quote))).toBe(hex0x(core.quoteDigest(domain, quote)));
     expect(core.decodeEthQuoteCompact(compact).sig).toBeUndefined();
@@ -383,9 +399,45 @@ describe('EIP-712 (SPEC 2.10) against viem', () => {
     const nonce = Uint8Array.from({ length: 16 }, (_, i) => i);
     const id = core.ethSwapId(fill(0x22, 20), nonce);
     expect(bytesToHex(id)).toBe(bytesToHex(keccak_256(concatBytes(new Uint8Array(12), fill(0x22, 20), nonce, new Uint8Array(16)))));
-    const h = core.openHashEthereum({ swapId: id, tLock: 1_800_000_000n, direction: 1, token: fill(0x33, 20), xmr: 7n, amount: 1n << 100n, deposit: 5n, takerSpendPub: fill(1), takerKey: fill(2, 20), takerKey2: fill(3, 20), takerView: fill(4), takerEncKey: fill(5), makerEncKey: fill(6), keyLeaf: fill(7) });
-    const expected = sha256(concatBytes(utf8ToBytes('xmrswap/v1/open'), Uint8Array.of(0), id, toBe(1_800_000_000n, 8), Uint8Array.of(1), fill(0x33, 20), toBe(7n, 8), toBe(1n << 100n), toBe(5n), fill(1), fill(2, 20), fill(3, 20), fill(4), fill(5), fill(6), fill(7)));
-    expect(bytesToHex(h)).toBe(bytesToHex(expected));
+    const fields = { swapId: id, tLock: 1_800_000_000n, direction: 1, token: fill(0x33, 20), xmr: 7n, amount: 1n << 100n, deposit: 5n, takerSpendPub: fill(1), takerKey: fill(2, 20), takerKey2: fill(3, 20), takerView: fill(4), takerEncKey: fill(5), makerEncKey: fill(6), keyLeaf: fill(7) };
+    const h = core.openHashEthereum({ ...fields, payout: fill(8, 20), watcher: fill(9, 20) });
+    const head = concatBytes(utf8ToBytes('xmrswap/v1/open'), Uint8Array.of(0), id, toBe(1_800_000_000n, 8), Uint8Array.of(1), fill(0x33, 20), toBe(7n, 8), toBe(1n << 100n), toBe(5n), fill(1), fill(2, 20), fill(3, 20), fill(4), fill(5), fill(6), fill(7));
+    // Amendment 1 appended `address payout, address watcher` (packed, 20 bytes each; zero when absent).
+    expect(bytesToHex(h)).toBe(bytesToHex(sha256(concatBytes(head, fill(8, 20), fill(9, 20)))));
+    expect(bytesToHex(core.openHashEthereum(fields))).toBe(bytesToHex(sha256(concatBytes(head, new Uint8Array(40)))));
+  });
+});
+
+describe('wallet-derived key (SPEC 11.3) against viem', () => {
+  const vector = JSON.parse(readFileSync(new URL('../../../interfaces/vectors/wallet_seed.json', import.meta.url), 'utf8'));
+  const c = vector.cases.find((x: any) => x.name === 'ethereum');
+  const td = c.message.typed_data;
+  const types = { WalletKey: td.types.WalletKey } as const;
+  const viemDomain = { ...td.domain, chainId: BigInt(td.domain.chainId) };
+
+  it('viem hashes the WalletKey message to the same digest and signs it to the same 65 bytes, twice', async () => {
+    expect(hashTypedData({ domain: viemDomain, types, primaryType: 'WalletKey', message: td.message })).toBe(c.message.digest);
+    const account = privateKeyToAccount(c.message.wallet_private_key);
+    expect(account.address.toLowerCase()).toBe(c.input.wallet);
+    const first = await account.signTypedData({ domain: viemDomain, types, primaryType: 'WalletKey', message: td.message });
+    const second = await account.signTypedData({ domain: viemDomain, types, primaryType: 'WalletKey', message: td.message });
+    // RFC 6979: the determinism check of SPEC 11.3 passes for such a signer.
+    expect(first).toBe(second);
+    expect(first).toBe(c.input.signature);
+    expect(await recoverTypedDataAddress({ domain: viemDomain, types, primaryType: 'WalletKey', message: td.message, signature: first })).toBe(account.address);
+    const seed = core.walletSeed(core.CHAIN_TAG.ethereum, hexToBytes(c.input.wallet.slice(2)), hexToBytes(first.slice(2)));
+    expect(bytesToHex(seed)).toBe(c.output.seed);
+  });
+
+  it('a signer that answers differently each time gives different seeds, which the determinism check catches', () => {
+    const wallet = hexToBytes(c.input.wallet.slice(2));
+    const sig = hexToBytes(c.input.signature.slice(2));
+    const other = Uint8Array.from(sig);
+    other[5] ^= 1;
+    expect(bytesToHex(core.walletSeed(core.CHAIN_TAG.ethereum, wallet, other))).not.toBe(bytesToHex(core.walletSeed(core.CHAIN_TAG.ethereum, wallet, sig)));
+    // Wrong lengths and chain tags are refused, not hashed.
+    expect(() => core.walletSeed(core.CHAIN_TAG.solana, wallet, sig)).toThrow(/BadLength/);
+    expect(() => core.walletSeed(3 as never, wallet, sig)).toThrow(/UnknownChainTag/);
   });
 });
 

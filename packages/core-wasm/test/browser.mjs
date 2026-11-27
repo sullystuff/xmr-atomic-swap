@@ -69,6 +69,10 @@ const expected = {
 const transitions = JSON.parse(readFileSync(path.join(here, '../../../interfaces/vectors/transitions.json'), 'utf8'));
 const happy = transitions.sequences.find((s) => s.name === 'happy/B/window' && s.chain === 'ethereum');
 const modelSteps = happy.steps.map(({ call, args, caller, at, env }) => ({ call, args, caller, at, env }));
+// The wallet-seed vectors (SPEC 11.3).
+const walletVectors = JSON.parse(readFileSync(path.join(here, '../../../interfaces/vectors/wallet_seed.json'), 'utf8')).cases.filter((c) => c.valid);
+const strip = (s) => (s.startsWith('0x') ? s.slice(2) : s);
+const walletSeeds = walletVectors.map((c) => ({ tag: c.input.chain_tag, wallet: strip(c.input.wallet), signature: strip(c.input.signature) }));
 
 const browser = await chromium.launch({ executablePath: await findChromium(), headless: true });
 let code = 0;
@@ -79,7 +83,7 @@ try {
   page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
   await page.goto(origin + '/');
   await page.waitForFunction(() => document.getElementById('status').textContent === 'ready');
-  const got = await page.evaluate((input) => window.coreTest(input), { seed: hex(seed), shareId: hex(shareId), ctx: hex(ctx), nodeBlob: hex(nodeBlob), modelChain: happy.chain, modelSteps });
+  const got = await page.evaluate((input) => window.coreTest(input), { seed: hex(seed), shareId: hex(shareId), ctx: hex(ctx), nodeBlob: hex(nodeBlob), modelChain: happy.chain, modelSteps, walletSeeds });
   assert.deepEqual(errors, []);
 
   assert.equal(got.version, core.coreVersion());
@@ -108,6 +112,9 @@ try {
     assert.deepEqual(fx, want, `model step ${i} (${happy.steps[i].call})`);
   });
   assert.equal(got.model.at(-1).state, 'DONE');
+  assert.ok(walletVectors.length >= 6);
+  assert.deepEqual(got.walletSeeds, walletVectors.map((c) => c.output.seed), 'walletSeed differs between the web build and the vectors');
+  assert.equal(got.terms, hex(core.termsHash({ asset: 0, direction: 0, mode: 0, depBps: 100, wA: 60, wN: 600, dC: 5400, wC: 1800, wF: 604800, depthAbove: [0n, 0n, 0n], depths: [10, 0, 0], wZ: 86_400 })));
   assert.equal(got.modelRefused, 'BadState');
   assert.equal(got.modelEnabled, false);
   assert.equal(got.tier, '10');
