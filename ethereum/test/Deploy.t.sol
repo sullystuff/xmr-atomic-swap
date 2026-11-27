@@ -32,6 +32,33 @@ contract DeployTest is Test {
         assertEq(XmrSwap(d.proxy).usdc(), address(other));
     }
 
+    /// A plain deployment is fail-closed; the script's own run sets usable caps explicitly (or
+    /// switches them off) and records which.
+    function test_caps_failClosedUntilTheScriptOpensThem() public {
+        DeployAnvil.Deployment memory d = script.deploy(owner, treasury, address(0));
+        assertTrue(d.capsOn);
+        assertFalse(d.capsSet);
+        (bool on, uint128 maxSwap, uint128 maxOpen, uint128 openValue) = XmrSwap(d.proxy).capsOf(address(0));
+        assertTrue(on);
+        assertEq(uint256(maxSwap) + maxOpen + openValue, 0, "nothing can open");
+
+        d = script.deployOpen(treasury, false);
+        assertTrue(d.capsOn && d.capsSet);
+        (on, maxSwap, maxOpen,) = XmrSwap(d.proxy).capsOf(address(0));
+        assertTrue(on);
+        assertEq(maxSwap, 100 ether);
+        assertEq(maxOpen, 1_000 ether);
+        (, maxSwap, maxOpen,) = XmrSwap(d.proxy).capsOf(d.usdc);
+        assertEq(maxSwap, 250_000e6);
+        assertEq(maxOpen, 2_500_000e6);
+
+        d = script.deployOpen(treasury, true);
+        assertTrue(d.capsSet && !d.capsOn);
+        (on, maxSwap,,) = XmrSwap(d.proxy).capsOf(address(0));
+        assertFalse(on);
+        assertEq(maxSwap, 0);
+    }
+
     function test_refusesEveryOtherChain() public {
         uint256[7] memory chains = [uint256(1), 10, 137, 8453, 42161, 11155111, 31338];
         for (uint256 i; i < chains.length; ++i) {

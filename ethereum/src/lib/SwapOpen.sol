@@ -229,7 +229,7 @@ library SwapOpen {
         } else if (named == address(0) || named == address(this)) {
             revert IXmrSwap.BadValue(); // the payout address
         }
-        _addOpenValue($, q.token, amount, direction == 0 ? amount : amount + deposit);
+        SwapStore._addOpenValue($, q.token, amount, direction == 0 ? amount : amount + deposit);
         if (m.openPending >= SwapMath.MAX_OPEN_PENDING) revert IXmrSwap.TooManyPending();
         unchecked {
             m.openPending += 1;
@@ -257,24 +257,6 @@ library SwapOpen {
         s.tPendingDeadline = uint64(block.timestamp + q.approvalWindow);
         s.tFinal = uint64(block.timestamp + q.finalWindow);
         if (q.freezeWindow != 0) s.freezeSecs = q.freezeWindow;
-    }
-
-    /// The beta caps (SPEC 11.1) and the open-value accounting. `lock` and `take` are the only
-    /// calls a cap can refuse. With the switch on: `amount > maxSwap` is `SwapCapExceeded`, then
-    /// `openValue + counted > maxOpen` is `OpenCapExceeded`; exactly at a cap is allowed. The add
-    /// is exact: an open value that would not fit 128 bits is refused even with the switch off
-    /// (in direction B that bounds `amount + deposit` too), never wrapped or saturated.
-    function _addOpenValue(SwapStore.Layout storage $, address token, uint256 amount, uint256 counted) private {
-        SwapStore.Cap storage cap = $.caps[token];
-        bool on = $.capsOn;
-        if (on && amount > cap.maxSwap) revert IXmrSwap.SwapCapExceeded();
-        // amount, deposit and the open value are each below 2^128: no overflow in 256 bits.
-        uint256 openValue = uint256(cap.openValue) + counted;
-        if (openValue > (on ? cap.maxOpen : type(uint128).max)) {
-            if (on) revert IXmrSwap.OpenCapExceeded();
-            revert IXmrSwap.AmountOutOfRange();
-        }
-        cap.openValue = uint128(openValue);
     }
 
     /// Advance approval (SPEC 2.10): same signer as the quote, bound to the caller.

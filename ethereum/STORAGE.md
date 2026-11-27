@@ -1,6 +1,6 @@
 # Storage layout of XmrSwap
 
-Recorded by work package 3 after the swap record was packed (M1 follow-up 5). **This layout must not change once a proxy is deployed**: an upgrade keeps the proxy's storage, so a new implementation may only append fields at the end of `SwapStore.Layout`, or after the last field of a record that is reached through a mapping, and may never reorder, resize or remove one.
+Recorded by work package 3 after the swap record was packed (M1 follow-up 5) and updated by A3 for Amendment 1 (record slots 24 and 25, root slots 13 and 14, all appended; nothing existing moved). **This layout must not change once a proxy is deployed**: an upgrade keeps the proxy's storage, so a new implementation may only append fields at the end of `SwapStore.Layout`, or after the last field of a record that is reached through a mapping, and may never reorder, resize or remove one.
 
 ## Where the state lives
 
@@ -24,14 +24,16 @@ forge inspect StorageLayoutProbe storage-layout
 - A swap's record starts at `keccak256(abi.encode(swapId, uint256(S) + 1))`.
 - A maker's record starts at `keccak256(abi.encode(maker, uint256(S)))`.
 
-`test/Packing.t.sol` pins the swap record against raw storage slot by slot (`test_layout_isTheRecordedOne`), checks which slots `lock` and `take` write, and round-trips every field at its extremes through `getSwap`.
+`test/Packing.t.sol` pins the swap record against raw storage slot by slot (`test_layout_isTheRecordedOne`, `test_layout_amendmentSlots`, `test_layout_capsSlots`), checks which slots `lock` and `take` write, and round-trips every field at its extremes through `getSwap`.
 
 ## The packed swap record
 
-`getSwap` returns the frozen `IXmrSwap.Swap`; in storage the same fields are packed into 24 slots (the interface struct in its own order takes 28, plus the ciphertext). `lock` writes slots 0 to 16, 17 fresh slots instead of 22. `take` writes 13 and leaves slots 7, 11, 12 and 15 and the address half of slot 6 for `fund`.
+`getSwap` returns the frozen `IXmrSwap.Swap`; in storage the same fields are packed into 26 slots (24 before Amendment 1). `lock` writes slots 0 to 16, 17 fresh slots instead of 22. `take` writes 13 and leaves slots 7, 11, 12 and 15 and the address half of slot 6 for `fund`.
 
 - `amount`, `deposit` and `price` are `uint128`. `lock` and `take` refuse anything above `2^128 − 1` with `AmountOutOfRange` (`SwapStore._u128`); nothing is truncated.
 - Slot 2 is the status slot: every transition writes `state` there, and the transition that settles the swap writes `outcome` and `tSettled` in the same slot.
+- Slots 24 and 25 (Amendment 1): slot 24 holds the payout address (written by `take` only when it is not the taker's own; `getSwap` returns the taker otherwise), `tFreeze` (written by `freeze`) and `freezeSecs` (written by `lock`/`take` only when the quote's `freezeWindow` is not zero); slot 25 holds the watcher (written by `lock` or `fund` only when one is named). A swap with the default payout, no freeze window and no watcher writes neither.
+- `flags` value 32 = counted in the asset's open value; `state` 10 = FROZEN.
 - Slot 17 is first written by the notice, slot 18 by a keyed refund, slots 19 and 20 (and the four data slots of the 104-byte ciphertext at `keccak256(slot 20)`) by the notice, 21 and 22 by evidence, 23 by the call that reveals a secret.
 
 ### Fields
@@ -87,8 +89,12 @@ forge inspect StorageLayoutProbe storage-layout
 | 21 | 0 | 32 | `evidenceTxid` | `bytes32` |
 | 22 | 0 | 32 | `evidenceView` | `bytes32` |
 | 23 | 0 | 32 | `revealed` | `uint256` |
+| 24 | 0 | 20 | `payout` | `address` |
+| 24 | 20 | 8 | `tFreeze` | `uint64` |
+| 24 | 28 | 4 | `freezeSecs` | `uint32` |
+| 25 | 0 | 20 | `watcher` | `address` |
 
-24 slots.
+26 slots.
 
 ## The maker record (`IXmrSwap.Maker`, unchanged)
 
@@ -126,26 +132,40 @@ forge inspect StorageLayoutProbe storage-layout
 | 10 | 0 | 20 | `treasury` | `address` |
 | 11 | 0 | 20 | `usdc` | `address` |
 | 12 | 0 | 32 | `makerOfOperator` | `mapping(address => address)` |
+| 13 | 0 | 32 | `caps` | `mapping(address => struct SwapStore.Cap)` |
+| 14 | 0 | 1 | `capsOn` | `bool` |
 
-13 slots.
+15 slots.
+
+Slots 13 and 14 were appended by Amendment 1 (SPEC 11.1, 11.8). A token's caps are at `keccak256(abi.encode(token, uint256(S) + 13))`:
+
+| Slot | Offset | Bytes | Field | Type |
+| --- | --- | --- | --- | --- |
+| 0 | 0 | 16 | `maxSwap` | `uint128` |
+| 0 | 16 | 16 | `maxOpen` | `uint128` |
+| 1 | 0 | 16 | `openValue` | `uint128` |
+
+`capsOn` is true after `initialize` and every cap is zero: a fresh deployment is fail-closed. `openValue` is the sum of `amount` (direction A) or `amount + deposit` (direction B) over the swaps in an open state; the add at `lock`/`take` is exact and the one subtraction, on entering HOLD or DONE, saturates.
 
 `volume` and `withheldVolume` saturate at `2^128 − 1`. `makerOfOperator` is the operator index (DEVIATIONS.md, row 5).
 
-## Gas, before and after the packing
+## Gas
 
-A whole transaction (`forge test --isolate --match-contract GasTest -vv`), ETH / USDC.
+A whole transaction (`forge test --isolate --match-contract GasTest -vv`), ETH / USDC. "Unpacked" is the first version (the interface struct as the storage struct), "packed" the 24-slot record, "Amendment 1" the contract as it is now, measured with another swap of the asset open, as in steady state.
 
-| Call | Before | After |
-| --- | --- | --- |
-| `lock` (A) | 617,071 / 672,712 | 528,905 / 564,646 |
-| `take` (B) | 499,142 / 554,771 | 432,390 / 468,119 |
-| `approve` (A) | 93,424 | 98,293 |
-| `fund` (B) | 193,832 / 220,511 | 176,819 / 203,498 |
-| `postNotice` | 220,936 (A), 223,213 (B) | 220,717 (A), 220,980 (B) |
-| `setReady` | 70,524 (A), 70,176 (B) | 67,854 (A), 67,887 (B) |
-| `claim` (A) | 113,174 / 132,834 | 110,584 / 130,244 |
-| `claim` (B) | 115,259 / 134,919 | 110,474 / 130,134 |
-| `refund` (A, READY after T_cd) | 109,124 / 128,784 | 126,291 / 145,951 |
-| `refund` (B, READY after T_cd) | 125,940 / 145,600 | 143,157 / 162,817 |
+| Call | Unpacked | Packed | Amendment 1 |
+| --- | --- | --- | --- |
+| `lock` (A) | 617,071 / 672,712 | 528,905 / 564,646 | 541,315 / 577,044 |
+| `take` (B) | 499,142 / 554,771 | 432,390 / 468,119 | 445,089 / 480,818 |
+| `approve` (A) | 93,424 | 98,293 | 98,246 |
+| `fund` (B) | 193,832 / 220,511 | 176,819 / 203,498 | 178,083 / 204,774 |
+| `postNotice` | 220,936 (A), 223,213 (B) | 220,717 (A), 220,980 (B) | 220,689 (A), 223,128 (B) |
+| `setReady` | 70,524 (A), 70,176 (B) | 67,854 (A), 67,887 (B) | 67,983 (A), 68,006 (B) |
+| `claim` (A) | 113,174 / 132,834 | 110,584 / 130,244 | 116,734 / 136,394 |
+| `claim` (B) | 115,259 / 134,919 | 110,474 / 130,134 | 118,869 / 138,529 |
+| `refund` (A, READY after T_cd) | 109,124 / 128,784 | 126,291 / 145,951 | 132,509 / 152,169 |
+| `refund` (B, READY after T_cd) | 125,940 / 145,600 | 143,157 / 162,817 | 149,404 / 169,064 |
 
-Two calls cost more than before. `approve` writes three already-used slots instead of two (about 5,000 gas). A keyed refund writes `tRefund` into a slot of its own (about 17,000 gas): the eight address slots have room for eight of the thirteen 64-bit fields, four more share slot 17, and the one left over is the refund time, which only the uncommon path writes. A happy path in direction A (lock, approve, notice, ready, claim) costs about 89,000 gas less than before with ETH and about 109,000 less with USDC.
+Packing: two calls cost more than unpacked. `approve` writes three already-used slots instead of two (about 5,000 gas). A keyed refund writes `tRefund` into a slot of its own (about 17,000 gas): the eight address slots have room for eight of the thirteen 64-bit fields, four more share slot 17, and the one left over is the refund time, which only the uncommon path writes.
+
+Amendment 1: an open reads the cap switch and the asset's caps and adds to the open value (about 12,500 gas with other swaps open; about 17,000 more when the asset's open value was zero, since the slot is then set from zero), and the transition that takes the swap out of the open states subtracts from it (about 6,000 gas). A swap with a freeze window, a watcher or another payout address writes slot 24 or 25 for the first time (about 22,000 gas each). No other call reads or writes anything new.

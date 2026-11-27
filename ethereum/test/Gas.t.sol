@@ -29,12 +29,17 @@ contract GasTest is Base {
     }
 
     function _happyPath(uint8 direction, address token, string memory tag) internal {
+        // Another swap of the asset stays open throughout, so the asset's open value is not zero
+        // (steady state; from zero an open costs about 17,000 gas more, and the exit that returns
+        // it to zero is refunded part of that).
+        _swapIn(direction, token, ACTIVE);
+        takerSecret = _share("first taker share");
         // A first swap warms the maker's counters and the token balances, as in steady state.
         _claim(_swapIn(direction, token, READY));
         takerSecret = _share("second taker share");
 
         Open memory o = _open(direction, token, uint64(2 * ONE_XMR), _defaultPrice(token));
-        o.leafIndex = 3;
+        o.leafIndex = 5;
         o.budget = 0.002 ether;
         (uint256 amount, uint256 stake) = _stake(o);
         uint256 value = o.budget + (token == ETH ? stake : 0);
@@ -55,7 +60,7 @@ contract GasTest is Base {
                         o.sessionKey,
                         o.budget,
                         o.tk,
-                        _leaf(3),
+                        _leaf(5),
                         o.a,
                         o.approvalSig,
                         address(0)
@@ -78,7 +83,7 @@ contract GasTest is Base {
 
         skip(12);
         bytes32 h = _get(id).openHash;
-        uint256 makerSecret = makerSecrets[3];
+        uint256 makerSecret = makerSecrets[5];
         if (direction == 0) {
             _measure(string.concat("approve ", tag), operator, 0, abi.encodeCall(IXmrSwap.approve, (id, h)), 150_000);
         } else {

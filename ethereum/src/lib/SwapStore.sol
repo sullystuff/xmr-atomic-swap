@@ -293,6 +293,24 @@ library SwapStore {
         return (state >= NOTICED && state <= ABORTED_HOLD) || state == FROZEN;
     }
 
+    /// The beta caps (SPEC 11.1) and the open-value accounting. `lock` and `take` are the only
+    /// calls a cap can refuse. With the switch on: `amount > maxSwap` is `SwapCapExceeded`, then
+    /// `openValue + counted > maxOpen` is `OpenCapExceeded`; exactly at a cap is allowed. The add
+    /// is exact: an open value that would not fit 128 bits is refused even with the switch off
+    /// (in direction B that bounds `amount + deposit` too), never wrapped or saturated.
+    function _addOpenValue(Layout storage $, address token, uint256 amount, uint256 counted) internal {
+        Cap storage cap = $.caps[token];
+        bool on = $.capsOn;
+        if (on && amount > cap.maxSwap) revert IXmrSwap.SwapCapExceeded();
+        // amount, deposit and the open value are each below 2^128: no overflow in 256 bits.
+        uint256 openValue = uint256(cap.openValue) + counted;
+        if (openValue > (on ? cap.maxOpen : type(uint128).max)) {
+            if (on) revert IXmrSwap.OpenCapExceeded();
+            revert IXmrSwap.AmountOutOfRange();
+        }
+        cap.openValue = uint128(openValue);
+    }
+
     /// The one subtraction from the open value, at the transition that takes the swap out of the
     /// open states (into HOLD or DONE). It saturates and cannot fail: no cap can stop an exit.
     function _uncount(Layout storage $, Record storage s) internal {
