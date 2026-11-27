@@ -589,6 +589,7 @@ solana_key = "${wt.solana}"
       counters: [{ chain: 'solana', freezes: 1, refunds_after_freeze: 0, backouts_after_freeze: 0, claims_after_freeze: 0 }],
       settings: { refuse_watchers: false, deny_watchers: [seedSigner(new Uint8Array(32).fill(0x56)).publicKey], max_taker_freezes: null },
     });
+    expect(await call(ac, 'stats')).toMatchObject({ cap_reached: { offers_stopped: 1, refused_quotes: 0 }, freezes: { total: 1, by_taker_side: 1, by_maker: 0, by_maker_watcher: 0 }, counters: [{ chain: 'solana', values: expect.objectContaining({ freezes: 1 }) }] });
     const wv = await get('/api/watcher');
     const ack = ad.store.watchAck(buyRef)!;
     expect(wv).toEqual({

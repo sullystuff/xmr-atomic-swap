@@ -663,9 +663,12 @@ export class Daemon {
   /** The Solana program build this daemon expects and the one deployed (SPEC 11.5). */
   async programBuild(): Promise<ProgramBuildStatus> {
     const programId = this.sol?.client.programId ?? this.config.raw.solana.program_id ?? DEV_PROGRAM_ID;
-    const onChain = this.sol ? await this.sol.client.programBuild('finalized').then((b) => b.hash, () => null) : null;
+    // The whole executable is read and hashed: once every ten minutes is enough for a status page (an unreadable one is retried at once).
+    if (!this.builtHash || this.builtHash.hash === null || this.now() - this.builtHash.at >= 600) this.builtHash = { at: this.now(), hash: this.sol ? await this.sol.client.programBuild('finalized').then((b) => b.hash, () => null) : null };
+    const onChain = this.builtHash.hash;
     return { program_id: programId, expected_hash: PROGRAM_HASH, on_chain_hash: onChain, matches: PROGRAM_HASH === null || onChain === null ? null : PROGRAM_HASH === onChain };
   }
+  private builtHash: { at: number; hash: string | null } | null = null;
 
   async stop(): Promise<void> {
     this.stopped = true;

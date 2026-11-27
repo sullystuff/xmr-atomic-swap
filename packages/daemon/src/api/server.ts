@@ -519,7 +519,11 @@ export async function startApi(d: Daemon, opts: { bind?: string } = {}): Promise
     if (em) out.push({ chain: 'ethereum', counters: em.counters.slice(0, COUNTER_NAMES.length), responseSecsSum: em.responseSecsSum });
     return out;
   };
-  route('get', '/api/stats', async (req) => statsView(d.store, await chainCounters(), Number((req.query as Record<string, string>)['since'] ?? 0) || 0));
+  route('get', '/api/stats', async (req) => ({
+    ...statsView(d.store, await chainCounters(), Number((req.query as Record<string, string>)['since'] ?? 0) || 0),
+    // Additions (Amendment 1): the deployment's caps as a dashboard figure, apart from the maker's own limits, and the pauses.
+    ...({ cap_reached: { offers_stopped: d.offers.latest().filter((c) => c.capReached).length, refused_quotes: d.caps.refusedQuotes }, freezes: { total: d.store.freezes().length, by_taker_side: d.store.freezes().filter((f) => f.frozen_by === 'taker_side').length, by_maker: d.store.freezes().filter((f) => f.frozen_by === 'maker').length, by_maker_watcher: d.store.freezes().filter((f) => f.frozen_by === 'maker_watcher').length } } as object),
+  }));
   route('get', '/api/fees', async (): Promise<FeesResponse> => {
     const balances: FeesResponse['operator_balances'] = [];
     for (const [market, chain] of [['sol', 'solana'], ['usdc_sol', 'solana'], ['eth', 'ethereum'], ['usdc_eth', 'ethereum']] as [Market, ChainName][]) {
