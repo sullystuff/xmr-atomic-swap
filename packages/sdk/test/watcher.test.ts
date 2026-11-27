@@ -18,14 +18,18 @@ import {
   WatcherRefused,
   noticeKey,
   noticeKeyFor,
+  WATCH_CLOCK_SKEW_SECS,
+  WATCH_MAX_AGE_SECS,
   openNoticeWithKey,
-  openSealedNoticeKey,
   openWatchRequest,
   parseWatchInfo,
+  parseWatchRequest,
   sealNoticeKey,
   signWatchAck,
   verifyWatchAck,
+  verifyWatchRequest,
   watchAckBytes,
+  watchDeployment,
   watchRequest,
 } from '../src/watcher/protocol.js';
 import { watcherFacts, watcherStep } from '../src/watcher/step.js';
@@ -129,54 +133,128 @@ describe('the notice key K("notice")', () => {
   });
 });
 
-describe('what the locker sends a watcher', () => {
-  const key = r.bytes(32);
+describe('what the locker sends a watcher (format 2: authenticated by the locker\'s on-chain encryption key)', () => {
   const swapRef = r.bytes(32);
+  const PROGRAM = base58Encode(r.bytes(32));
+  const solDep = watchDeployment({ programId: PROGRAM });
+  const ethDep = watchDeployment({ chainId: 31337, contract: '0xE7501885E3C726EF74694299B7CD49D65E8ED897' });
+  const T = 1_800_000_500;
+  // Direction A: the taker is the locker; its one-time encryption key is in the swap. Direction B: the maker's.
+  const swapA = (over: Partial<SwapView> = {}) => baseView({ chain: 'solana', direction: 0, swapRef, tLock: 1_800_000_000n, ...over });
+  const swapB = (over: Partial<SwapView> = {}) => baseView({ chain: 'ethereum', direction: 1, swapRef, tLock: 1_800_000_000n, ...over });
+  const takerSecret = unhex(k.taker_secret);
+  const makerSecret = unhex(k.maker_secret);
+  const reqA = (over: object = {}) => watchRequest({ chain: 'solana', swapRef, noticeKey: noticeKey(swapA(), takerSecret), watcherSolanaKey: watcherKey, lockerEncSecret: takerSecret, deployment: solDep, issuedAt: T, ...over });
+  const reqB = (over: object = {}) => watchRequest({ chain: 'ethereum', swapRef, noticeKey: noticeKey(swapB(), makerSecret), watcherSolanaKey: watcherKey, lockerEncSecret: makerSecret, deployment: ethDep, issuedAt: T, ...over });
+  const ctxA = (over: object = {}) => ({ watcherSeed, swap: swapA(), deployment: solDep, now: T + 5, ...over });
+  const ctxB = (over: object = {}) => ({ watcherSeed, swap: swapB(), deployment: ethDep, now: T + 5, ...over });
 
-  it('seals the notice key to the watcher, bound to the chain and the swap', () => {
-    for (const chain of ['solana', 'ethereum'] as const) {
-      const sealed = sealNoticeKey({ noticeKey: key, watcherSolanaKey: watcherKey, chain, swapRef });
-      expect(sealed.length).toBe(SEALED_NOTICE_KEY_LEN);
-      expect(hex(sealed)).not.toContain(hex(key));
-      expect(hex(openSealedNoticeKey({ sealed, watcherSeed, chain, swapRef }))).toBe(hex(key));
-      // Fresh randomness every time.
-      expect(hex(sealNoticeKey({ noticeKey: key, watcherSolanaKey: watcherKey, chain, swapRef }))).not.toBe(hex(sealed));
-      // Another watcher, another swap, the other chain, a flipped bit, a short body: all refused.
-      expect(codeOf(() => openSealedNoticeKey({ sealed, watcherSeed: otherSeed, chain, swapRef }))).toBe('WatchKeyInvalid');
-      expect(codeOf(() => openSealedNoticeKey({ sealed, watcherSeed, chain, swapRef: r.bytes(32) }))).toBe('WatchKeyInvalid');
-      expect(codeOf(() => openSealedNoticeKey({ sealed, watcherSeed, chain: chain === 'solana' ? 'ethereum' : 'solana', swapRef }))).toBe('WatchKeyInvalid');
-      for (const at of [0, 40, 70, 103]) {
-        const t = sealed.slice();
-        t[at]! ^= 1;
-        expect(codeOf(() => openSealedNoticeKey({ sealed: t, watcherSeed, chain, swapRef })), `bit at ${at}`).toBe('WatchKeyInvalid');
-      }
-      expect(codeOf(() => openSealedNoticeKey({ sealed: sealed.subarray(1), watcherSeed, chain, swapRef }))).toBe('WatchKeyInvalid');
-    }
-    // Deterministic when the randomness is given (for a vector of the service's own tests).
-    const fixed = { noticeKey: key, watcherSolanaKey: watcherKey, chain: 'solana' as const, swapRef, ephemeralSecret: r.bytes(32), nonce: r.bytes(24) };
-    expect(hex(sealNoticeKey(fixed))).toBe(hex(sealNoticeKey(fixed)));
-    expect(codeOf(() => sealNoticeKey({ noticeKey: key, watcherSolanaKey: 'short', chain: 'solana', swapRef }))).toBe('BadKey');
-    expect(codeOf(() => sealNoticeKey({ noticeKey: new Uint8Array(31), watcherSolanaKey: watcherKey, chain: 'solana', swapRef }))).toBe('BadKey');
-  });
-
-  it('the request body carries the sealed key only; the service recovers it, and refuses a body for another watcher', () => {
-    const req = watchRequest({ chain: 'ethereum', swapRef, noticeKey: key, watcherSolanaKey: watcherKey });
-    expect(Object.keys(req).sort()).toEqual(['chain', 'notice_key', 'swap_ref']);
-    expect(req.swap_ref).toBe(hex(swapRef));
-    expect(fromBase64(req.notice_key).length).toBe(104);
-    const text = JSON.stringify(req);
+  it('the locker\'s request verifies against chain state, in both directions and on both chains, and yields the notice key', () => {
+    const a = reqA();
+    expect(Object.keys(a).sort()).toEqual(['chain', 'deployment', 'issued_at', 'notice_key', 'swap_ref', 'v']);
+    expect(a).toMatchObject({ v: 2, chain: 'solana', swap_ref: hex(swapRef), deployment: PROGRAM, issued_at: T });
+    expect(fromBase64(a.notice_key).length).toBe(SEALED_NOTICE_KEY_LEN);
+    const key = noticeKey(swapA(), takerSecret);
+    const text = JSON.stringify(a);
     expect(text).not.toContain(hex(key));
     expect(text).not.toContain(toBase64(key));
-    const opened = openWatchRequest(JSON.parse(text), watcherSeed);
-    expect(opened.chain).toBe('ethereum');
-    expect(hex(opened.swapRef)).toBe(hex(swapRef));
-    expect(hex(opened.noticeKey)).toBe(hex(key));
-    expect(codeOf(() => openWatchRequest(JSON.parse(text), otherSeed))).toBe('WatchKeyInvalid');
-    // A request replayed for another swap, or relabelled to the other chain, does not open.
-    expect(codeOf(() => openWatchRequest({ ...req, swap_ref: hex(r.bytes(32)) }, watcherSeed))).toBe('WatchKeyInvalid');
-    expect(codeOf(() => openWatchRequest({ ...req, chain: 'solana' }, watcherSeed))).toBe('WatchKeyInvalid');
-    for (const bad of [null, {}, { ...req, chain: 'bitcoin' }, { ...req, swap_ref: 'zz' }, { ...req, notice_key: 5 }]) expect(codeOf(() => openWatchRequest(bad, watcherSeed))).toBe('bad_request');
-    expect(codeOf(() => openWatchRequest({ ...req, notice_key: toBase64(r.bytes(50)) }, watcherSeed))).toBe('WatchKeyInvalid');
+    const got = verifyWatchRequest(JSON.parse(text), ctxA());
+    expect(hex(got.noticeKey)).toBe(hex(key));
+    expect([got.chain, hex(got.swapRef), got.issuedAt]).toEqual(['solana', hex(swapRef), BigInt(T)]);
+    expect(hex(verifyWatchRequest(reqB(), ctxB()).noticeKey)).toBe(hex(noticeKey(swapB(), makerSecret)));
+    expect(ethDep).toBe('31337:0xe7501885e3c726ef74694299b7cd49d65e8ed897');
+    // The earlier name still works with the same context.
+    expect(hex(openWatchRequest(a, ctxA()).noticeKey)).toBe(hex(key));
+    // Fresh randomness every time; deterministic when it is given.
+    expect(reqA().notice_key).not.toBe(a.notice_key);
+    const fixed = { ephemeralSecret: r.bytes(32), nonce: r.bytes(24) };
+    expect(reqA(fixed).notice_key).toBe(reqA(fixed).notice_key);
+    // The default issued_at is the local clock.
+    const dflt = watchRequest({ chain: 'solana', swapRef, noticeKey: key, watcherSolanaKey: watcherKey, lockerEncSecret: takerSecret, deployment: solDep });
+    expect(Math.abs(dflt.issued_at - Date.now() / 1000) < 5).toBe(true);
+  });
+
+  it('a stranger\'s request is rejected: without the locker\'s encryption secret nothing it seals opens', () => {
+    // W-A1: a stranger posts a key (wrong, or even the right one) for a swap that names the watcher.
+    const stranger = r.bytes(32);
+    for (const noticeKeyBytes of [r.bytes(32), noticeKey(swapA(), takerSecret)]) {
+      expect(codeOf(() => verifyWatchRequest(reqA({ noticeKey: noticeKeyBytes, lockerEncSecret: stranger }), ctxA()))).toBe('WatchKeyInvalid');
+    }
+    // The counterparty is a stranger too: the claimer's key (the maker's in A, the taker's in B) does not authenticate.
+    expect(codeOf(() => verifyWatchRequest(reqA({ lockerEncSecret: makerSecret }), ctxA()))).toBe('WatchKeyInvalid');
+    expect(codeOf(() => verifyWatchRequest(reqB({ lockerEncSecret: takerSecret }), ctxB()))).toBe('WatchKeyInvalid');
+    // So the candidate slots of a swap cannot be filled by anyone but its locker: of many strangers' requests, none is accepted.
+    let accepted = 0;
+    for (let i = 0; i < 16; i++) {
+      try {
+        verifyWatchRequest(reqA({ noticeKey: r.bytes(32), lockerEncSecret: r.bytes(32) }), ctxA());
+        accepted++;
+      } catch {
+        // refused
+      }
+    }
+    expect(accepted).toBe(0);
+    expect(hex(verifyWatchRequest(reqA(), ctxA()).noticeKey)).toBe(hex(noticeKey(swapA(), takerSecret)));
+    // A swap that records no usable locker key cannot be registered at all.
+    expect(codeOf(() => verifyWatchRequest(reqA(), ctxA({ swap: swapA({ takerEncKey: unhex(vector('points').low_order_x25519[4].key) }) })))).toBe('WatchKeyInvalid');
+    expect(codeOf(() => sealNoticeKey({ noticeKey: r.bytes(32), watcherSolanaKey: watcherKey, chain: 'solana', deployment: solDep, swapRef, issuedAt: T } as never))).toBe('BadKey');
+  });
+
+  it('a request cannot be replayed onto another swap, watcher, chain, deployment or time', () => {
+    const a = reqA();
+    // Another swap of the same locker (direction B: the maker's key is the same for all its swaps).
+    const b = reqB();
+    const other = r.bytes(32);
+    expect(codeOf(() => verifyWatchRequest({ ...b, swap_ref: hex(other) }, ctxB({ swap: swapB({ swapRef: other }) })))).toBe('WatchKeyInvalid');
+    expect(codeOf(() => verifyWatchRequest(b, ctxB({ swap: swapB({ swapRef: other }) })))).toBe('WatchSwapMismatch');
+    // Another watcher: sealed to this one, presented to that one.
+    expect(codeOf(() => verifyWatchRequest(a, ctxA({ watcherSeed: otherSeed })))).toBe('WatchKeyInvalid');
+    // Another deployment, named honestly or relabelled.
+    const elsewhere = watchDeployment({ programId: base58Encode(r.bytes(32)) });
+    expect(codeOf(() => verifyWatchRequest(a, ctxA({ deployment: elsewhere })))).toBe('WatchWrongDeployment');
+    expect(codeOf(() => verifyWatchRequest({ ...a, deployment: elsewhere }, ctxA({ deployment: elsewhere })))).toBe('WatchKeyInvalid');
+    expect(codeOf(() => verifyWatchRequest(reqB(), ctxB({ deployment: watchDeployment({ chainId: 1, contract: '0xe7501885e3c726ef74694299b7cd49d65e8ed897' }) })))).toBe('WatchWrongDeployment');
+    // The other chain.
+    expect(codeOf(() => verifyWatchRequest({ ...a, chain: 'ethereum' }, ctxA()))).toBe('WatchSwapMismatch');
+    expect(codeOf(() => verifyWatchRequest({ ...a, chain: 'ethereum' }, ctxA({ swap: swapA({ chain: 'ethereum' }) })))).toBe('WatchKeyInvalid');
+    // Freshness: not older than the swap it is for, not from the future, not stale; and the time is authenticated.
+    expect(codeOf(() => verifyWatchRequest(reqA({ issuedAt: 1_800_000_000 - 601 }), ctxA()))).toBe('WatchRequestStale');
+    expect(hex(verifyWatchRequest(reqA({ issuedAt: 1_800_000_000 - 600 }), ctxA()).noticeKey).length).toBe(64);
+    expect(codeOf(() => verifyWatchRequest(reqA({ issuedAt: T + 5 + WATCH_CLOCK_SKEW_SECS + 1 }), ctxA()))).toBe('WatchRequestStale');
+    expect(codeOf(() => verifyWatchRequest(a, ctxA({ now: T + WATCH_MAX_AGE_SECS + 1 })))).toBe('WatchRequestStale');
+    expect(codeOf(() => verifyWatchRequest({ ...a, issued_at: a.issued_at + 1 }, ctxA()))).toBe('WatchKeyInvalid');
+    // A swap re-locked at the same reference later does not accept the request made for the earlier one.
+    expect(codeOf(() => verifyWatchRequest(a, ctxA({ swap: swapA({ tLock: BigInt(T) + 3600n }), now: T + 3700 })))).toBe('WatchRequestStale');
+    // Any flipped bit of the seal.
+    const sealed = fromBase64(a.notice_key);
+    for (const at of [0, 40, 70, 103]) {
+      const t = sealed.slice();
+      t[at]! ^= 1;
+      expect(codeOf(() => verifyWatchRequest({ ...a, notice_key: toBase64(t) }, ctxA())), `bit at ${at}`).toBe('WatchKeyInvalid');
+    }
+  });
+
+  it('refuses an old-format request with a clear reason, and malformed bodies', () => {
+    // Format 1: { chain, swap_ref, notice_key } with an unauthenticated seal.
+    const old = { chain: 'solana', swap_ref: hex(swapRef), notice_key: toBase64(r.bytes(104)) };
+    let message = '';
+    try {
+      verifyWatchRequest(old, ctxA());
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toMatch(/^WatchFormatUnsupported: watch request format 1 \(unauthenticated\) is no longer accepted/);
+    expect(codeOf(() => parseWatchRequest(old))).toBe('WatchFormatUnsupported');
+    expect(codeOf(() => verifyWatchRequest({ ...reqA(), v: 3 }, ctxA()))).toBe('WatchFormatUnsupported');
+    const a = reqA();
+    for (const bad of [null, 'x', { ...a, chain: 'bitcoin' }, { ...a, swap_ref: 'zz' }, { ...a, notice_key: 5 }, { ...a, deployment: '' }, { ...a, issued_at: '1' }, { ...a, issued_at: -1 }]) expect(codeOf(() => verifyWatchRequest(bad, ctxA()))).toBe('bad_request');
+    expect(codeOf(() => verifyWatchRequest({ ...a, notice_key: toBase64(r.bytes(50)) }, ctxA()))).toBe('WatchKeyInvalid');
+    // The earlier call shape (the seed alone) says what is now needed instead of opening anything.
+    expect(codeOf(() => (openWatchRequest as (b: unknown, c: unknown) => unknown)(a, watcherSeed))).toBe('WatchRequestUnauthenticated');
+    // The public fields can be read without any key, to find the swap first.
+    expect(parseWatchRequest(a)).toMatchObject({ chain: 'solana', deployment: PROGRAM, issuedAt: BigInt(T) });
+    expect(codeOf(() => watchDeployment({ programId: 'abc' }))).toBe('BadKey');
+    expect(codeOf(() => watchDeployment({ chainId: 1, contract: '0x12' }))).toBe('BadAddress');
   });
 
   it('accepts an acknowledgement only from the watcher the swap names, for this swap and chain', () => {
@@ -198,11 +276,20 @@ describe('what the locker sends a watcher', () => {
 
 describe('WatcherClient', () => {
   const swapRef = r.bytes(32);
-  const key = r.bytes(32);
+  const takerSecret = unhex(k.taker_secret);
+  const swap = baseView({ chain: 'solana', direction: 0, swapRef, tLock: 1_800_000_000n });
+  let key: Uint8Array;
+  beforeAll(() => {
+    key = noticeKey(swap, takerSecret);
+  });
+  const deployment = watchDeployment({ programId: base58Encode(r.bytes(32)) });
+  const T = 1_800_000_500;
+  const args = (over: object = {}) => ({ chain: 'solana' as const, swapRef, noticeKey: key, watcherSolanaKey: watcherKey, lockerEncSecret: takerSecret, deployment, issuedAt: T, ...over });
   const info = { solana: watcherKey, ethereum: '0x00000000000000000000000000000000000000Aa', max_swaps: 100, monero_nodes: 2 };
   /** A watcher service in a function: answers the three routes; `ackSeed` signs the acknowledgement. */
   function service(o: { ackSeed?: Uint8Array; status?: number; info?: unknown; ack?: (body: any) => unknown } = {}) {
     const seen: { url: string; method: string; body?: string }[] = [];
+    const accepted: string[] = [];
     const fetchFn: HttpFetch = async (url, init) => {
       seen.push({ url, method: init.method, ...(typeof init.body === 'string' ? { body: init.body } : {}) });
       const reply = (status: number, j: unknown) => ({ status, arrayBuffer: async () => new TextEncoder().encode(typeof j === 'string' ? j : JSON.stringify(j)).buffer as ArrayBuffer });
@@ -211,36 +298,52 @@ describe('WatcherClient', () => {
       if (url.endsWith(WATCH_ROUTES.swaps) && init.method === 'POST') {
         const body = JSON.parse(init.body as string);
         if (o.ack) return reply(200, o.ack(body));
-        // The real service: open the sealed key with its own seed, then acknowledge.
-        const req = openWatchRequest(body, watcherSeed);
+        // The real service: read the swap the request names, then verify the request against it.
+        let req;
+        try {
+          req = verifyWatchRequest(body, { watcherSeed, swap, deployment, now: T + 3 });
+        } catch (e) {
+          return reply(403, { error: (e as { code?: string }).code });
+        }
+        accepted.push(hex(req.noticeKey));
         return reply(200, signWatchAck({ chain: req.chain, swapRef: req.swapRef, watchingUntil: 1_800_020_000n, watcherSeed: o.ackSeed ?? watcherSeed }));
       }
       return reply(200, { state: 'watching' });
     };
-    return { fetchFn, seen };
+    return { fetchFn, seen, accepted };
   }
 
-  it('reads the keys to name, hands a swap over with the key sealed, and returns the verified acknowledgement', async () => {
+  it('reads the keys to name, hands a swap over with the key sealed and authenticated, and returns the verified acknowledgement', async () => {
     const svc = service();
     const client = new WatcherClient('https://watcher.example/', svc.fetchFn);
     const got = await client.info();
     expect(got).toEqual({ ...info, ethereum: info.ethereum.toLowerCase() });
-    for (const chain of ['solana', 'ethereum'] as const) {
-      const ack = await client.register({ chain, swapRef, noticeKey: key, watcherSolanaKey: got.solana });
-      expect(ack).toMatchObject({ swap_ref: hex(swapRef), watching_until: 1_800_020_000 });
-    }
-    expect(svc.seen.map((s) => `${s.method} ${s.url}`)).toEqual(['GET https://watcher.example/watch/v1/info', 'POST https://watcher.example/watch/v1/swaps', 'POST https://watcher.example/watch/v1/swaps']);
-    // The key never leaves in clear.
-    for (const s of svc.seen) {
-      expect(s.body ?? '').not.toContain(hex(key));
-      expect(s.body ?? '').not.toContain(toBase64(key));
+    const ack = await client.register(args({ watcherSolanaKey: got.solana }));
+    expect(ack).toMatchObject({ swap_ref: hex(swapRef), watching_until: 1_800_020_000 });
+    expect(svc.accepted).toEqual([hex(key)]);
+    expect(svc.seen.map((s) => `${s.method} ${s.url}`)).toEqual(['GET https://watcher.example/watch/v1/info', 'POST https://watcher.example/watch/v1/swaps']);
+    expect(JSON.parse(svc.seen[1]!.body!).v).toBe(2);
+    // Neither the notice key nor the locker's secret ever leaves in clear.
+    for (const s of svc.seen) for (const secret of [key, takerSecret]) {
+      expect(s.body ?? '').not.toContain(hex(secret));
+      expect(s.body ?? '').not.toContain(toBase64(secret));
     }
     expect(await client.status(swapRef)).toEqual({ state: 'watching' });
     expect(svc.seen.at(-1)!.url).toBe(`https://watcher.example/watch/v1/swaps/${hex(swapRef)}`);
   });
 
+  it('a stranger cannot register a swap it is not the locker of, whatever key it sends', async () => {
+    const svc = service();
+    const client = new WatcherClient('https://w.example', svc.fetchFn);
+    for (const over of [{ lockerEncSecret: r.bytes(32) }, { lockerEncSecret: r.bytes(32), noticeKey: r.bytes(32) }, { lockerEncSecret: unhex(k.maker_secret) }]) await expect(client.register(args(over))).rejects.toMatchObject({ status: 403 });
+    expect(svc.accepted).toEqual([]);
+    // The locker's own request is unaffected by any number of them.
+    await client.register(args());
+    expect(svc.accepted).toEqual([hex(key)]);
+  });
+
   it('treats a swap as not watched when the acknowledgement is missing, forged or for another swap', async () => {
-    const reg = (svc: ReturnType<typeof service>) => new WatcherClient('https://w.example', svc.fetchFn).register({ chain: 'solana', swapRef, noticeKey: key, watcherSolanaKey: watcherKey });
+    const reg = (svc: ReturnType<typeof service>) => new WatcherClient('https://w.example', svc.fetchFn).register(args());
     // Signed by a key that is not the one the swap names.
     await expect(reg(service({ ackSeed: otherSeed }))).rejects.toMatchObject({ code: 'WatchAckInvalid' });
     // A well-signed acknowledgement of a different swap.

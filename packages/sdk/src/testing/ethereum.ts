@@ -39,6 +39,8 @@ export class FakeEthereum implements EthTransport {
   readonly nonces = new Map<string, number>();
   /** Addresses that have code (lowercase): what `eth_getCode` answers `0x60…` for. */
   readonly code = new Set<string>();
+  /** Balances in wei by lowercase address: what `eth_getBalance` answers (0 when absent). */
+  readonly balances = new Map<string, bigint>();
 
   constructor(readonly contract: Hex) {}
 
@@ -113,6 +115,8 @@ export class FakeEthereum implements EthTransport {
           return (f.topics ?? []).every((t, i) => t === null || l.topics[i]?.toLowerCase() === t.toLowerCase());
         });
       }
+      case 'eth_getBalance':
+        return `0x${(this.balances.get(String(params[0]).toLowerCase()) ?? 0n).toString(16)}`;
       case 'eth_getCode':
         return this.code.has(String(params[0]).toLowerCase()) || String(params[0]).toLowerCase() === this.contract.toLowerCase() ? '0x6080' : '0x';
       case 'eth_getTransactionReceipt':

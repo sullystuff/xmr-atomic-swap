@@ -8,7 +8,7 @@
  */
 import type { EthApproval, EthQuote } from '@xmrswap/core-wasm';
 import { type Address, type AssetCaps, ETH_NATIVE, type Hex, IXmrSwapAbi, SWAP_FLAG } from '@xmrswap/protocol';
-import { type Abi, decodeErrorResult, decodeEventLog, decodeFunctionResult, encodeFunctionData } from 'viem';
+import { type Abi, decodeErrorResult, decodeEventLog, decodeFunctionData, decodeFunctionResult, encodeFunctionData } from 'viem';
 import { type EthSwapStruct, type SwapView, viewFromEthereum } from '../machine/view.js';
 import { EMPTY_ETH_APPROVAL, approvalMessage, quoteMessage } from '../signing/eip712.js';
 import { type Bytes, SdkError, beToBig, hex0x, leToBig, unhex } from '../util.js';
@@ -345,6 +345,27 @@ export function ethSessionBudget(maxFeePerGasWei: bigint, gasPerCall = ETH_SESSI
   return maxFeePerGasWei * gasPerCall * calls;
 }
 
+/**
+ * The most gas `EthereumClient.send` will sign for, by function: about 1.5 × the dearest
+ * measured variant (ETH_SESSION_GAS, ETH_WATCHER_GAS, the opens), so a correct estimate × 1.2
+ * always fits and an endpoint that inflates its estimate cannot make the caller burn more.
+ */
+export const ETH_GAS_CAP: Readonly<Record<string, bigint>> = { lock: 950_000n, take: 850_000n, fund: 300_000n, postNotice: 330_000n, claim: 290_000n, refund: 240_000n, withhold: 220_000n, registerMaker: 220_000n, postMessage: 220_000n };
+/** The cap for every other call, to the contract or elsewhere (a token `approve`, a plain transfer). */
+export const ETH_GAS_CAP_DEFAULT = 150_000n;
+/** The fee per gas above which `send` refuses to sign unless the caller sets its own bound: 300 gwei. */
+export const ETH_DEFAULT_MAX_FEE_PER_GAS = 300_000_000_000n;
+
+/** The gas cap `send` applies to a call by default: by function name for a call to the contract. */
+export function ethGasCap(call: EthCall, contract: Address): bigint {
+  if (call.to.toLowerCase() !== contract.toLowerCase()) return ETH_GAS_CAP_DEFAULT;
+  try {
+    return ETH_GAS_CAP[decodeFunctionData({ abi: ABI, data: call.data }).functionName] ?? ETH_GAS_CAP_DEFAULT;
+  } catch {
+    return ETH_GAS_CAP_DEFAULT;
+  }
+}
+
 export interface EthereumClientOptions {
   transport: EthTransport;
   contract: Address;
@@ -353,8 +374,16 @@ export interface EthereumClientOptions {
    * private relay, so the secret is not visible in the public mempool before it is mined.
    */
   privateTransport?: EthTransport;
-  /** Refuse to send when the fee the network asks for is above this (wei per gas). */
+  /** Refuse to send when the fee the network asks for is above this (wei per gas). Default `ETH_DEFAULT_MAX_FEE_PER_GAS`. */
   maxFeePerGas?: bigint;
+  /**
+   * The chain id every transaction is signed for, from configuration (`CONTRACT_CHAIN_ID` of
+   * `@xmrswap/protocol`), never from the endpoint. `verifyChainId(expected)` pins it too.
+   * Without a pin `send` signs nothing.
+   */
+  chainId?: bigint | number;
+  /** Replaces the per-call gas caps (`ethGasCap`) with one bound for every transaction this client sends. */
+  gasLimitCap?: bigint;
 }
 
 /** Signs an EIP-1559 transaction: a viem `LocalAccount` (the derived session key, the daemon's operator key) satisfies it. */
@@ -368,19 +397,35 @@ export class EthereumClient {
   readonly contract: XmrSwapContract;
 
   private readonly privateTransport: EthTransport | null;
-  private readonly maxFeePerGas: bigint | null;
+  private readonly maxFeePerGas: bigint;
+  private readonly gasLimitCap: bigint | null;
+  private pinnedChainId: bigint | null;
 
   constructor(o: EthereumClientOptions) {
     this.transport = o.transport;
     this.contract = new XmrSwapContract(o.contract);
     this.privateTransport = o.privateTransport ?? null;
-    this.maxFeePerGas = o.maxFeePerGas ?? null;
+    this.maxFeePerGas = o.maxFeePerGas ?? ETH_DEFAULT_MAX_FEE_PER_GAS;
+    this.gasLimitCap = o.gasLimitCap ?? null;
+    this.pinnedChainId = o.chainId === undefined ? null : BigInt(o.chainId);
   }
 
-  /** Refuse an endpoint on another chain before trusting anything it says. */
+  /** The chain id transactions are signed for, or `null` while none is pinned. */
+  get chainId(): bigint | null {
+    return this.pinnedChainId;
+  }
+
+  /**
+   * Refuse an endpoint on another chain before trusting anything it says, and pin `expected`
+   * (the caller's configuration) as the chain id every later `send` signs for. A client already
+   * pinned to another id refuses.
+   */
   async verifyChainId(expected: bigint | number): Promise<void> {
+    const want = BigInt(expected);
+    if (this.pinnedChainId !== null && this.pinnedChainId !== want) throw new SdkError('WrongChain', `this client is pinned to chain id ${this.pinnedChainId}, not ${want}`);
     const got = BigInt((await this.transport.request({ method: 'eth_chainId' })) as string);
-    if (got !== BigInt(expected)) throw new SdkError('WrongChain', `the endpoint's chain id is ${got}, expected ${expected}`);
+    if (got !== want) throw new SdkError('WrongChain', `the endpoint's chain id is ${got}, expected ${expected}`);
+    this.pinnedChainId = want;
   }
 
   private async block(tag: BlockTag): Promise<{ number: bigint; hash: Hex; timestamp: bigint } | null> {
@@ -424,12 +469,20 @@ export class EthereumClient {
   /**
    * Simulate, price, sign and submit one call. Returns the transaction hash.
    *
-   * The call is simulated first from the signer (a revert throws a `ContractError` and nothing
-   * is signed), gas is the node's estimate × 1.2, the fee is twice the base fee plus the tip and
-   * is refused above `maxFeePerGas`. A call marked `secret` goes to the private transport when
-   * one is configured.
+   * Nothing the endpoint says decides what is signed beyond these bounds:
+   *  - **chain id**: the pinned one (`chainId` option or `verifyChainId`), never the endpoint's.
+   *    No pin: `ChainIdNotPinned`. An endpoint that reports another id: `WrongChain`.
+   *  - **gas limit**: the node's estimate × 1.2, refused (`GasLimitTooHigh`) above
+   *    `opts.gasLimitCap`, else the client's `gasLimitCap`, else `ethGasCap(call)`.
+   *  - **fee per gas**: twice the base fee plus the tip, refused (`FeeTooHigh`) above
+   *    `opts.maxFeePerGas`, else the client's `maxFeePerGas` (default 300 gwei).
+   * So one transaction can cost at most `gas cap × fee cap` plus its value, whatever the endpoint
+   * answers. The call is simulated first from the signer (a revert throws a `ContractError` and
+   * nothing is signed). A call marked `secret` goes to the private transport when one is configured.
    */
-  async send(call: EthCall, signer: EthSigner, opts: { secret?: boolean; priorityFee?: bigint } = {}): Promise<Hex> {
+  async send(call: EthCall, signer: EthSigner, opts: { secret?: boolean; priorityFee?: bigint; gasLimitCap?: bigint; maxFeePerGas?: bigint } = {}): Promise<Hex> {
+    const chainId = this.pinnedChainId;
+    if (chainId === null) throw new SdkError('ChainIdNotPinned', 'no chain id is pinned: pass `chainId` to EthereumClient or call verifyChainId(expected) before sending');
     await this.simulate(call, signer.address);
     const tx = { from: signer.address, to: call.to, data: call.data, value: `0x${call.value.toString(16)}` };
     let estimate: bigint;
@@ -438,15 +491,20 @@ export class EthereumClient {
     } catch (e) {
       throw new ContractError(contractErrorName(revertData(e)) ?? 'CallFailed', (e as Error).message);
     }
-    const [chainId, nonce, head] = await Promise.all([
+    const gas = (estimate * 12n) / 10n;
+    const gasCap = opts.gasLimitCap ?? this.gasLimitCap ?? ethGasCap(call, this.contract.address);
+    if (gas > gasCap) throw new SdkError('GasLimitTooHigh', `the endpoint estimates ${estimate} gas; ${gas} is over the cap of ${gasCap} for this call`);
+    const [reported, nonce, head] = await Promise.all([
       this.transport.request({ method: 'eth_chainId' }) as Promise<string>,
       this.transport.request({ method: 'eth_getTransactionCount', params: [signer.address, 'pending'] }) as Promise<string>,
       this.transport.request({ method: 'eth_getBlockByNumber', params: ['latest', false] }) as Promise<{ baseFeePerGas?: string } | null>,
     ]);
+    if (BigInt(reported) !== chainId) throw new SdkError('WrongChain', `the endpoint's chain id is ${BigInt(reported)}, this client signs for ${chainId}`);
     const tip = opts.priorityFee ?? 1_000_000_000n;
     const maxFeePerGas = BigInt(head?.baseFeePerGas ?? '0x0') * 2n + tip;
-    if (this.maxFeePerGas !== null && maxFeePerGas > this.maxFeePerGas) throw new SdkError('FeeTooHigh', `the network asks ${maxFeePerGas} wei per gas, over the configured cap ${this.maxFeePerGas}`);
-    const signed = await signer.signTransaction({ type: 'eip1559', chainId: Number(BigInt(chainId)), nonce: Number(BigInt(nonce)), to: call.to, data: call.data, value: call.value, gas: (estimate * 12n) / 10n, maxFeePerGas, maxPriorityFeePerGas: tip });
+    const feeCap = opts.maxFeePerGas ?? this.maxFeePerGas;
+    if (maxFeePerGas > feeCap || tip > feeCap) throw new SdkError('FeeTooHigh', `the network asks ${maxFeePerGas} wei per gas, over the configured cap ${feeCap}`);
+    const signed = await signer.signTransaction({ type: 'eip1559', chainId: Number(chainId), nonce: Number(BigInt(nonce)), to: call.to, data: call.data, value: call.value, gas, maxFeePerGas, maxPriorityFeePerGas: tip });
     const via = opts.secret && this.privateTransport ? this.privateTransport : this.transport;
     return (await via.request({ method: 'eth_sendRawTransaction', params: [signed] })) as Hex;
   }

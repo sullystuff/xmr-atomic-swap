@@ -15,6 +15,8 @@ export class FakeSolana implements SolanaTransport {
   readonly history = new Map<string, SignatureInfo[]>();
   genesis = 'FakeGenesis11111111111111111111111111111111';
   blockhash = '11111111111111111111111111111111';
+  /** What `getBlockHeight` answers; a blockhash is valid for 150 blocks from it. */
+  blockHeight = 850;
   /** What `simulate` answers; replace to make a simulation fail. */
   onSimulate: (wire: Bytes) => SimulationResult = () => ({ err: null, logs: [], unitsConsumed: 20_000 });
   /** What `send` answers; replace to make a send fail. */
@@ -77,13 +79,19 @@ export class FakeSolana implements SolanaTransport {
     return [...this.accounts.values()].filter((a) => a.owner === programId && matchesFilters(a.data, filters));
   }
   async getLatestBlockhash(): Promise<{ blockhash: string; lastValidBlockHeight: number }> {
-    return { blockhash: this.blockhash, lastValidBlockHeight: 1000 };
+    return { blockhash: this.blockhash, lastValidBlockHeight: this.blockHeight + 150 };
   }
   async getMinimumBalanceForRentExemption(size: number): Promise<bigint> {
     return BigInt(size + 128) * 5080n * 2n;
   }
   async getGenesisHash(): Promise<string> {
     return this.genesis;
+  }
+  async getBalance(pubkey: string): Promise<bigint> {
+    return this.accounts.get(pubkey)?.lamports ?? 0n;
+  }
+  async getBlockHeight(): Promise<number> {
+    return this.blockHeight;
   }
   async simulate(wire: Bytes): Promise<SimulationResult> {
     this.count('simulate');

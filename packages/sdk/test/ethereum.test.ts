@@ -9,7 +9,7 @@ import { ethSwapId, init, twinCommitments } from '@xmrswap/core-wasm';
 import { type Address, ETH_ERROR_NAMES, ETH_SWAP_EVENT_NAMES, type Hex, IXmrSwapAbi } from '@xmrswap/protocol';
 import { type Abi, decodeFunctionData, parseTransaction, recoverTransactionAddress, toFunctionSelector } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
-import { ContractError, ETH_SESSION_GAS, ETH_SESSION_GAS_MARGIN_PCT, ETH_SESSION_GAS_PER_CALL, EthereumClient, XmrSwapContract, contractErrorName, ethSessionBudget, secretToUint } from '../src/ethereum/client.js';
+import { ContractError, ETH_DEFAULT_MAX_FEE_PER_GAS, ETH_GAS_CAP, ETH_GAS_CAP_DEFAULT, ETH_SESSION_GAS, ETH_WATCHER_GAS, ethGasCap, ETH_SESSION_GAS_MARGIN_PCT, ETH_SESSION_GAS_PER_CALL, EthereumClient, XmrSwapContract, contractErrorName, ethSessionBudget, secretToUint } from '../src/ethereum/client.js';
 import type { EthSwapStruct } from '../src/machine/view.js';
 import { quoteFromMessage, quoteMessage } from '../src/signing/eip712.js';
 import { priceEthQuote } from '../src/registry/pricing.js';
@@ -197,9 +197,80 @@ const makerRecord = (over: Record<string, unknown> = {}) => ({
 });
 
 describe('EthereumClient over a fake transport', () => {
+  it('S1: a lying endpoint cannot choose the chain a transaction is signed for, nor how much gas or fee it burns', async () => {
+    const account = privateKeyToAccount(`0x${'0c'.repeat(32)}`);
+    const fake = new FakeEthereum(CONTRACT);
+    fake.views.setReady = () => undefined;
+    fake.views.lock = () => `0x${'00'.repeat(32)}`;
+    const call = new XmrSwapContract(CONTRACT).setReady(swapId);
+    const signedTxs = () => fake.sentRaw.map((raw) => parseTransaction(raw));
+
+    // No pin: nothing is signed, whatever the endpoint says its chain is.
+    const unpinned = new EthereumClient({ transport: fake, contract: CONTRACT });
+    expect(unpinned.chainId).toBe(null);
+    await expect(unpinned.send(call, account)).rejects.toMatchObject({ code: 'ChainIdNotPinned' });
+    expect(fake.sentRaw.length).toBe(0);
+    // verifyChainId pins the caller's expectation (and refuses a second, different one).
+    await unpinned.verifyChainId(31337);
+    expect(unpinned.chainId).toBe(31337n);
+    await expect(unpinned.verifyChainId(1)).rejects.toMatchObject({ code: 'WrongChain' });
+    await unpinned.send(call, account);
+    expect(signedTxs()[0]!.chainId).toBe(31337);
+
+    // The endpoint now claims to be mainnet: a client pinned to 31337 signs nothing for it.
+    const client = new EthereumClient({ transport: fake, contract: CONTRACT, chainId: 31337 });
+    fake.chainId = 1n;
+    await expect(client.send(call, account)).rejects.toMatchObject({ code: 'WrongChain' });
+    expect(fake.sentRaw.length).toBe(1);
+    // A client configured for mainnet never signs with the id an endpoint invents either.
+    fake.chainId = 31337n;
+    await expect(new EthereumClient({ transport: fake, contract: CONTRACT, chainId: 1 }).send(call, account)).rejects.toMatchObject({ code: 'WrongChain' });
+    expect(fake.sentRaw.length).toBe(1);
+
+    // The endpoint inflates its gas estimate to burn the key's balance: refused above the cap of the call.
+    expect(ethGasCap(call, CONTRACT)).toBe(ETH_GAS_CAP_DEFAULT);
+    fake.gasEstimate = 30_000_000n;
+    await expect(client.send(call, account)).rejects.toMatchObject({ code: 'GasLimitTooHigh' });
+    fake.gasEstimate = ETH_GAS_CAP_DEFAULT; // × 1.2 is over the cap
+    await expect(client.send(call, account)).rejects.toMatchObject({ code: 'GasLimitTooHigh' });
+    fake.gasEstimate = (ETH_GAS_CAP_DEFAULT * 10n) / 12n;
+    await client.send(call, account);
+    expect(signedTxs()[1]!.gas! <= ETH_GAS_CAP_DEFAULT).toBe(true);
+    // A caller's own bound, per call or per client, replaces the default.
+    await expect(client.send(call, account, { gasLimitCap: 50_000n })).rejects.toMatchObject({ code: 'GasLimitTooHigh' });
+    await expect(new EthereumClient({ transport: fake, contract: CONTRACT, chainId: 31337, gasLimitCap: 60_000n }).send(call, account)).rejects.toMatchObject({ code: 'GasLimitTooHigh' });
+    // The measured figures fit their caps with the 1.2 factor; the opens have their own.
+    for (const [fn, used] of Object.entries({ ...ETH_SESSION_GAS, ...ETH_WATCHER_GAS })) expect((used * 12n) / 10n <= (ETH_GAS_CAP[fn] ?? ETH_GAS_CAP_DEFAULT), fn).toBe(true);
+    expect((621_445n * 12n) / 10n <= ETH_GAS_CAP.lock! && (549_071n * 12n) / 10n <= ETH_GAS_CAP.take! && (198_309n * 12n) / 10n <= ETH_GAS_CAP.fund!).toBe(true);
+    // A call to another address (a token approve) has the default cap.
+    expect(ethGasCap({ to: addr(), data: call.data, value: 0n }, CONTRACT)).toBe(ETH_GAS_CAP_DEFAULT);
+
+    // The endpoint reports an absurd base fee: refused above the default bound of 300 gwei, with no option set.
+    fake.gasEstimate = 100_000n;
+    fake.baseFeePerGas = 10n ** 15n;
+    await expect(client.send(call, account)).rejects.toMatchObject({ code: 'FeeTooHigh' });
+    fake.baseFeePerGas = (ETH_DEFAULT_MAX_FEE_PER_GAS - 1_000_000_000n) / 2n;
+    await client.send(call, account);
+    expect(signedTxs()[2]!.maxFeePerGas).toBe(ETH_DEFAULT_MAX_FEE_PER_GAS);
+    await expect(client.send(call, account, { maxFeePerGas: ETH_DEFAULT_MAX_FEE_PER_GAS - 1n })).rejects.toMatchObject({ code: 'FeeTooHigh' });
+    // A tip above the bound is refused too.
+    fake.baseFeePerGas = 1n;
+    await expect(client.send(call, account, { priorityFee: ETH_DEFAULT_MAX_FEE_PER_GAS + 1n })).rejects.toMatchObject({ code: 'FeeTooHigh' });
+    // Whatever was signed: this chain, within gas cap × fee cap.
+    expect(fake.sentRaw.length).toBe(3);
+    for (const tx of signedTxs()) {
+      expect(tx.chainId).toBe(31337);
+      expect(tx.gas! * tx.maxFeePerGas! <= ETH_GAS_CAP_DEFAULT * ETH_DEFAULT_MAX_FEE_PER_GAS).toBe(true);
+    }
+    // eth_getBalance of the fake (S3).
+    fake.balances.set(account.address.toLowerCase(), 5n);
+    expect(await fake.request({ method: 'eth_getBalance', params: [account.address, 'latest'] })).toBe('0x5');
+    expect(await fake.request({ method: 'eth_getBalance', params: [addr(), 'latest'] })).toBe('0x0');
+  });
+
   const setup = () => {
     const fake = new FakeEthereum(CONTRACT);
-    const client = new EthereumClient({ transport: fake, contract: CONTRACT });
+    const client = new EthereumClient({ transport: fake, contract: CONTRACT, chainId: 31337 });
     return { fake, client };
   };
 
@@ -358,13 +429,13 @@ describe('EthereumClient over a fake transport', () => {
     expect(parseTransaction(fake.sentRaw[1]!).value).toBe(5n);
 
     // A fee above the cap is refused before signing.
-    const capped = new EthereumClient({ transport: fake, contract: CONTRACT, maxFeePerGas: 20_000_000_000n });
+    const capped = new EthereumClient({ transport: fake, contract: CONTRACT, chainId: 31337, maxFeePerGas: 20_000_000_000n });
     await expect(capped.send(call, account, { secret: true })).rejects.toMatchObject({ code: 'FeeTooHigh' });
     expect(fake.sentRaw.length).toBe(2);
 
     // With a private relay configured, the secret goes there and only there; other calls go to the public endpoint.
     const priv = new FakeEthereum(CONTRACT);
-    const withRelay = new EthereumClient({ transport: fake, contract: CONTRACT, privateTransport: priv });
+    const withRelay = new EthereumClient({ transport: fake, contract: CONTRACT, chainId: 31337, privateTransport: priv });
     await withRelay.send(call, account, { secret: true });
     expect(priv.sentRaw.length).toBe(1);
     expect(fake.sentRaw.length).toBe(2);

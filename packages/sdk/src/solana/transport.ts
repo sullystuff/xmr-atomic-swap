@@ -53,6 +53,10 @@ export interface SolanaTransport {
   getLatestBlockhash(): Promise<{ blockhash: string; lastValidBlockHeight: number }>;
   getMinimumBalanceForRentExemption(size: number): Promise<bigint>;
   getGenesisHash(): Promise<string>;
+  /** Lamports of an address (0 for an account that does not exist). */
+  getBalance(pubkey: string, level?: Level): Promise<bigint>;
+  /** The current block height: a transaction is dead once it passes the `lastValidBlockHeight` of its blockhash. */
+  getBlockHeight(level?: Level): Promise<number>;
   /** Simulate a signed or unsigned wire transaction. */
   simulate(wire: Bytes): Promise<SimulationResult>;
   /** Send a signed wire transaction with preflight. Returns the signature. */
@@ -105,6 +109,8 @@ export function connectionTransport(connection: Connection, opts: { subscription
     getLatestBlockhash: () => connection.getLatestBlockhash('finalized'),
     getMinimumBalanceForRentExemption: async (size) => BigInt(await connection.getMinimumBalanceForRentExemption(size)),
     getGenesisHash: () => connection.getGenesisHash(),
+    getBalance: async (pubkey, level = 'finalized') => BigInt(await connection.getBalance(new PublicKey(pubkey), level)),
+    getBlockHeight: (level = 'finalized') => connection.getBlockHeight(level),
     async simulate(wire) {
       // Raw RPC: web3.js's typed overloads insist on its own transaction classes.
       const res = (await (connection as unknown as { _rpcRequest(m: string, p: unknown[]): Promise<any> })._rpcRequest('simulateTransaction', [

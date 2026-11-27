@@ -91,6 +91,27 @@ export interface SolanaClientOptions {
   subscriptions?: boolean;
   /** Priority fee, micro-lamports per compute unit. */
   priorityFee?: bigint | number;
+  /**
+   * The most compute units a transaction built by `prepare` may ask for (default
+   * `SOLANA_MAX_COMPUTE_UNITS`). The limit comes from the endpoint's simulation: without a bound
+   * a lying endpoint sets it to 1.4 M and the priority fee is charged on all of it.
+   */
+  maxComputeUnits?: number;
+  /** The highest compute-unit price accepted, micro-lamports (default `SOLANA_MAX_PRIORITY_FEE`). */
+  maxPriorityFee?: bigint | number;
+}
+
+/** Default bound on the compute-unit limit of a prepared transaction: four times the dearest one the SDK builds (two locks, 115,000). */
+export const SOLANA_MAX_COMPUTE_UNITS = 400_000;
+/** Default bound on the compute-unit price: 5 lamports per unit, 2,000,000 lamports at the default limit. */
+export const SOLANA_MAX_PRIORITY_FEE = 5_000_000n;
+
+/** What bounds a prepared transaction's fee. Each defaults to the client's option. */
+export interface PrepareOptions {
+  /** Compute-unit price, micro-lamports. */
+  cuPrice?: bigint | number;
+  maxComputeUnits?: number;
+  maxPriorityFee?: bigint | number;
 }
 
 /** A program error decoded from a failed simulation or transaction. */
@@ -135,6 +156,8 @@ export class SolanaClient {
   readonly programId: string;
   readonly subscriptions: boolean;
   private readonly priorityFee: bigint | number;
+  private readonly maxComputeUnits: number;
+  private readonly maxPriorityFee: bigint | number;
 
   constructor(o: SolanaClientOptions) {
     this.transport = o.transport;
@@ -142,14 +165,25 @@ export class SolanaClient {
     this.programId = this.program.programId.toBase58();
     this.subscriptions = o.subscriptions !== false && typeof o.transport.subscribeProgramAccounts === 'function';
     this.priorityFee = o.priorityFee ?? 0;
+    this.maxComputeUnits = o.maxComputeUnits ?? SOLANA_MAX_COMPUTE_UNITS;
+    this.maxPriorityFee = o.maxPriorityFee ?? SOLANA_MAX_PRIORITY_FEE;
   }
 
   /** A client for the same endpoint that knows the USDC mint (from `Config`). */
   withUsdcMint(mint: Key): SolanaClient {
-    return new SolanaClient({ transport: this.transport, programId: this.programId, usdcMint: mint, subscriptions: this.subscriptions, priorityFee: this.priorityFee });
+    return new SolanaClient({ transport: this.transport, programId: this.programId, usdcMint: mint, subscriptions: this.subscriptions, priorityFee: this.priorityFee, maxComputeUnits: this.maxComputeUnits, maxPriorityFee: this.maxPriorityFee });
   }
 
   // ---------------------------------------------------------------- endpoint checks and time
+
+  /** Lamports of an address at `level`. */
+  getBalance(pubkey: Key, level?: Level): Promise<bigint> {
+    return this.transport.getBalance(pk(pubkey).toBase58(), level);
+  }
+  /** Whether a transaction built on a blockhash valid until `lastValidBlockHeight` can no longer land (by block height, not by wall clock). */
+  async blockhashExpired(lastValidBlockHeight: number, level: Level = 'finalized'): Promise<boolean> {
+    return (await this.transport.getBlockHeight(level)) > lastValidBlockHeight;
+  }
 
   /** Refuse an endpoint that is not the expected cluster before trusting anything it says (SPEC 7.5). */
   async verifyGenesis(expected: string): Promise<void> {
@@ -352,17 +386,34 @@ export class SolanaClient {
    * limit is simulation × 1.2. A simulation that fails throws a `ProgramError` and nothing is
    * built: a secret-bearing transaction that would fail must never be broadcast.
    */
-  async prepare(payer: Key, instructions: TransactionInstruction[], opts: { cuPrice?: bigint | number } = {}): Promise<Transaction> {
-    const { blockhash } = await this.transport.getLatestBlockhash();
-    const cuPrice = opts.cuPrice ?? this.priorityFee;
+  async prepare(payer: Key, instructions: TransactionInstruction[], opts: PrepareOptions = {}): Promise<Transaction> {
+    const { blockhash, lastValidBlockHeight } = await this.transport.getLatestBlockhash();
+    const cuPrice = this.boundedPrice(opts);
     const probe = legacyTransaction({ payer, blockhash, instructions, cuLimit: SIMULATION_CU_LIMIT, cuPrice });
     assertFits(probe);
     const sim = await this.transport.simulate(probe.serialize({ requireAllSignatures: false, verifySignatures: false }));
     if (sim.err) throw new ProgramError(programErrorName(sim.err), sim.err, sim.logs);
-    if (sim.unitsConsumed === null) throw new SdkError('NoSimulation', 'the endpoint did not report consumed compute units');
-    const tx = legacyTransaction({ payer, blockhash, instructions, cuLimit: cuLimitFromSimulation(sim.unitsConsumed), cuPrice });
+    const tx = legacyTransaction({ payer, blockhash, instructions, cuLimit: this.boundedLimit(sim.unitsConsumed, opts), cuPrice });
+    // The height after which this transaction can no longer land: see `blockhashExpired`.
+    tx.lastValidBlockHeight = lastValidBlockHeight;
     assertFits(tx);
     return tx;
+  }
+
+  /** The compute-unit price of a transaction, refused above the bound: the caller's figure, never the endpoint's. */
+  private boundedPrice(opts: PrepareOptions): bigint | number {
+    const cuPrice = opts.cuPrice ?? this.priorityFee;
+    const max = BigInt(opts.maxPriorityFee ?? this.maxPriorityFee);
+    if (BigInt(cuPrice) > max) throw new SdkError('PriorityFeeTooHigh', `${cuPrice} micro-lamports per compute unit is over the bound of ${max}`);
+    return cuPrice;
+  }
+  /** The compute-unit limit from a simulation, refused above the bound: the endpoint reports the units, the caller bounds them. */
+  private boundedLimit(unitsConsumed: number | null, opts: PrepareOptions): number {
+    if (unitsConsumed === null || !Number.isInteger(unitsConsumed) || unitsConsumed < 0) throw new SdkError('NoSimulation', 'the endpoint did not report consumed compute units');
+    const limit = cuLimitFromSimulation(unitsConsumed);
+    const max = opts.maxComputeUnits ?? this.maxComputeUnits;
+    if (limit > max) throw new SdkError('ComputeLimitTooHigh', `the endpoint's simulation reports ${unitsConsumed} compute units; a limit of ${limit} is over the bound of ${max}`);
+    return limit;
   }
 
   /** An address lookup table as the endpoint holds it (the protocol table of SPEC 4.10), or `null`. */
@@ -375,15 +426,14 @@ export class SolanaClient {
    * As `prepare`, for a v0 transaction that loads static accounts from lookup tables: the
    * optional way to put two USDC legs of a batch in one transaction (SPEC 4.10).
    */
-  async prepareV0(payer: Key, instructions: TransactionInstruction[], lookupTables: AddressLookupTableAccount[], opts: { cuPrice?: bigint | number } = {}): Promise<VersionedTransaction> {
+  async prepareV0(payer: Key, instructions: TransactionInstruction[], lookupTables: AddressLookupTableAccount[], opts: PrepareOptions = {}): Promise<VersionedTransaction> {
     const { blockhash } = await this.transport.getLatestBlockhash();
-    const cuPrice = opts.cuPrice ?? this.priorityFee;
+    const cuPrice = this.boundedPrice(opts);
     const probe = v0Transaction({ payer, blockhash, instructions, cuLimit: SIMULATION_CU_LIMIT, cuPrice }, lookupTables);
     assertFits(probe);
     const sim = await this.transport.simulate(probe.serialize());
     if (sim.err) throw new ProgramError(programErrorName(sim.err), sim.err, sim.logs);
-    if (sim.unitsConsumed === null) throw new SdkError('NoSimulation', 'the endpoint did not report consumed compute units');
-    const tx = v0Transaction({ payer, blockhash, instructions, cuLimit: cuLimitFromSimulation(sim.unitsConsumed), cuPrice }, lookupTables);
+    const tx = v0Transaction({ payer, blockhash, instructions, cuLimit: this.boundedLimit(sim.unitsConsumed, opts), cuPrice }, lookupTables);
     assertFits(tx);
     return tx;
   }
@@ -403,7 +453,7 @@ export class SolanaClient {
   }
 
   /** `prepare` then `signAndSend`. The first signer pays. */
-  async send(instructions: TransactionInstruction[], signers: SolanaSigner[], opts: { cuPrice?: bigint | number } = {}): Promise<string> {
+  async send(instructions: TransactionInstruction[], signers: SolanaSigner[], opts: PrepareOptions = {}): Promise<string> {
     if (signers.length === 0) throw new SdkError('MissingSignature', 'a transaction needs a fee payer');
     return this.signAndSend(await this.prepare(signers[0]!.publicKey, instructions, opts), signers);
   }
@@ -412,7 +462,7 @@ export class SolanaClient {
    * `send`, then poll until the transaction is at `level` (no WebSocket needed). A transaction
    * that landed with an error throws a `ProgramError`; one that never lands throws `NotConfirmed`.
    */
-  async sendAndConfirm(instructions: TransactionInstruction[], signers: SolanaSigner[], opts: { cuPrice?: bigint | number; level?: Level; timeoutMs?: number; intervalMs?: number } = {}): Promise<string> {
+  async sendAndConfirm(instructions: TransactionInstruction[], signers: SolanaSigner[], opts: PrepareOptions & { level?: Level; timeoutMs?: number; intervalMs?: number } = {}): Promise<string> {
     const signature = await this.send(instructions, signers, opts);
     await this.waitConfirmed(signature, opts);
     return signature;

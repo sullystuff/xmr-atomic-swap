@@ -21,7 +21,7 @@ import { ProgramError, type SolanaSigner, seedSigner } from '../../src/solana/cl
 import { ata } from '../../src/solana/pdas.js';
 import { hex } from '../../src/util.js';
 import { unlockWalletSeed, walletKeyRecoveryFile, walletKeySolanaRequest } from '../../src/wallet/seed.js';
-import { WATCH_ROUTES, WatcherClient, noticeKey, noticeKeyFor, openWatchRequest, signWatchAck } from '../../src/watcher/protocol.js';
+import { WATCH_ROUTES, WatcherClient, noticeKey, noticeKeyFor, parseWatchRequest, signWatchAck, verifyWatchRequest, watchDeployment } from '../../src/watcher/protocol.js';
 import { type WatcherDecision, watcherFacts, watcherStep } from '../../src/watcher/step.js';
 import { DEFAULT_CAPS, type SolWorld, XMR as X, startSolana } from './sol.js';
 import * as xmr from './xmr.js';
@@ -31,6 +31,7 @@ const takerSeed = new Uint8Array(32).fill(52);
 const WATCHER_SEED = new Uint8Array(32).fill(9);
 const PRICE = 150_000_000n; // lamports (or USDC base units) per XMR
 const FREEZE_WINDOW = 3_600;
+const DEPLOYMENT = watchDeployment({ programId: PROGRAM_ID });
 
 beforeAll(async () => {
   await init();
@@ -121,10 +122,17 @@ function watcherService() {
     if (url.endsWith(WATCH_ROUTES.info)) return reply(200, { solana: w.watcher.publicKey, ethereum: '0x0000000000000000000000000000000000000009', max_swaps: 10, monero_nodes: xmr.NODES.length });
     if (url.endsWith(WATCH_ROUTES.swaps) && init.method === 'POST') {
       posted.push(init.body as string);
-      const req = openWatchRequest(JSON.parse(init.body as string), WATCHER_SEED);
-      const pda = new PublicKey(req.swapRef).toBase58();
+      // Find the swap the request names, then verify the request against it: only its locker can have sealed it.
+      const parsed = parseWatchRequest(JSON.parse(init.body as string));
+      const pda = new PublicKey(parsed.swapRef).toBase58();
       const s = await w.client.getSwap(pda, 'finalized');
       if (!s || s.watcherAddress !== w.watcher.publicKey || s.state === SWAP_STATE.DONE) return reply(404, { error: 'no such swap names this watcher' });
+      let req;
+      try {
+        req = verifyWatchRequest(JSON.parse(init.body as string), { watcherSeed: WATCHER_SEED, swap: s, deployment: DEPLOYMENT, now: await w.now() });
+      } catch (e) {
+        return reply(403, { error: (e as { code?: string }).code });
+      }
       keys.set(pda, req.noticeKey);
       // The latest T_co this swap can have: a notice at the last second of its window.
       const until = (s.tNoteDeadline === 0n ? s.tFinal : s.tNoteDeadline) + BigInt(s.dC);
@@ -455,7 +463,13 @@ describe('a buy watched by a watcher (SPEC 11.6, direction A)', () => {
     // The notice key is computable at lock time, before any notice exists.
     const key = noticeKeyFor({ side: 'taker', ownEncSecret: o.plan.keys.encSecret, peerEncPub: o.s.makerEncKey });
     expect(hex(key)).toBe(hex(noticeKey(o.s, o.plan.keys.encSecret)));
-    const ack = await svc.client.register({ chain: 'solana', swapRef: o.s.swapRef, noticeKey: key, watcherSolanaKey: info.solana });
+    const reg = { chain: 'solana' as const, swapRef: o.s.swapRef, noticeKey: key, watcherSolanaKey: info.solana, deployment: DEPLOYMENT, issuedAt: await w.now() };
+    // A stranger (or the maker, the counterparty) cannot hand this swap to the watcher, with a wrong key or the right one.
+    for (const lockerEncSecret of [new Uint8Array(32).fill(0x33), w.makerEnc.encSecret]) await expect(svc.client.register({ ...reg, lockerEncSecret })).rejects.toMatchObject({ status: 403 });
+    await expect(svc.client.register({ ...reg, noticeKey: new Uint8Array(32).fill(0x44), lockerEncSecret: new Uint8Array(32).fill(0x33) })).rejects.toMatchObject({ status: 403 });
+    expect(svc.keys.has(o.plan.swapPda)).toBe(false);
+    // The locker's own request: authenticated with the one-time encryption key the lock put on chain. No wallet prompt.
+    const ack = await svc.client.register({ ...reg, lockerEncSecret: o.plan.keys.encSecret });
     expect(BigInt(ack.watching_until)).toBe(o.s.tNoteDeadline + BigInt(o.s.dC));
     // The key travelled sealed.
     expect(svc.posted.at(-1)).not.toContain(hex(key));
@@ -638,7 +652,10 @@ describe('a sell watched by the maker\'s watcher (SPEC 11.6, direction B)', () =
     const f = await fund(o.s, info.solana);
     let s = f.s;
     expect(s).toMatchObject({ state: SWAP_STATE.ACTIVE, watcher: true, watcherAddress: w.watcher.publicKey, wZ: FREEZE_WINDOW, payout: 'taker', payoutAddress: w.taker.publicKey });
-    await svc.client.register({ chain: 'solana', swapRef: s.swapRef, noticeKey: noticeKey(s, w.makerEnc.encSecret), watcherSolanaKey: info.solana });
+    // The taker (the claimer here) cannot register the maker's swap; the maker does, with the key of the version in the swap.
+    const reg = { chain: 'solana' as const, swapRef: s.swapRef, noticeKey: noticeKey(s, w.makerEnc.encSecret), watcherSolanaKey: info.solana, deployment: DEPLOYMENT, issuedAt: await w.now() };
+    await expect(svc.client.register({ ...reg, lockerEncSecret: o.plan.keys.encSecret })).rejects.toMatchObject({ status: 403 });
+    await svc.client.register({ ...reg, lockerEncSecret: w.makerEnc.encSecret });
     const operatorBefore = await w.balance(w.operator.publicKey);
     const takerBefore = await w.balance(w.taker.publicKey);
 

@@ -9,7 +9,7 @@ import { AddressLookupTableAccount, ComputeBudgetProgram, Keypair, PublicKey, SY
 import { init, pokProve } from '@xmrswap/core-wasm';
 import { ACCOUNT_SIZE, DEV_PROGRAM_ID, DISCRIMINATOR_BASE58, type LockArgs, type Maker, type Offer, type Swap, type TakeArgs, base58Encode, encodeAccount, encodeEvent, encodeInstructionData, errorCode } from '@xmrswap/protocol';
 import { takerSwapKeys } from '../src/flows/keys.js';
-import { CLOCK_SYSVAR, ProgramError, SolanaClient, programErrorName, seedSigner } from '../src/solana/client.js';
+import { CLOCK_SYSVAR, ProgramError, SOLANA_MAX_COMPUTE_UNITS, SOLANA_MAX_PRIORITY_FEE, SolanaClient, programErrorName, seedSigner } from '../src/solana/client.js';
 import { type SettleContext, XmrSwapProgram, buildInstruction } from '../src/solana/instructions.js';
 import { TOKEN_PROGRAM_ID, ata, configPda, ethBoardPda, makerPda, offerPda, quotePda, swapPda, treasuryPda, treasuryVaultPda, vaultPda } from '../src/solana/pdas.js';
 import { matchesFilters } from '../src/solana/transport.js';
@@ -503,6 +503,56 @@ describe('SolanaClient over a fake transport', () => {
     expect(sent.verifySignatures()).toBe(true);
     expect(sent.feePayer!.toBase58()).toBe(signer.publicKey);
     expect(seedSigner(unhex(vector('keys').cases[0].output.session_secret)).publicKey).toBe(base58Encode(unhex(vector('keys').cases[0].output.session_pub)));
+  });
+
+  it('S1 on Solana: an endpoint cannot inflate the compute-unit limit, and a priority fee above the bound is refused', async () => {
+    const { fake, client } = setup();
+    const signer = seedSigner(r.bytes(32));
+    const ix = program.setReady({ caller: signer.publicKey, swap, maker });
+    const limitOf = (tx: Transaction) => tx.instructions[0]!.data.readUInt32LE(1);
+    // The endpoint claims the instruction burns the whole block budget: nothing is built.
+    fake.onSimulate = () => ({ err: null, logs: [], unitsConsumed: 1_399_999 });
+    await expect(client.prepare(signer.publicKey, [ix], { cuPrice: 1_000 })).rejects.toMatchObject({ code: 'ComputeLimitTooHigh' });
+    await expect(client.send([ix], [signer])).rejects.toMatchObject({ code: 'ComputeLimitTooHigh' });
+    expect(fake.sent.length).toBe(0);
+    // Exactly at the default bound (simulation × 1.2 = 400,000) passes; one unit above does not.
+    fake.onSimulate = () => ({ err: null, logs: [], unitsConsumed: 333_333 });
+    expect(limitOf(await client.prepare(signer.publicKey, [ix]))).toBe(400_000);
+    expect(SOLANA_MAX_COMPUTE_UNITS).toBe(400_000);
+    fake.onSimulate = () => ({ err: null, logs: [], unitsConsumed: 333_334 });
+    await expect(client.prepare(signer.publicKey, [ix])).rejects.toMatchObject({ code: 'ComputeLimitTooHigh' });
+    // The caller's own bound, per call or per client.
+    fake.onSimulate = () => ({ err: null, logs: [], unitsConsumed: 20_000 });
+    await expect(client.prepare(signer.publicKey, [ix], { maxComputeUnits: 23_999 })).rejects.toMatchObject({ code: 'ComputeLimitTooHigh' });
+    expect(limitOf(await client.prepare(signer.publicKey, [ix], { maxComputeUnits: 24_000 }))).toBe(24_000);
+    const tight = new SolanaClient({ transport: fake, programId: PROGRAM, maxComputeUnits: 10_000, maxPriorityFee: 100 });
+    await expect(tight.prepare(signer.publicKey, [ix])).rejects.toMatchObject({ code: 'ComputeLimitTooHigh' });
+    await expect(tight.prepare(signer.publicKey, [ix], { cuPrice: 101, maxComputeUnits: 50_000 })).rejects.toMatchObject({ code: 'PriorityFeeTooHigh' });
+    // A nonsense simulation answer is not a limit.
+    for (const bad of [null, -1, 1.5]) {
+      fake.onSimulate = () => ({ err: null, logs: [], unitsConsumed: bad as number });
+      await expect(client.prepare(signer.publicKey, [ix])).rejects.toMatchObject({ code: 'NoSimulation' });
+    }
+    // The price is the caller's figure and bounded: default 5 lamports per unit.
+    fake.onSimulate = () => ({ err: null, logs: [], unitsConsumed: 20_000 });
+    await expect(client.prepare(signer.publicKey, [ix], { cuPrice: SOLANA_MAX_PRIORITY_FEE + 1n })).rejects.toMatchObject({ code: 'PriorityFeeTooHigh' });
+    await expect(new SolanaClient({ transport: fake, programId: PROGRAM, priorityFee: 6_000_000 }).prepare(signer.publicKey, [ix])).rejects.toMatchObject({ code: 'PriorityFeeTooHigh' });
+    const tx = await client.prepare(signer.publicKey, [ix], { cuPrice: SOLANA_MAX_PRIORITY_FEE });
+    // So the fee of a prepared transaction is at most 5,000 per signature + 400,000 × 5 lamports, whatever the endpoint says.
+    expect(BigInt(limitOf(tx)) * SOLANA_MAX_PRIORITY_FEE / 1_000_000n <= 2_000_000n).toBe(true);
+    // The fee payer and the program are the caller's: the endpoint supplies neither.
+    expect(tx.feePayer!.toBase58()).toBe(signer.publicKey);
+    expect(tx.instructions[2]!.programId.toBase58()).toBe(PROGRAM.toBase58());
+    // The blockhash is the endpoint's: its validity is tracked by block height, not by a wall clock.
+    expect(tx.lastValidBlockHeight).toBe(fake.blockHeight + 150);
+    expect(await client.blockhashExpired(tx.lastValidBlockHeight!)).toBe(false);
+    fake.blockHeight += 151;
+    expect(await client.blockhashExpired(tx.lastValidBlockHeight!)).toBe(true);
+    // Balance reads (S2).
+    fake.setAccount(signer.publicKey, '11111111111111111111111111111111', new Uint8Array(0), 42n);
+    expect(await client.getBalance(signer.publicKey)).toBe(42n);
+    expect(await fake.getBalance(key().toBase58())).toBe(0n);
+    expect(await fake.getBlockHeight()).toBe(fake.blockHeight);
   });
 
   it('never broadcasts a transaction whose simulation fails', async () => {
