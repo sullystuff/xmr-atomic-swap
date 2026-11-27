@@ -1,0 +1,115 @@
+# Example watcher.toml for @xmrswap/watcher (SPEC 11.6). Every key is shown with its default
+# unless a comment says otherwise. Where an environment variable is named, it overrides the file.
+# The file is found through `--config <file>`, else WATCHER_CONFIG, else ./watcher.toml.
+#
+# Secrets never go in this file: the chain RPC URLs and the keystore passphrase are read from
+# environment variables, and this file only says which variables.
+
+# Address the HTTP API listens on. Loopback by default. A non-loopback address is refused
+# unless allow_non_loopback is set: lockers reach the service over HTTPS, so put a TLS reverse
+# proxy or an onion service in front of it rather than exposing this port.     env: WATCHER_BIND
+bind = "127.0.0.1:8790"
+
+# Listen on a non-loopback address on purpose (for example inside a container whose port is
+# published only to a reverse proxy).                              env: WATCHER_ALLOW_NON_LOOPBACK
+allow_non_loopback = false
+
+# Reverse proxies in front of the service whose X-Forwarded-For is trusted for the per-IP
+# limits. 0 = use the TCP peer address.                              env: WATCHER_TRUST_PROXY_HOPS
+trust_proxy_hops = 0
+
+# Directory holding the keystore (watcher-keystore.json) and the database (watcher.sqlite).
+# A relative path is relative to this file. Back it up; keep it private.     env: WATCHER_DATA_DIR
+data_dir = "./watcher-data"
+
+# NAME of the environment variable holding the keystore passphrase. The two keys are generated
+# on first start and stored sealed under it.                          env: WATCHER_PASSPHRASE_ENV
+passphrase_env = "WATCHER_PASSPHRASE"
+
+# Monero network of the swaps: mainnet, stagenet, testnet or regtest.         env: WATCHER_NETWORK
+network = "mainnet"
+
+# Seconds between passes over the watched swaps.                            env: WATCHER_POLL_SECS
+poll_secs = 15
+
+# Cap on swaps watched at once. Further requests are refused with `full`.   env: WATCHER_MAX_SWAPS
+max_swaps = 200
+
+# Different notice keys accepted for one swap. The service cannot tell the locker's key from a
+# stranger's until a notice exists, so it keeps up to this many and uses the one that opens it.
+max_keys_per_swap = 4
+
+# Days a finished watch (its status and the transactions the watcher sent) is kept before it
+# is deleted. The notice key is deleted the moment the watch ends, whatever this says.
+# 0 = delete the record at once.                                       env: WATCHER_RETENTION_DAYS
+retention_days = 30
+
+# A swap must be seen ended (ready, frozen, settled, gone) this many passes in a row before the
+# watch is closed and its key deleted, so one wrong answer from an endpoint ends nothing.
+stop_confirmations = 3
+
+# Log swap references and client IP addresses. Off by default; the service prints a warning
+# when it is on. Request bodies and keys are never logged.                  env: WATCHER_DEBUG_LOG
+debug_log = false
+
+[margins]
+# A freeze is sent no later than T_co − M (M is the protocol's broadcast margin: 300 s on
+# Solana, 1,800 s on Ethereum; it is not configurable). A watch is refused when fewer than
+# this many seconds remain before that moment: the service would promise what it cannot do.
+min_lead_secs = 120
+
+# Seconds a broadcast freeze may stay unseen before it is rebroadcast or replaced (Solana: a
+# fresh transaction once the old blockhash has expired; Ethereum: same nonce, higher fee).
+attempt_timeout_secs = 150
+
+[monero]
+# Two or more independently operated nodes, or exactly one node with own_node = true
+# (SPEC 2.11). No default. Every node must answer and agree before a lock counts as confirmed.
+# http(s)://host[:port] only.                             env: WATCHER_MONERO_NODES (comma-separated)
+nodes = ["http://127.0.0.1:18081", "https://node.example.org:18089"]
+
+# Declare the single node above to be your own.                      env: WATCHER_MONERO_OWN_NODE
+own_node = false
+
+[rate_limit]
+# Per client IP, per minute: all requests, and watch requests.
+requests_per_minute = 60
+registrations_per_minute = 10
+# Largest request body accepted, in bytes (a watch request is about 250).
+max_body_bytes = 1024
+
+# At least one of [solana] and [ethereum] is required. Leave a table out to not serve that chain.
+
+[solana]
+# NAME of the environment variable holding the Solana RPC URL.
+rpc_url_env = "SOLANA_RPC_URL"
+# The swap program. No default: use the id pinned in the release.  env: WATCHER_SOLANA_PROGRAM_ID
+program_id = "<program id>"
+# Genesis hash of the cluster. When set, an endpoint of another cluster is refused at start.
+# Default: not checked.
+genesis_hash = ""
+# Level swaps and the clock are read at: finalized (the spec's rule) or confirmed.
+commitment = "finalized"
+# Priority fee, micro-lamports per compute unit, and the bound on the compute-unit limit.
+priority_fee_micro_lamports = 0
+max_compute_units = 200000
+# Most the service will spend on one swap, and in one UTC day, in lamports.
+per_swap_limit_lamports = 100000
+per_day_limit_lamports = 5000000
+
+[ethereum]
+# NAME of the environment variable holding the Ethereum RPC URL.
+rpc_url_env = "ETHEREUM_RPC_URL"
+# The swap contract (the proxy). No default: use the address pinned in the release.
+#                                                                  env: WATCHER_ETHEREUM_CONTRACT
+contract = "<contract address>"
+# Chain id the service signs for. Required. 1 = mainnet.           env: WATCHER_ETHEREUM_CHAIN_ID
+chain_id = 1
+# Block tag swaps and the clock are read at: finalized (the spec's rule), safe or latest.
+read_tag = "finalized"
+# The service never signs a freeze priced above this, in gwei per gas, and adds this tip.
+max_fee_per_gas_gwei = 100
+priority_fee_gwei = 1
+# Most the service will spend on one swap, and in one UTC day, in wei (strings: they exceed 2^53).
+per_swap_limit_wei = "30000000000000000"
+per_day_limit_wei = "300000000000000000"
