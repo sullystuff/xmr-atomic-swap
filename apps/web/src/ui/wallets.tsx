@@ -8,6 +8,7 @@ import { WalletProvider, useWallet } from '@solana/wallet-adapter-react';
 import type { Transaction } from '@solana/web3.js';
 import type { Address, Hex } from '@xmrswap/protocol';
 import { type ReactNode, useCallback, useEffect, useState } from 'react';
+import { wrongWalletChain } from '../lib/errors.js';
 import { shorten } from '../lib/format.js';
 import { useApp, useObs } from './hooks.js';
 
@@ -115,7 +116,7 @@ export function EthereumWalletButton() {
           const chain = Number.parseInt((await provider.request({ method: 'eth_chainId' })) as string, 16);
           const want = app.settings.get().ethereumChainId;
           // A transaction signed for another network would lock nothing here and could be replayed nowhere useful: refuse.
-          if (chain !== want) throw new Error(`Your wallet is on chain ${chain}; this site's contract is on chain ${want}. Switch networks in the wallet. Nothing was sent.`);
+          if (chain !== want) throw new Error(wrongWalletChain(chain, want));
           return (await provider.request({ method: 'eth_sendTransaction', params: [{ from: a, to: call.to, data: call.data, value: `0x${call.value.toString(16)}` }] })) as Hex;
         },
       });

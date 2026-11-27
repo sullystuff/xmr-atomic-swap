@@ -7,7 +7,7 @@
  */
 import type { DerivedKeys } from '@xmrswap/core-wasm';
 import { CHAIN_CONSTS, type ChainName } from '@xmrswap/protocol';
-import { type HttpFetch, type SwapView, type WatchAck, type WatchInfo, WatcherClient, noticeKey, verifyWatchAck } from '@xmrswap/sdk';
+import { type HttpFetch, type SwapView, type WatchAck, type WatchInfo, WatcherClient, WatcherRefused, noticeKey, verifyWatchAck, watchDeployment } from '@xmrswap/sdk';
 import { formatDuration } from './format.js';
 
 /** A watcher the user chose, as remembered with the swap. Nothing here is secret. */
@@ -50,6 +50,9 @@ export function freezeGain(o: { chain: ChainName; claimDelay: number; freezeWind
   return { withoutSecs: o.claimDelay - c.marginSecs, leastExtraSecs: least, atCutoffExtraSecs: atCut, useful: atCut > 0 };
 }
 
+/** Whether a watcher may be named on a lock against this offer and would add time: the same rule for a single swap and for each leg of a large one. */
+export const watcherEligible = (o: { chain: ChainName; direction: number; claimDelay: number; freezeWindow: number }, depth: number): boolean => o.direction === 0 && o.freezeWindow > 0 && freezeGain(o, depth).useful;
+
 /** One honest sentence about what a watcher adds on this offer. */
 export function freezeGainText(g: FreezeGain, freezeWindow: number): string {
   if (freezeWindow === 0) return 'This offer accepts no watcher.';
@@ -78,9 +81,26 @@ export async function watcherInfo(url: string, fetchFn?: HttpFetch): Promise<Wat
   return new WatcherClient(url, fetchFn).info();
 }
 
-/** Hand a swap to its watcher. Resolves only with an acknowledgement signed by the key the swap names. */
-export async function registerWithWatcher(w: Pick<WatcherNote, 'url' | 'solana'>, s: SwapView, keys: DerivedKeys, fetchFn?: HttpFetch): Promise<WatchAck> {
-  return new WatcherClient(w.url, fetchFn).register({ chain: s.chain, swapRef: s.swapRef, noticeKey: noticeKey(s, keys.encSecret), watcherSolanaKey: w.solana });
+/**
+ * Hand a swap to its watcher. The request is authenticated as the swap's locker (wire format 2):
+ * it is sealed with the taker's encryption secret for this swap and bound to the deployment, so
+ * only the party that locked can register it. Resolves only with an acknowledgement signed by the
+ * key the swap names; a watcher that rejects the request, or speaks an older format, throws and
+ * the swap stays unwatched.
+ */
+export async function registerWithWatcher(w: Pick<WatcherNote, 'url' | 'solana'>, s: SwapView, keys: DerivedKeys, deployment: { programId: string } | { chainId: number; contract: string }, issuedAt?: bigint, fetchFn?: HttpFetch): Promise<WatchAck> {
+  // `issuedAt` is the chain's time as this page last read it: every time on this site is the chain's, and the watcher compares it with the swap's own lock time.
+  return new WatcherClient(w.url, fetchFn).register({ chain: s.chain, swapRef: s.swapRef, noticeKey: noticeKey(s, keys.encSecret), lockerEncSecret: keys.encSecret, deployment: watchDeployment(deployment), watcherSolanaKey: w.solana, ...(issuedAt !== undefined ? { issuedAt } : {}) });
+}
+
+/** Why a watcher did not acknowledge, in plain words. */
+export function watcherRefusalText(e: unknown): string {
+  const code = (e as { code?: string })?.code ?? '';
+  const msg = e instanceof Error ? e.message : String(e);
+  if (code === 'WatchFormatUnsupported' || /WatchFormatUnsupported/.test(msg)) return 'The watcher speaks an older or newer request format than this page and did not accept the request';
+  if (code === 'WatchAckInvalid') return 'The watcher answered, but not with an acknowledgement signed by the key this swap names';
+  if (e instanceof WatcherRefused) return `The watcher rejected the request (${msg.replace(/^[A-Za-z]+:\s*/, '')})`;
+  return msg;
 }
 
 /** Whether the stored acknowledgement is the named watcher's for this swap: only then is the swap treated as watched. */

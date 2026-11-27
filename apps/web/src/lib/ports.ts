@@ -29,6 +29,7 @@ import {
 } from '@xmrswap/sdk';
 import { PublicKey } from '@solana/web3.js';
 import { privateKeyToAccount } from 'viem/accounts';
+import { TransactionExpired, plainSigningError } from './errors.js';
 
 export type CallDecision = Extract<Decision, { do: 'call' }>;
 
@@ -103,11 +104,25 @@ export class SolanaPort implements ChainPort {
   async sendWithWallet(instructions: TransactionInstruction[]): Promise<string> {
     const w = this.wallet();
     if (!w) throw new WalletNeeded('solana');
-    const tx = await this.client.prepare(w.address, instructions);
+    let tx: Transaction;
+    try {
+      tx = await this.client.prepare(w.address, instructions);
+    } catch (e) {
+      throw plainSigningError(e);
+    }
+    const lastValid = tx.lastValidBlockHeight;
     const signed = await w.signTransaction(tx);
     const sig = await this.client.submit(Uint8Array.from(signed.serialize()));
-    await this.client.waitConfirmed(sig, { intervalMs: this.pollMs });
-    return sig;
+    // The transaction is dead only when its blockhash has expired by block height, never by a
+    // wall-clock timeout: until then it may still land, and sending a second one could do the thing twice.
+    for (;;) {
+      if (await this.client.isConfirmed(sig)) return sig;
+      if (lastValid !== undefined && (await this.client.blockhashExpired(lastValid))) {
+        if (await this.client.isConfirmed(sig)) return sig;
+        throw new TransactionExpired();
+      }
+      await new Promise((r) => setTimeout(r, this.pollMs));
+    }
   }
 
   /** Whether the session key can still pay a fee and stay rent-exempt. */
@@ -126,7 +141,9 @@ export class SolanaPort implements ChainPort {
     const bySession = d.caller === 'session' || (d.caller === 'anyone' && (await this.sessionFunded(session.publicKey)));
     if (bySession) {
       const ix = solanaInstruction(this.client.program, s, wallets, session.publicKey, d.call, m);
-      return this.client.sendAndConfirm([ix], [session], { intervalMs: this.pollMs });
+      return this.client.sendAndConfirm([ix], [session], { intervalMs: this.pollMs }).catch((e: unknown) => {
+        throw plainSigningError(e);
+      });
     }
     const w = this.wallet();
     if (!w || !opts.wallet) throw new WalletNeeded('solana');
@@ -167,6 +184,14 @@ export class EthereumPort implements ChainPort {
   async sendWithWallet(call: EthCall): Promise<Hex> {
     const w = this.wallet();
     if (!w) throw new WalletNeeded('ethereum');
+    // The RPC must be on the chain this site is for before anything is simulated or signed.
+    if (this.client.chainId !== null) {
+      try {
+        await this.client.verifyChainId(this.client.chainId);
+      } catch (e) {
+        throw plainSigningError(e);
+      }
+    }
     // Never hand the wallet a call that would revert: a failed transaction still publishes its arguments.
     await this.client.simulate(call, w.address);
     const hash = await w.sendTransaction(call);
@@ -185,7 +210,10 @@ export class EthereumPort implements ChainPort {
     const session = privateKeyToAccount(hex0x(keys.sessionSecret));
     const bySession = d.caller === 'session' || (d.caller === 'anyone' && (await this.sessionFunded(session.address)));
     if (bySession) {
-      const hash = await this.client.send(call, session, { secret: d.secret });
+      // Signed only for the pinned chain id, within the SDK's gas cap for this call and its fee cap.
+      const hash = await this.client.send(call, session, { secret: d.secret }).catch((e: unknown) => {
+        throw plainSigningError(e);
+      });
       await this.client.waitMined(hash, { intervalMs: this.pollMs });
       return hash;
     }

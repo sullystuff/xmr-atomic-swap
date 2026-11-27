@@ -441,7 +441,16 @@ describe('11.6 at-risk logic and the changed warnings', () => {
 
   it('a watcher that fails to answer is shown as failing, and the swap stays unwatched', async () => {
     await watched(async () => Promise.reject(new Error('The watcher did not answer')));
-    expect(document.getElementById('watcher-pending')!.textContent).toMatch(/The watcher has not acknowledged this swap.*The watcher did not answer\. The page keeps trying\./);
+    expect(document.getElementById('watcher-pending')!.textContent).toMatch(/The watcher did not acknowledge this swap.*The watcher did not answer\. The page keeps trying\./);
+    expect(screen.getByTestId('risk-banner')).toBeTruthy();
+  });
+
+  it('a watcher that rejects the request or speaks another format shows as "did not acknowledge", with the reason, never as acknowledged', async () => {
+    const { rig } = await watched(async () => Promise.reject(Object.assign(new Error('WatchFormatUnsupported: this watcher accepts request format 1 only'), { code: 'WatchFormatUnsupported' })));
+    const box = document.getElementById('watcher-pending')!;
+    expect(box.textContent).toMatch(/The watcher did not acknowledge this swap.*speaks an older or newer request format than this page and did not accept the request\. The page keeps trying\./);
+    expect(document.getElementById('watcher-ack')).toBeNull();
+    expect(rig.app.safety()).toMatchObject({ watchedSafe: false });
     expect(screen.getByTestId('risk-banner')).toBeTruthy();
   });
 
@@ -492,6 +501,46 @@ describe('11.6 at-risk logic and the changed warnings', () => {
     expect(screen.getByTestId('risk-banner')).toBeTruthy();
     const d = deadlinesOf('solana', rig.chain.swaps.get(ref)!);
     expect(rig.app.engine.get(ref)!.refundDeadline).toBe(d.tFf! - d.margin);
+  });
+});
+
+describe('11.6 the large-swap tool names a watcher per leg under the same rules', () => {
+  const info = { solana: WATCHER, ethereum: '0x00000000000000000000000000000000000000aa', max_swaps: 100, monero_nodes: 2 };
+
+  it('only legs whose offer allows a pause that adds time name it; the others stay with the tab', async () => {
+    const user = userEvent.setup();
+    const rows = [row(1, { price: (150n * SOL) / 100n, maxXmr: (3n * XMR) / 10n, wZ: DAY }), row(2, { price: (151n * SOL) / 100n, maxXmr: (3n * XMR) / 10n })];
+    const rig = makeRig({ rows, settings: { hostedWatcherUrl: 'https://watch.site.example' }, extra: { watcherInfo: async () => info, registerWatcher: async () => new Promise(() => undefined) } });
+    await mount(rig, '#/large');
+    rig.backup();
+    await user.type(await screen.findByLabelText('Total to spend (SOL)'), '0.9');
+    await user.type(screen.getByLabelText('Worst acceptable rate (SOL per XMR)'), '1.6');
+    await user.type(screen.getByLabelText('Your XMR address'), DEST);
+    const option = await screen.findByTestId('watcher-option');
+    expect(option.textContent).toMatch(/A watcher can be named on 1 of the 2 legs in this wave: the ones whose offer allows a pause that adds time\./);
+    expect((within(option).getAllByRole('radio') as HTMLInputElement[]).map((r) => r.checked)).toEqual([true, false, false]);
+    await user.click(within(option).getByText("This site's watcher"));
+    expect(document.getElementById('watcher-statement')!.textContent).toContain(WATCHER_SEES);
+    await waitFor(() => expect(disabled(screen.getByTestId('lock-button'))).toBe(false));
+    await user.click(screen.getByTestId('lock-button'));
+    await user.click(within(screen.getByRole('dialog')).getByRole('checkbox'));
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: /^Lock / }));
+    await waitFor(() => expect(rig.requests).toHaveLength(2));
+    expect(rig.requests.map((r) => r.watcher ?? null)).toEqual([WATCHER, null]);
+    await rig.pass();
+    // One leg names the watcher and is not acknowledged yet, the other names none: the red banner stays for both.
+    expect(rig.app.safety().uncovered).toHaveLength(2);
+    expect(rig.app.engine.getState().swaps.map((t) => !!t.note.watcher).sort()).toEqual([false, true]);
+  });
+
+  it('says why when no leg can name one', async () => {
+    const user = userEvent.setup();
+    const rig = makeRig({ rows: [row(1)], settings: { hostedWatcherUrl: 'https://watch.site.example' } });
+    await mount(rig, '#/large');
+    await user.type(await screen.findByLabelText('Total to spend (SOL)'), '0.6');
+    await user.type(screen.getByLabelText('Worst acceptable rate (SOL per XMR)'), '1.6');
+    await user.type(screen.getByLabelText('Your XMR address'), DEST);
+    expect((await screen.findByTestId('watcher-option')).textContent).toMatch(/No watcher can be named on this wave: none of these offers accepts one\. This tab is the watcher, as on every swap\./);
   });
 });
 
@@ -756,6 +805,15 @@ describe('11.3 wallet-derived key', () => {
 });
 
 // =====================================================================================  RELEASE
+
+describe('the Ethereum client is pinned to the chain id of the served config', () => {
+  it('never takes the chain id from the endpoint', async () => {
+    const rig = makeRig({ settings: { ethereumRpc: 'http://127.0.0.1:9', contract: '0x00000000000000000000000000000000000000c1', ethereumChainId: 11155111 } });
+    expect(rig.app.ethereum()!.chainId).toBe(11155111n);
+    rig.app.setSettings({ ethereumChainId: 1 });
+    expect(rig.app.ethereum()!.chainId).toBe(1n);
+  });
+});
 
 describe('11.5 the release panel on the Status page', () => {
   // The Status page talks to whatever RPC is configured; these tests are about the release panel only.

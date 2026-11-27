@@ -43,7 +43,7 @@ import {
   unhex,
 } from '@xmrswap/sdk';
 import { type ChainPort, type MoneroPort, WalletNeeded, swapRefOf } from './ports.js';
-import { type WatcherNote, acknowledged } from './watcher.js';
+import { type WatcherNote, acknowledged, watcherRefusalText } from './watcher.js';
 import { local } from './storage.js';
 
 /** Non-secret notes about one swap, kept in local storage. Losing them never loses funds. */
@@ -187,7 +187,7 @@ export interface EngineDeps {
   /** Longest one proof attempt may take before it counts as failed and is retried. */
   proofTimeoutMs?: number;
   /** Hand a swap that names a watcher to it; resolves with the verified acknowledgement. */
-  registerWatcher?: (w: WatcherNote, s: SwapView, keys: DerivedKeys) => Promise<{ watching_until: number; sig: string; swap_ref: string }>;
+  registerWatcher?: (w: WatcherNote, s: SwapView, keys: DerivedKeys, now: bigint) => Promise<{ watching_until: number; sig: string; swap_ref: string }>;
   /** Override of the sweep fee cap (regtest). */
   sweepMaxFee?: () => bigint | null;
   nowMs?: () => number;
@@ -468,7 +468,7 @@ export class Engine {
       this.patchNote(t, { xmr: t.view.xmr.toString(), amount: t.view.amount.toString(), direction: t.view.direction, lastState: t.view.state, ...(ended ? { ended } : {}), ...(t.note.openedAt ? {} : { openedAt: Number(t.view.tLock) }) });
     if (t.view.state === SWAP_STATE.FROZEN && !t.note.wasFrozen) this.patchNote(t, { wasFrozen: true });
     let makerProofOk: boolean | undefined;
-    this.registerWatcher(t, keys);
+    this.registerWatcher(t, keys, now);
     let report: LockReport | undefined;
     let noticeOpens: boolean | undefined;
     for (let step = 0; step < 8; step++) {
@@ -563,7 +563,7 @@ export class Engine {
    * acknowledgement verifies. Until then the swap is not watched and nothing about the tab's
    * own duties changes.
    */
-  private registerWatcher(t: Tracked, keys: DerivedKeys): void {
+  private registerWatcher(t: Tracked, keys: DerivedKeys, now: bigint): void {
     const s = t.view;
     const w = t.note.watcher;
     if (!s || !w || !this.deps.registerWatcher || s.direction !== 0 || s.watcherAddress === null) return;
@@ -576,7 +576,7 @@ export class Engine {
     if (last !== undefined && (last === -1 || this.nowMs() - last < 5000)) return;
     this.watchRuns.set(t.ref, -1);
     if (t.watch.phase !== 'failed') t.watch = { phase: 'registering' };
-    void this.deps.registerWatcher(w, s, keys).then(
+    void this.deps.registerWatcher(w, s, keys, now).then(
       (ack) => {
         this.watchRuns.set(t.ref, this.nowMs());
         this.patchNote(t, { watcher: { url: w.url, solana: w.solana, address: w.address, ack } });
@@ -586,7 +586,7 @@ export class Engine {
       },
       (e: unknown) => {
         this.watchRuns.set(t.ref, this.nowMs());
-        t.watch = { phase: 'failed', error: message(e) };
+        t.watch = { phase: 'failed', error: watcherRefusalText(e) };
         this.emit();
       },
     );

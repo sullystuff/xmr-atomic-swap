@@ -1,7 +1,9 @@
 /** The large-swap tool (SPEC 8.6): order entry, the router's plan with editable legs, waves under the in-flight cap, the status board and the final report. */
 import { MARKET_DECIMALS, type Market } from '@xmrswap/protocol';
 import type { LegState, RoutePlan } from '@xmrswap/sdk';
-import { useMemo, useState } from 'react';
+import type { WatchInfo } from '@xmrswap/sdk';
+import { useEffect, useMemo, useState } from 'react';
+import { WATCHER_CAN, WATCHER_SEES, type WatcherNote, watcherEligible } from '../lib/watcher.js';
 import { ASSET_LABEL, bpsPercent, formatAsset, formatDuration, formatPrice, formatTime, formatXmrAmount, looksLikeXmrAddress, parseUnits, parseXmr } from '../lib/format.js';
 import { lockBlockers } from '../lib/gates.js';
 import { NOT_OPEN_TITLE, capsLine, capsState, notOpenText } from '../lib/caps.js';
@@ -55,6 +57,8 @@ function OrderEntry() {
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pick, setPick] = useState<'tab' | 'hosted' | 'own'>('tab');
+  const [watcher, setWatcher] = useState<{ url: string; info: WatchInfo | null; error: string | null } | null>(null);
 
   const dec = MARKET_DECIMALS[market];
   const asset = ASSET_LABEL[market];
@@ -102,11 +106,32 @@ function OrderEntry() {
   }, [first, rows, settings.minDepth, upgrade]);
 
   const blockers = lockBlockers({ backedUp: vault.backedUp, chain, walletConnected: wallets[chain] !== null, settings, inputError, offerProblem: plan && plan.waves.length === 0 ? 'No offer fits this order. Raise the worst rate or lower the amount.' : null });
+  // The watcher option, under the same rules as a single swap, leg by leg.
+  const eligible = first ? first.legs.filter((l) => { const r = rowOf(l.offerId); return !!r && watcherEligible(r, l.depth); }) : [];
+  const watcherUrl = pick === 'hosted' ? settings.hostedWatcherUrl : pick === 'own' ? settings.watcherUrl : '';
+  useEffect(() => {
+    let live = true;
+    if (pick === 'tab' || !watcherUrl || eligible.length === 0) {
+      setWatcher(null);
+      return;
+    }
+    setWatcher({ url: watcherUrl, info: null, error: null });
+    app.watcherFor(watcherUrl).then(
+      (info) => live && setWatcher({ url: watcherUrl, info, error: null }),
+      (e: unknown) => live && setWatcher({ url: watcherUrl, info: null, error: e instanceof Error ? e.message : String(e) }),
+    );
+    return () => {
+      live = false;
+    };
+  }, [app, pick, watcherUrl, eligible.length]);
+  const watcherNote: WatcherNote | null = pick !== 'tab' && eligible.length > 0 && watcher?.info ? { url: watcher.url, solana: watcher.info.solana, address: chain === 'solana' ? watcher.info.solana : watcher.info.ethereum } : null;
+  const watcherWaiting = pick !== 'tab' && eligible.length > 0 && !watcherNote;
+
   const start = async () => {
     if (!draft || !first || !totalPay || !maxInFlight) return;
     setBusy(true);
     setError(null);
-    const order: Order = { id: crypto.randomUUID(), market, totalPay: totalPay.toString(), worstPrice: draft.worstPrice, maxInFlight: maxInFlight.toString(), deadline: draft.deadline, destination: dest.trim(), referencePrice: draft.referencePrice, minDepth: draft.minDepth, createdAt: Date.now(), legs: [], excluded, caps, stopped: false };
+    const order: Order = { id: crypto.randomUUID(), market, totalPay: totalPay.toString(), worstPrice: draft.worstPrice, maxInFlight: maxInFlight.toString(), deadline: draft.deadline, destination: dest.trim(), referencePrice: draft.referencePrice, minDepth: draft.minDepth, createdAt: Date.now(), legs: [], excluded, caps, stopped: false, ...(watcherNote ? { watcher: watcherNote } : {}) };
     try {
       await app.startOrder(order, first, true);
       setConfirming(false);
@@ -275,9 +300,55 @@ function OrderEntry() {
               ) : null}
             </>
           )}
+          {first ? (
+            <section className="grid gap-3" aria-labelledby="lwatch-h" data-testid="watcher-option">
+              <h2 id="lwatch-h">Who watches the legs if this tab closes</h2>
+              {eligible.length === 0 ? (
+                <p className="muted prose-w">No watcher can be named on this wave: {first.legs.some((l) => (rowOf(l.offerId)?.freezeWindow ?? 0) > 0) ? 'on these offers a pause would add no time' : 'none of these offers accepts one'}. This tab is the watcher, as on every swap.</p>
+              ) : (
+                <>
+                  <p className="muted prose-w">
+                    A watcher can be named on {eligible.length} of the {first.legs.length} leg{first.legs.length === 1 ? '' : 's'} in this wave: the ones whose offer allows a pause that adds time. Each leg is watched and acknowledged on its own, and the tab may only be closed early when
+                    every leg at risk has an acknowledged watcher.
+                  </p>
+                  <div className="grid gap-3" role="radiogroup" aria-labelledby="lwatch-h">
+                    <label className="check">
+                      <input type="radio" name="lwatcher" checked={pick === 'tab'} onChange={() => setPick('tab')} />
+                      <span>
+                        <strong>This tab is my watcher</strong> <span className="pill">default</span>
+                      </span>
+                    </label>
+                    {settings.hostedWatcherUrl ? (
+                      <label className="check">
+                        <input type="radio" name="lwatcher" checked={pick === 'hosted'} onChange={() => setPick('hosted')} />
+                        <span>
+                          <strong>This site's watcher</strong>
+                          <span className="block text-sm muted">{settings.hostedWatcherUrl}</span>
+                        </span>
+                      </label>
+                    ) : null}
+                    <label className="check">
+                      <input type="radio" name="lwatcher" checked={pick === 'own'} disabled={!settings.watcherUrl} onChange={() => setPick('own')} />
+                      <span>
+                        <strong>My own watcher</strong>
+                        <span className="block text-sm muted">{settings.watcherUrl || 'Not set. Add its URL in Settings.'}</span>
+                      </span>
+                    </label>
+                  </div>
+                  {pick !== 'tab' ? (
+                    <Notice kind="warn" title="What a watcher sees and what it can do" id="watcher-statement">
+                      <p>{WATCHER_SEES}</p>
+                      <p className="mt-2">{WATCHER_CAN}</p>
+                      {watcher?.error ? <p className="mt-2 font-semibold">{watcher.error}</p> : null}
+                    </Notice>
+                  ) : null}
+                </>
+              )}
+            </section>
+          ) : null}
           <BackupStep heading="Save your recovery file" />
           <div className="grid gap-2">
-            <button type="button" className="btn btn-primary btn-lg justify-self-start" disabled={blockers.length > 0 || !first} aria-describedby="large-why" onClick={() => setConfirming(true)} data-testid="lock-button">
+            <button type="button" className="btn btn-primary btn-lg justify-self-start" disabled={blockers.length > 0 || !first || watcherWaiting} aria-describedby="large-why" onClick={() => setConfirming(true)} data-testid="lock-button">
               {first ? `Lock wave 1: ${formatAsset(first.pay, market)} ${asset} in ${first.legs.length} leg${first.legs.length === 1 ? '' : 's'}` : 'Lock'}
             </button>
             <ul id="large-why" className="grid gap-1 text-sm muted" aria-live="polite">

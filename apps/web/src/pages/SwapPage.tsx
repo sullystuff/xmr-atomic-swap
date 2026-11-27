@@ -284,7 +284,7 @@ export function WatcherStatus({ t, now, market }: { t: Tracked; now: bigint | nu
       </Notice>
     );
   return (
-    <Notice kind="warn" title={t.watch.phase === 'failed' ? 'The watcher has not acknowledged this swap' : 'Waiting for the watcher to acknowledge this swap'} role="status" id="watcher-pending">
+    <Notice kind="warn" title={t.watch.phase === 'failed' ? 'The watcher did not acknowledge this swap' : 'Waiting for the watcher to acknowledge this swap'} role="status" id="watcher-pending">
       {t.watch.phase === 'failed' ? `${t.watch.error ?? 'It did not answer'}. The page keeps trying. ` : ''}Until a signed acknowledgement arrives this swap is not watched: keep this tab open exactly as without a watcher, or you can lose your funds.
     </Notice>
   );

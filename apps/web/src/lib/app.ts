@@ -39,7 +39,7 @@ import {
 import { capErrorText } from './caps.js';
 import { type ServedRelease, fetchServedRelease } from './release.js';
 import { UNAVAILABLE_TEXT, walletKeyUnavailable } from './walletkey.js';
-import { type WatcherNote, registerWithWatcher, watcherInfo } from './watcher.js';
+import { type WatcherNote, registerWithWatcher, watcherEligible, watcherInfo } from './watcher.js';
 import { Engine, type EngineState, type SwapNote, type Tracked } from './engine.js';
 import { Guard, type GuardEnv } from './guard.js';
 import { Inbox, type ReplyKey, type Thread } from './inbox.js';
@@ -176,7 +176,7 @@ export class App {
       takers: () => this.takers(),
       network: () => this.settings.get().moneroNetwork,
       sweepMaxFee: () => (/^\d+$/.test(this.settings.get().sweepMaxFee) ? BigInt(this.settings.get().sweepMaxFee) : null),
-      registerWatcher: (w, sw, keys) => (deps.registerWatcher ? deps.registerWatcher(w, sw, keys) : registerWithWatcher(w, sw, keys)),
+      registerWatcher: (w, sw, keys, now) => (deps.registerWatcher ? deps.registerWatcher(w, sw, keys) : registerWithWatcher(w, sw, keys, sw.chain === 'solana' ? { programId: this.settings.get().programId } : { chainId: this.settings.get().ethereumChainId, contract: this.settings.get().contract }, now)),
       makerProof: (s) => (deps.makerProof ? deps.makerProof(s) : this.makerProof(s)),
       ...(deps.proofTimeoutMs !== undefined ? { proofTimeoutMs: deps.proofTimeoutMs } : {}),
     });
@@ -278,9 +278,11 @@ export class App {
   ethereum(): EthereumClient | null {
     const s = this.settings.get();
     if (!s.ethereumRpc || !/^0x[0-9a-fA-F]{40}$/.test(s.contract)) return null;
-    const key = `${s.ethereumRpc}|${s.contract}`;
+    const key = `${s.ethereumRpc}|${s.contract}|${s.ethereumChainId}`;
     if (this.ethereumClientFor !== key) {
-      this.ethereumClient = new EthereumClient({ transport: httpEthTransport(s.ethereumRpc), contract: s.contract as Address });
+      // The chain id is pinned from the served config (the release's deployment), never taken from the endpoint:
+      // the SDK signs session-key transactions only for it, with its per-call gas caps and its fee cap.
+      this.ethereumClient = new EthereumClient({ transport: httpEthTransport(s.ethereumRpc), contract: s.contract as Address, chainId: s.ethereumChainId });
       this.ethereumClientFor = key;
       this.ethPort = null;
     }
@@ -675,12 +677,16 @@ export class App {
     if (!o || this.orderBusy.get()[id]) return;
     this.orderBusy.update((b) => ({ ...b, [id]: 'Approve the lock in your wallet' }));
     try {
-      const legs = wave.legs.map((l) => ({ row: rows.find((r) => r.id === l.offerId)!, xmr: l.xmr }));
+      // A leg names the order's watcher under the same rule as a single swap: the offer allows a pause and a pause adds time.
+      const legs: LegRequest[] = wave.legs.map((l) => {
+        const row = rows.find((r) => r.id === l.offerId)!;
+        return { row, xmr: l.xmr, ...(o.watcher && row && watcherEligible(row, l.depth) ? { watcher: o.watcher.address } : {}) };
+      });
       if (legs.some((l) => !l.row)) throw new OpenRefused('An offer in this wave is gone. The plan was refreshed; nothing was locked.');
       const waveNo = o.legs.reduce((m, l) => Math.max(m, l.wave), 0) + 1;
       const r = await this.openLegs(legs, wave.transactions, 0);
       const added: OrderLeg[] = wave.legs.map((l, i) => ({ offerId: l.offerId, makerPda: l.makerId, xmr: l.xmr.toString(), pay: l.pay.toString(), price: l.price.toString(), depth: l.depth, wave: waveNo, ref: r.opened[i] ? swapRefOf(r.opened[i]!) : null, ...(r.errors[i] ? { error: r.errors[i]! } : {}) }));
-      r.opened.forEach((v) => v && this.adopt(v, { market: o.market, destination: o.destination, orderId: o.id }));
+      r.opened.forEach((v) => v && this.adopt(v, { market: o.market, destination: o.destination, orderId: o.id, ...(o.watcher && v.watcherAddress ? { watcher: { url: o.watcher.url, solana: o.watcher.solana, address: o.watcher.address } } : {}) }));
       await this.saveOrder({ ...this.order(id)!, legs: [...this.order(id)!.legs, ...added] });
       this.orderBusy.update((b) => ({ ...b, [id]: null }));
     } catch (e) {

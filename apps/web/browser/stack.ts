@@ -30,6 +30,7 @@ import {
   makerShareKeys,
   makerStep,
   openWatchRequest,
+  watchDeployment,
   signWatchAck,
   watcherFacts,
   watcherStep,
@@ -287,11 +288,13 @@ export class TestWatcher {
           void (async () => {
             try {
               if (!this.accept) return send(503, { error: 'full' });
-              const r = openWatchRequest(JSON.parse(Buffer.concat(chunks).toString('utf8')), this.seed);
-              const ref = base58(r.swapRef);
-              // Accepted only if the swap exists, names this watcher and is not settled.
+              const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { swap_ref?: string };
+              const ref = base58(Uint8Array.from(Buffer.from(String(body.swap_ref ?? ''), 'hex')));
+              // Accepted only if the swap exists, names this watcher and is not settled, and the request
+              // is authenticated as that swap's locker for this deployment (wire format 2).
               const s = await this.w.client.getSwap(ref);
               if (!s || s.watcherAddress !== this.key.publicKey) return send(404, { error: 'not_named' });
+              const r = openWatchRequest(body, { watcherSeed: this.seed, swap: s, deployment: watchDeployment({ programId: this.w.client.programId }), now: await this.w.client.chainTime() });
               this.watched.set(ref, r.noticeKey);
               const d = deadlinesOf('solana', s);
               send(200, signWatchAck({ chain: 'solana', swapRef: r.swapRef, watchingUntil: Number((d.tNote ?? s.tLock + 3600n) + BigInt(s.dC)), watcherSeed: this.seed }));

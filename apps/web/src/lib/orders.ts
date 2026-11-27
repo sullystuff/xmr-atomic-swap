@@ -10,6 +10,7 @@
 import type { AssetCaps, Market } from '@xmrswap/protocol';
 import { type LegState, type PlannedWave, type RoutePlan, type RouterOrder, legSettled, mayOpenWave, planRoute, routeReport } from '@xmrswap/sdk';
 import { type OfferRow, routerOffer } from './market.js';
+import type { WatcherNote } from './watcher.js';
 
 export interface OrderLeg {
   offerId: string;
@@ -46,6 +47,8 @@ export interface Order {
   caps: Record<string, string>;
   /** The user stopped the order: legs in flight finish, nothing new opens. */
   stopped: boolean;
+  /** The watcher the user chose for this order: named on every leg whose offer allows a pause that adds time. */
+  watcher?: WatcherNote;
 }
 
 export const orderInput = (o: Order): RouterOrder => ({
