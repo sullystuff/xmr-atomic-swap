@@ -233,9 +233,9 @@ contract KeyCheckTest is Base {
         (address k, address k2) = _twin(_fundSecret());
         vm.startPrank(operator);
         vm.expectRevert(IXmrSwap.BadKey.selector);
-        swap.fund{value: s.amount}(id, s.openHash, address(0), k2, bytes32(uint256(1)), _view("v"));
+        swap.fund{value: s.amount}(id, s.openHash, address(0), k2, bytes32(uint256(1)), _view("v"), address(0));
         vm.expectRevert(IXmrSwap.BadKey.selector);
-        swap.fund{value: s.amount}(id, s.openHash, k, address(0), bytes32(uint256(1)), _view("v"));
+        swap.fund{value: s.amount}(id, s.openHash, k, address(0), bytes32(uint256(1)), _view("v"), address(0));
         vm.stopPrank();
     }
 

@@ -27,14 +27,26 @@ library SwapSettle {
         emit IXmrSwap.Approved(swapId, maker, SwapStore.C_APPROVALS);
     }
 
-    function fund(bytes32 swapId, bytes32 expectedOpen, address key, address key2, bytes32 spendPub, bytes32 viewShare)
-        external
-    {
+    function fund(
+        bytes32 swapId,
+        bytes32 expectedOpen,
+        address key,
+        address key2,
+        bytes32 spendPub,
+        bytes32 viewShare,
+        address watcher
+    ) external {
         SwapStore.Layout storage $ = SwapStore.layout();
         SwapStore.Record storage s = SwapStore._swap($, swapId);
         if (s.direction == 0) revert IXmrSwap.WrongDirection();
         IXmrSwap.Maker storage m = SwapStore._operatorOnly($, s);
         _pendingBefore(s, expectedOpen);
+        // The maker's watcher (SPEC 11.6), only where the quote had a freeze window. No cap is
+        // read here: the whole amount was reserved at `take`.
+        if (watcher != address(0)) {
+            if (s.freezeSecs == 0) revert IXmrSwap.WatcherNotAllowed();
+            s.watcher = watcher;
+        }
         if (key == address(0) || key2 == address(0) || spendPub == 0) revert IXmrSwap.BadKey();
         if (!SwapMath.viewValid(viewShare)) revert IXmrSwap.ViewInvalid();
         address maker = s.maker;
@@ -45,7 +57,7 @@ library SwapSettle {
         s.lockerView = viewShare;
         _activate(s, m);
         SwapStore._count($, maker, SwapStore.C_APPROVALS);
-        emit IXmrSwap.Funded(swapId, maker, SwapStore.C_APPROVALS, key, key2, spendPub, viewShare);
+        emit IXmrSwap.Funded(swapId, maker, SwapStore.C_APPROVALS, key, key2, spendPub, viewShare, watcher);
         SwapStore._pull(s.token, s.amount, 0);
     }
 
@@ -131,7 +143,8 @@ library SwapSettle {
         } else {
             // A late notice is still accepted until T_nl; it costs the taker only its protection
             // against a withheld deposit.
-            if (block.timestamp >= tFinal - s.claimDelay - s.claimWindow - SwapMath.DAY_SECS) {
+            // T_nl = T_final - D_c - W_z - W_c - 86,400.
+            if (block.timestamp >= tFinal - s.claimDelay - s.freezeSecs - s.claimWindow - SwapMath.DAY_SECS) {
                 revert IXmrSwap.TooLate();
             }
             late = block.timestamp >= s.tNoteDeadline;
@@ -153,15 +166,35 @@ library SwapSettle {
         SwapStore.Layout storage $ = SwapStore.layout();
         SwapStore.Record storage s = SwapStore._swap($, swapId);
         if (!SwapStore._isLocker($, s)) revert IXmrSwap.Unauthorized();
-        if (s.state != SwapStore.NOTICED) revert IXmrSwap.BadState();
+        uint8 state = s.state;
+        // Z2: a frozen swap is unfrozen by setting ready, until T_ff.
+        if (state != SwapStore.NOTICED && state != SwapStore.FROZEN) revert IXmrSwap.BadState();
         if (block.timestamp < s.tNotice + s.depth * SwapMath.READY_MIN_SECS_PER_CONF) revert IXmrSwap.TooEarly();
-        if (block.timestamp >= SwapStore._min(s.tClaimOpen, s.tFinal)) revert IXmrSwap.TooLate();
+        uint256 closes = state == SwapStore.NOTICED ? s.tClaimOpen : SwapStore._tFrozenFinal(s);
+        if (block.timestamp >= SwapStore._min(closes, s.tFinal)) revert IXmrSwap.TooLate();
         s.state = SwapStore.READY;
         s.tReady = uint64(block.timestamp);
         s.tClaimDeadline = uint64(block.timestamp + s.claimWindow);
         address maker = s.maker;
         SwapStore._count($, maker, SwapStore.C_READIES);
         emit IXmrSwap.ReadySet(swapId, maker, SwapStore.C_READIES);
+    }
+
+    /// Z1 (SPEC 11.6): the watcher the swap names, or the locker itself, pushes the opening of
+    /// the claim-without-ready from T_co to T_ff. It reveals nothing and moves nothing.
+    function freeze(bytes32 swapId) external {
+        SwapStore.Layout storage $ = SwapStore.layout();
+        SwapStore.Record storage s = SwapStore._swap($, swapId);
+        address watcher = s.watcher;
+        // msg.sender is never zero, so a swap that names no watcher has none.
+        if (msg.sender != watcher && !SwapStore._isLocker($, s)) revert IXmrSwap.Unauthorized();
+        if (s.state != SwapStore.NOTICED || watcher == address(0)) revert IXmrSwap.BadState();
+        if (block.timestamp >= SwapStore._min(s.tClaimOpen, s.tFinal)) revert IXmrSwap.TooLate();
+        s.state = SwapStore.FROZEN;
+        s.tFreeze = uint64(block.timestamp);
+        address maker = s.maker;
+        SwapStore._count($, maker, SwapStore.C_FREEZES);
+        emit IXmrSwap.Frozen(swapId, maker, SwapStore.C_FREEZES, s.taker, watcher, uint64(SwapStore._tFrozenFinal(s)));
     }
 
     function abort(bytes32 swapId) external {
@@ -189,11 +222,16 @@ library SwapSettle {
                 }
             } else if (state == SwapStore.READY) {
                 (counter, newState) = (SwapStore.C_MISSED_CLAIMS, SwapStore.ABORTED_FREE);
+            } else if (state == SwapStore.FROZEN) {
+                // Z5: after a freeze the deposit always stays withholdable.
+                counter = SwapStore.C_ABORTS_LATE;
             } else {
                 revert IXmrSwap.BadState();
             }
         } else {
-            if (state != SwapStore.NOTICED && state != SwapStore.READY) revert IXmrSwap.BadState();
+            if (state != SwapStore.NOTICED && state != SwapStore.READY && state != SwapStore.FROZEN) {
+                revert IXmrSwap.BadState();
+            }
             counter = SwapStore.C_TAKER_ABORTS;
         }
         if (block.timestamp >= tFinal) revert IXmrSwap.TooLate();
@@ -261,12 +299,17 @@ library SwapSettle {
             } else {
                 counter = SwapStore.C_BACKOUTS_POST_NOTICE;
             }
+        } else if (state == SwapStore.FROZEN && block.timestamp < SwapStore._min(SwapStore._tFrozenFinal(s), tFinal)) {
+            // Z3. A: the deposit is held. B: there is no maker bond, so a maker refund after a
+            // freeze returns the take deposit at once and can never hold it.
+            (held, counter) =
+                isA ? (true, SwapStore.C_REFUNDS_AFTER_FREEZE) : (false, SwapStore.C_BACKOUTS_AFTER_FREEZE);
         } else if (state == SwapStore.READY && block.timestamp < tFinal) {
             if (block.timestamp < s.tClaimDeadline) revert IXmrSwap.TooEarly();
             (held, counter) = isA ? (false, SwapStore.C_MISSED_CLAIMS) : (true, SwapStore.C_TAKER_MISSED_CLAIMS);
         } else if ((state == SwapStore.ABORTED_HOLD || state == SwapStore.ABORTED_FREE) && block.timestamp < tFinal) {
             (held, counter) = (state == SwapStore.ABORTED_HOLD, SwapStore.C_REFUNDS_AFTER_ABORT);
-        } else if (state >= SwapStore.NOTICED && state <= SwapStore.ABORTED_HOLD) {
+        } else if (SwapStore._afterNotice(state)) {
             // Between the end of the last pre-expiry window and T_exp a refund is too late.
             if (block.timestamp < tFinal + SwapMath.EXPIRY_SECS) revert IXmrSwap.TooLate();
             counter = SwapStore.C_EXPIRED_REFUNDS;
@@ -289,6 +332,8 @@ library SwapSettle {
         if (held) {
             s.state = SwapStore.HOLD;
             s.depositState = SwapStore.DEP_HELD;
+            // The swap leaves the open states here; the held deposit is a settled obligation.
+            SwapStore._uncount($, s);
             SwapStore._count($, maker, counter);
         } else {
             SwapStore._settle($, s, counter);
@@ -319,7 +364,11 @@ library SwapSettle {
         } else if (state == SwapStore.NOTICED && block.timestamp < tFinal) {
             if (block.timestamp < s.tClaimOpen) revert IXmrSwap.TooEarly();
             counter = isA ? SwapStore.C_CLAIMS_WITHOUT_READY : SwapStore.C_TAKER_CLAIMS_WITHOUT_READY;
-        } else if (state >= SwapStore.NOTICED && state <= SwapStore.ABORTED_HOLD) {
+        } else if (state == SwapStore.FROZEN && block.timestamp < tFinal) {
+            // Z4: a freeze moves the opening of the claim-without-ready from T_co to T_ff.
+            if (block.timestamp < SwapStore._tFrozenFinal(s)) revert IXmrSwap.TooEarly();
+            counter = SwapStore.C_CLAIMS_AFTER_FREEZE;
+        } else if (SwapStore._afterNotice(state)) {
             // After an abort the claim returns at T_final: an abort is a waiver, not forever.
             if (block.timestamp < tFinal) revert IXmrSwap.TooEarly();
             if (block.timestamp >= tFinal + SwapMath.EXPIRY_SECS) revert IXmrSwap.TooLate();
@@ -348,8 +397,9 @@ library SwapSettle {
         $.treasuryAccrued[token] += fee;
         emit IXmrSwap.Claimed(swapId, maker, counter, secret, paid, fee);
 
-        // A: the payout address set by the maker's cold key, never the operator. B: the taker.
-        SwapStore._payout($, token, isA ? $.makers[maker].payout : s.taker, paid);
+        // A: the payout address set by the maker's cold key, never the operator. B: the payout
+        // address the taker named at `take` (its own by default), whoever submits the claim.
+        SwapStore._payout($, token, isA ? $.makers[maker].payout : SwapStore._claimTo(s), paid);
     }
 
     // ------------------------------------------------------------------ deposit sub-machine

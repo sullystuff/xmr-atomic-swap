@@ -12,7 +12,7 @@ import {SwapStore} from "./SwapStore.sol";
 /// are computed by `XmrSwap` (they need its domain) and passed in.
 library SwapOpen {
     bytes32 private constant QUOTE_TYPEHASH = keccak256(
-        "Quote(address maker,address taker,address token,uint8 direction,uint8 approvalMode,uint64 minXmr,uint64 maxXmr,uint64[3] tierXmr,uint256[3] tierPrice,uint64[3] depthXmr,uint8[3] depth,uint16 depositBps,uint32 approvalWindow,uint32 noticeWindow,uint32 claimDelay,uint32 claimWindow,uint32 finalWindow,uint64 validUntil,uint32 epoch,bytes32 keyRoot,uint64 quoteId)"
+        "Quote(address maker,address taker,address token,uint8 direction,uint8 approvalMode,uint64 minXmr,uint64 maxXmr,uint64[3] tierXmr,uint256[3] tierPrice,uint64[3] depthXmr,uint8[3] depth,uint16 depositBps,uint32 approvalWindow,uint32 noticeWindow,uint32 claimDelay,uint32 claimWindow,uint32 finalWindow,uint64 validUntil,uint32 epoch,bytes32 keyRoot,uint64 quoteId,uint32 freezeWindow)"
     );
     bytes32 private constant APPROVAL_TYPEHASH = keccak256(
         "Approval(address maker,address taker,address token,uint8 direction,uint64 maxXmr,uint64 notBefore,uint64 validUntil,uint32 epoch,bytes32 approvalId)"
@@ -63,7 +63,8 @@ library SwapOpen {
                         q.validUntil,
                         q.epoch,
                         q.keyRoot,
-                        q.quoteId
+                        q.quoteId,
+                        q.freezeWindow
                     )
                 )
             )
@@ -101,11 +102,12 @@ library SwapOpen {
         IXmrSwap.TakerKeys calldata tk,
         IXmrSwap.PoolLeaf calldata leaf,
         IXmrSwap.Approval calldata a,
-        bytes calldata approvalSig
+        bytes calldata approvalSig,
+        address watcher
     ) external returns (bytes32 swapId) {
         SwapStore.Layout storage $ = SwapStore.layout();
         SwapStore.Record storage s;
-        (swapId, s) = _open($, q, sig, xmr, maxPay, swapNonce, a, approvalSig, 0);
+        (swapId, s) = _open($, q, sig, xmr, maxPay, swapNonce, a, approvalSig, 0, watcher);
         if (!SwapMath.viewValid(tk.viewShare)) revert IXmrSwap.ViewInvalid();
         // The named leaf of the quote's key pool: written provisionally, consumed at approval.
         if (leaf.key == address(0) || leaf.key2 == address(0) || leaf.spendPub == 0) revert IXmrSwap.BadKey();
@@ -117,7 +119,8 @@ library SwapOpen {
         s.makerSpendPub = leaf.spendPub;
         s.lockerView = tk.viewShare;
         s.keyLeaf = leafHash;
-        _finishOpen($, swapId, s, sessionKey, sessionBudget, tk, s.amount, SwapStore.C_LOCKS);
+        if (watcher != address(0)) s.watcher = watcher;
+        _finishOpen($, swapId, s, sessionKey, sessionBudget, tk, address(0), watcher);
     }
 
     function take(
@@ -130,14 +133,18 @@ library SwapOpen {
         uint256 sessionBudget,
         IXmrSwap.TakerKeys calldata tk,
         IXmrSwap.Approval calldata a,
-        bytes calldata approvalSig
+        bytes calldata approvalSig,
+        address payout
     ) external returns (bytes32 swapId) {
         SwapStore.Layout storage $ = SwapStore.layout();
         SwapStore.Record storage s;
-        (swapId, s) = _open($, q, sig, xmr, minReceive, swapNonce, a, approvalSig, 1);
+        (swapId, s) = _open($, q, sig, xmr, minReceive, swapNonce, a, approvalSig, 1, payout);
         // Direction B: the locker's view share is the maker's, supplied by `fund`.
         if (tk.viewShare != 0) revert IXmrSwap.ViewInvalid();
-        _finishOpen($, swapId, s, sessionKey, sessionBudget, tk, s.deposit, SwapStore.C_TAKES);
+        // The claim pays this address and no other; the slot is written only when it is not the
+        // taker's own (SPEC 11.2, 11.8).
+        if (payout != msg.sender) s.payout = payout;
+        _finishOpen($, swapId, s, sessionKey, sessionBudget, tk, payout, address(0));
     }
 
     /// Everything `lock` and `take` share up to the terms: quote, price, approval mode, bounds.
@@ -150,7 +157,8 @@ library SwapOpen {
         bytes16 swapNonce,
         IXmrSwap.Approval calldata a,
         bytes calldata approvalSig,
-        uint8 direction
+        uint8 direction,
+        address named // direction A: the watcher; direction B: the payout address
     ) private returns (bytes32 swapId, SwapStore.Record storage s) {
         swapId = SwapMath.swapIdOf(msg.sender, swapNonce);
         s = $.swaps[swapId];
@@ -202,15 +210,26 @@ library SwapOpen {
         if (q.taker != address(0)) mode = 3;
 
         SwapMath.checkBounds(
-            q.depositBps,
-            q.approvalWindow,
-            q.noticeWindow,
-            depth,
-            q.claimDelay,
-            q.claimWindow,
-            q.finalWindow,
+            [
+                uint256(q.depositBps),
+                q.approvalWindow,
+                q.noticeWindow,
+                depth,
+                q.claimDelay,
+                q.claimWindow,
+                q.finalWindow,
+                q.freezeWindow
+            ],
             SwapMath.PENDING_APPROVAL
         );
+        uint256 deposit = SwapMath.bpsOf(amount, q.depositBps);
+        if (direction == 0) {
+            // A watcher may be named only against a quote that accepts one.
+            if (named != address(0) && q.freezeWindow == 0) revert IXmrSwap.WatcherNotAllowed();
+        } else if (named == address(0) || named == address(this)) {
+            revert IXmrSwap.BadValue(); // the payout address
+        }
+        _addOpenValue($, q.token, amount, direction == 0 ? amount : amount + deposit);
         if (m.openPending >= SwapMath.MAX_OPEN_PENDING) revert IXmrSwap.TooManyPending();
         unchecked {
             m.openPending += 1;
@@ -224,11 +243,12 @@ library SwapOpen {
         s.direction = direction;
         s.mode = mode;
         s.outcome = SwapStore.C_NONE;
+        s.flags = SwapStore.FLAG_COUNTED;
         s.depth = uint8(depth);
         s.depBps = q.depositBps;
         s.xmr = xmr;
         s.amount = SwapStore._u128(amount);
-        s.deposit = SwapStore._u128(SwapMath.bpsOf(amount, q.depositBps));
+        s.deposit = SwapStore._u128(deposit);
         s.price = SwapStore._u128(price);
         s.noticeWindow = q.noticeWindow;
         s.claimDelay = q.claimDelay;
@@ -236,6 +256,25 @@ library SwapOpen {
         s.tLock = uint64(block.timestamp);
         s.tPendingDeadline = uint64(block.timestamp + q.approvalWindow);
         s.tFinal = uint64(block.timestamp + q.finalWindow);
+        if (q.freezeWindow != 0) s.freezeSecs = q.freezeWindow;
+    }
+
+    /// The beta caps (SPEC 11.1) and the open-value accounting. `lock` and `take` are the only
+    /// calls a cap can refuse. With the switch on: `amount > maxSwap` is `SwapCapExceeded`, then
+    /// `openValue + counted > maxOpen` is `OpenCapExceeded`; exactly at a cap is allowed. The add
+    /// is exact: an open value that would not fit 128 bits is refused even with the switch off
+    /// (in direction B that bounds `amount + deposit` too), never wrapped or saturated.
+    function _addOpenValue(SwapStore.Layout storage $, address token, uint256 amount, uint256 counted) private {
+        SwapStore.Cap storage cap = $.caps[token];
+        bool on = $.capsOn;
+        if (on && amount > cap.maxSwap) revert IXmrSwap.SwapCapExceeded();
+        // amount, deposit and the open value are each below 2^128: no overflow in 256 bits.
+        uint256 openValue = uint256(cap.openValue) + counted;
+        if (openValue > (on ? cap.maxOpen : type(uint128).max)) {
+            if (on) revert IXmrSwap.OpenCapExceeded();
+            revert IXmrSwap.AmountOutOfRange();
+        }
+        cap.openValue = uint128(openValue);
     }
 
     /// Advance approval (SPEC 2.10): same signer as the quote, bound to the caller.
@@ -265,9 +304,11 @@ library SwapOpen {
         address sessionKey,
         uint256 sessionBudget,
         IXmrSwap.TakerKeys calldata tk,
-        uint256 stake,
-        uint8 counter
+        address payout,
+        address watcher
     ) private {
+        bool isA = s.direction == 0;
+        uint8 counter = isA ? SwapStore.C_LOCKS : SwapStore.C_TAKES;
         if (tk.key == address(0) || tk.key2 == address(0) || tk.spendPub == 0 || tk.encKey == 0) {
             revert IXmrSwap.BadKey();
         }
@@ -278,7 +319,7 @@ library SwapOpen {
         s.takerSpendPub = tk.spendPub;
         s.takerEncKey = tk.encKey;
         s.makerEncKey = tk.makerEncKey;
-        s.openHash = SwapMath.openHash(swapId, s, tk.viewShare);
+        s.openHash = SwapMath.openHash(swapId, s, tk.viewShare, payout, watcher);
         $.swapsByTaker[msg.sender].push(swapId);
         address maker = s.maker;
         SwapStore._count($, maker, counter);
@@ -296,10 +337,12 @@ library SwapOpen {
             s.depth,
             s.swapNonce,
             tk,
-            s.keyLeaf
+            s.keyLeaf,
+            payout,
+            watcher
         );
 
-        SwapStore._pull(s.token, stake, sessionBudget);
+        SwapStore._pull(s.token, isA ? s.amount : s.deposit, sessionBudget);
         if (sessionBudget != 0) {
             // The session key is an externally owned account derived in the page.
             if (sessionKey == address(0)) revert IXmrSwap.BadValue();

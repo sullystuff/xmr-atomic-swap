@@ -192,6 +192,10 @@ library TestStore {
         r.tFinal = v.tFinal;
         r.tRefund = v.tRefund;
         r.tSettled = v.tSettled;
+        r.payout = v.payout;
+        r.watcher = v.watcher;
+        r.freezeSecs = v.freezeSecs;
+        r.tFreeze = v.tFreeze;
     }
 }
 
@@ -213,6 +217,14 @@ contract XmrSwapSeeder is XmrSwap {
         m.responseSecsSum = responseSecsSum;
         $.volume[maker][token] = volume;
         $.withheldVolume[maker][token] = withheldVolume;
+    }
+
+    /// Preset the asset's open value and the maker's open-pending count, as the vectors' `env`
+    /// states them for a row that starts with other swaps open.
+    function seedOpen(address token, uint128 openValue, address maker, uint16 openPending) external {
+        SwapStore.Layout storage $ = SwapStore.layout();
+        $.caps[token].openValue = openValue;
+        $.makers[maker].openPending = openPending;
     }
 
     /// Write a whole swap record (the packing tests).

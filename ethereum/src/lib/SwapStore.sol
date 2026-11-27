@@ -21,6 +21,7 @@ library SwapStore {
     uint8 internal constant HOLD = 7;
     uint8 internal constant WITHHELD = 8;
     uint8 internal constant DONE = 9;
+    uint8 internal constant FROZEN = 10; // Amendment 1 (SPEC 11.6)
 
     // Bits of `Swap.flags` (the reference model's values).
     uint8 internal constant FLAG_NOTICE = 1;
@@ -28,6 +29,9 @@ library SwapStore {
     uint8 internal constant FLAG_REVEALED = 4;
     uint8 internal constant FLAG_REVEALER_LOCKER = 8;
     uint8 internal constant FLAG_LATE_NOTICE = 16;
+    /// Counted in the asset's open value (SPEC 11.1): set by the open, cleared by the one
+    /// subtraction, so a second subtraction is impossible.
+    uint8 internal constant FLAG_COUNTED = 32;
 
     // `Swap.depositState`.
     uint8 internal constant DEP_HELD = 1;
@@ -69,6 +73,10 @@ library SwapStore {
     uint8 internal constant C_RELEASES = 30;
     uint8 internal constant C_SPLITS = 31;
     uint8 internal constant C_REJECTIONS_NO_FAULT = 32;
+    uint8 internal constant C_FREEZES = 33;
+    uint8 internal constant C_REFUNDS_AFTER_FREEZE = 34;
+    uint8 internal constant C_BACKOUTS_AFTER_FREEZE = 35;
+    uint8 internal constant C_CLAIMS_AFTER_FREEZE = 36;
     uint8 internal constant C_NONE = 0xff;
 
     address internal constant ANY_TOKEN = 0xFFfFfFffFFfffFFfFFfFFFFFffFFFffffFfFFFfF;
@@ -149,6 +157,22 @@ library SwapStore {
         bytes32 evidenceTxid;
         bytes32 evidenceView;
         uint256 revealed; // the revealed spend share; kept in storage
+        // Amendment 1 (SPEC 11.8), appended. A swap with the default payout, no freeze window and
+        // no watcher writes neither slot.
+        // slot 24
+        address payout; // direction B, only when it differs from the taker; zero = the taker
+        uint64 tFreeze;
+        uint32 freezeSecs; // W_z copied from the quote
+        // slot 25
+        address watcher; // the key that may freeze; zero = none
+    }
+
+    /// @notice The beta caps of one escrowed asset and its open value (SPEC 11.1): the sum of
+    /// `amount` (direction A) or `amount + deposit` (direction B) over the swaps in an open state.
+    struct Cap {
+        uint128 maxSwap;
+        uint128 maxOpen;
+        uint128 openValue;
     }
 
     /// @custom:storage-location erc7201:xmrswap.storage.v1
@@ -166,6 +190,9 @@ library SwapStore {
         address treasury;
         address usdc;
         mapping(address => address) makerOfOperator; // operator => maker; operators are unique
+        // Amendment 1 (SPEC 11.1), appended: slots 13 and 14.
+        mapping(address => Cap) caps; // token => caps and open value
+        bool capsOn; // on after `initialize`, with every cap zero: fail closed
     }
 
     // keccak256(abi.encode(uint256(keccak256("xmrswap.storage.v1")) - 1)) & ~bytes32(uint256(0xff))
@@ -237,6 +264,45 @@ library SwapStore {
         s.tFinal = r.tFinal;
         s.tRefund = r.tRefund;
         s.tSettled = r.tSettled;
+        // Direction B: the taker is the payout unless another address was named at `take`.
+        address payout = r.payout;
+        s.payout = payout != address(0) ? payout : (s.direction == 0 ? address(0) : s.taker);
+        s.watcher = r.watcher;
+        s.freezeSecs = r.freezeSecs;
+        s.tFreeze = r.tFreeze;
+    }
+
+    /// Where a direction-B claim pays: the payout address named at `take`, by default the taker.
+    function _claimTo(Record storage r) internal view returns (address) {
+        address payout = r.payout;
+        return payout != address(0) ? payout : r.taker;
+    }
+
+    /// `T_ff = max(t_Z + W_z, T_co)`: when a frozen swap's claim-without-ready opens and the
+    /// locker's refund and `setReady` close. A freeze never opens the claim earlier than `T_co`
+    /// (SPEC 11.6 as corrected by docs/research/a1-deviations.md, D1).
+    function _tFrozenFinal(Record storage r) internal view returns (uint256 t) {
+        t = uint256(r.tFreeze) + r.freezeSecs;
+        uint256 tClaimOpen = r.tClaimOpen;
+        if (t < tClaimOpen) t = tClaimOpen;
+    }
+
+    /// The states in which a notice is on record and the swap is still open: NOTICED, READY, the
+    /// two ABORTED states and FROZEN.
+    function _afterNotice(uint8 state) internal pure returns (bool) {
+        return (state >= NOTICED && state <= ABORTED_HOLD) || state == FROZEN;
+    }
+
+    /// The one subtraction from the open value, at the transition that takes the swap out of the
+    /// open states (into HOLD or DONE). It saturates and cannot fail: no cap can stop an exit.
+    function _uncount(Layout storage $, Record storage s) internal {
+        uint8 flags = s.flags;
+        if (flags & FLAG_COUNTED == 0) return;
+        s.flags = flags & ~FLAG_COUNTED;
+        Cap storage cap = $.caps[s.token];
+        uint256 counted = s.direction == 0 ? s.amount : uint256(s.amount) + s.deposit;
+        uint256 open = cap.openValue;
+        cap.openValue = open > counted ? uint128(open - counted) : 0;
     }
 
     function _swap(Layout storage $, bytes32 swapId) internal view returns (Record storage s) {
@@ -283,6 +349,7 @@ library SwapStore {
         s.state = DONE;
         s.outcome = counter;
         s.tSettled = uint64(block.timestamp);
+        _uncount($, s);
         _count($, s.maker, counter);
     }
 

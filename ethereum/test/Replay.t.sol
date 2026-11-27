@@ -5,16 +5,27 @@ import {IXmrSwap} from "xmrswap-interfaces/ethereum/IXmrSwap.sol";
 import {Base} from "./utils/Base.sol";
 import {XmrSwapSeeder} from "./utils/Mocks.sol";
 
-/// Replays every row and every sequence of `interfaces/vectors/transitions.json` whose chain is
-/// `ethereum` against the real contract, once with ETH and once with USDC as the asset. Every row
-/// and every step is compared exactly as written; nothing is special-cased.
+/// Replays every row, every sequence and every multi-swap sequence of
+/// `interfaces/vectors/transitions.json` whose chain is `ethereum` against the real contract, once
+/// with ETH and once with USDC as the asset. Every row and every step is compared exactly as
+/// written; nothing is special-cased. The vectors are generated from the reference model on
+/// `crates/escrow-logic`, whose rules the Kani proofs cover: this replay is what ties the contract
+/// to them.
 ///
 /// The file holds one array element per line, so it is read line by line.
 contract ReplayTest is Base {
     string internal constant FILE = "../interfaces/vectors/transitions.json";
+    uint256 internal constant SWAPS = 4;
+    uint256 internal constant ACCOUNTS = 6;
 
-    address internal filler = makeAddr("filler");
     address internal token;
+    /// The payout address of a `take` whose `payout` is `other`, and the watcher key.
+    address internal payoutOther = makeAddr("payout other");
+
+    // The swaps of the row or sequence being replayed; `cur` is the one the step names.
+    bytes32[SWAPS] internal ids;
+    address[SWAPS] internal takers;
+    uint256 internal cur;
     bytes32 internal id;
     Open internal o;
 
@@ -23,16 +34,19 @@ contract ReplayTest is Base {
     uint256 internal rowsOk;
     uint256 internal rowsRejected;
     uint256 internal sequences;
+    uint256 internal multiSequences;
     uint256 internal sequenceSteps;
+    uint256 internal hostile;
 
     /// What a step may change, read before and after it.
     struct Snap {
-        uint256[4] bal; // taker, payout, operator, makerOwner
-        uint256[4] owed;
+        uint256[ACCOUNTS] bal; // taker, maker payout, operator, makerOwner, payout address, watcher
+        uint256[ACCOUNTS] owed;
         uint256 accrued;
         uint256 escrow;
         uint256 volume;
         uint256 withheld;
+        uint256 openValue;
         IXmrSwap.Maker maker;
     }
 
@@ -46,13 +60,17 @@ contract ReplayTest is Base {
 
     function setUp() public override {
         super.setUp();
-        vm.deal(filler, 1e30);
-        usdc.mint(filler, 1e30);
-        vm.prank(filler);
-        usdc.approve(address(swap), type(uint256).max);
+        takers[0] = taker;
+        for (uint256 i = 1; i < SWAPS; ++i) {
+            takers[i] = makeAddr(string.concat("taker ", vm.toString(i)));
+            vm.deal(takers[i], 1e30);
+            usdc.mint(takers[i], 1e30);
+            vm.prank(takers[i]);
+            usdc.approve(address(swap), type(uint256).max);
+        }
     }
 
-    // ------------------------------------------------------------------ the four replays
+    // ------------------------------------------------------------------ the replays
 
     function test_replay_rows_eth() public {
         token = ETH;
@@ -93,10 +111,11 @@ contract ReplayTest is Base {
         // The summary block of the file.
         assertEq(rowsOk + rowsRejected, vm.parseJsonUint(summary, ".summary.ethereum.rows"), "ethereum rows replayed");
         assertEq(rowsRejected, vm.parseJsonUint(summary, ".summary.ethereum.rows_rejected"), "ethereum rows rejected");
-        assertEq(rowsOk + rowsRejected, 399);
-        assertEq(rowsRejected, 191);
+        assertEq(rowsOk + rowsRejected, 596);
+        assertEq(rowsRejected, 309);
     }
 
+    /// Sequences of one swap and sequences of several (`multi_sequences`).
     function _replaySequences() internal {
         while (true) {
             string memory l = vm.readLine(FILE);
@@ -105,24 +124,34 @@ contract ReplayTest is Base {
             if (!_startsWith(l, '{"about":')) continue;
             l = _stripComma(l);
             if (!_eq(vm.parseJsonString(l, ".chain"), "ethereum")) continue;
+            bool multi = vm.keyExistsJson(l, ".swaps");
             uint256 snap = vm.snapshotState();
-            uint256 steps = _sequence(l);
+            uint256 steps = _sequence(l, multi);
             vm.revertToState(snap);
-            sequences++;
+            if (multi) {
+                multiSequences++;
+            } else {
+                sequences++;
+                if (vm.parseJsonBool(l, ".hostile_after_open")) hostile++;
+            }
             sequenceSteps += steps;
         }
         vm.closeFile(FILE);
         assertEq(sequences, vm.parseJsonUint(summary, ".summary.ethereum.sequences"), "ethereum sequences replayed");
-        assertEq(sequences, 182);
-        assertGt(sequenceSteps, 800);
+        assertEq(multiSequences, vm.parseJsonUint(summary, ".summary.ethereum.multi_sequences"), "multi-swap sequences");
+        assertEq(sequences, 324);
+        assertEq(multiSequences, 2);
+        assertEq(hostile, 41, "invariant-3 walks");
+        assertGt(sequenceSteps, 1500);
     }
 
     // ------------------------------------------------------------------ one row, one sequence
 
-    /// "Start from no swap. Run `open` by the taker wallet at `open.at`, then each `setup` step at
-    /// its `at`, check the swap equals `from`, then run `step` at `step.at` and compare with
-    /// `step.expect`."
+    /// "Start from no swap. Run `open` (lock or take) by the taker wallet at `open.at`, then each
+    /// `setup` step at its `at`, check the swap equals `from`, then run `step` at `step.at` and
+    /// compare with `step.expect`."
     function _row(string memory l) internal {
+        _use(0);
         if (vm.keyExistsJson(l, ".open")) {
             _must(l, ".open");
             for (uint256 i;; ++i) {
@@ -136,16 +165,64 @@ contract ReplayTest is Base {
     }
 
     /// "Start the maker record at `initial_maker`. Run every step at its `at`. A step with
-    /// `expect.ok == false` must fail with `expect.error` and change nothing."
-    function _sequence(string memory l) internal returns (uint256 steps) {
+    /// `expect.ok == false` must fail with `expect.error` and change nothing." In a multi-swap
+    /// sequence every step names its swap by index; the swaps have different takers.
+    function _sequence(string memory l, bool multi) internal returns (uint256 steps) {
         _seedMaker(l);
+        bool hostileAfterOpen = !multi && vm.parseJsonBool(l, ".hostile_after_open");
         for (;; ++steps) {
             string memory p = string.concat(".steps[", vm.toString(steps), "]");
             if (!vm.keyExistsJson(l, p)) break;
-            _step(l, p, true);
+            _use(multi ? vm.parseJsonUint(l, string.concat(p, ".swap")) : 0);
+            bool opened = _step(l, p, true);
+            if (opened && hostileAfterOpen) {
+                // "Right after the open the replay sets every cap to zero with the switch on, sets
+                // paused and bumps both epochs; every later step must still match." The caps and
+                // the pause are in every later step's env; the epochs are bumped here.
+                vm.prank(makerOwner);
+                swap.bumpEpochs(true, true);
+            }
         }
-        _checkSwap(l, ".final.swap", "final");
+        if (multi) {
+            uint256 n = vm.parseJsonUint(l, ".swaps");
+            assertLe(n, SWAPS);
+            for (uint256 i; i < n; ++i) {
+                string memory f = string.concat(".final.swaps[", vm.toString(i), "]");
+                _use(i);
+                if (!vm.keyExistsJson(l, string.concat(f, ".state"))) {
+                    assertEq(_get(_idOf(i)).state, 0, "a swap that never opened");
+                } else {
+                    _checkSwap(l, f, "final");
+                }
+            }
+            (,,, uint128 openValue) = swap.capsOf(token);
+            assertEq(openValue, vm.parseJsonUint(l, ".final.open_value"), "final open value");
+        } else {
+            _checkSwap(l, ".final.swap", "final");
+        }
         _checkMaker(l, ".final.maker", "final");
+    }
+
+    /// Make swap `i` the current one: its taker is "the taker" of the step.
+    function _use(uint256 i) internal {
+        cur = i;
+        taker = takers[i];
+        id = ids[i];
+    }
+
+    /// The id swap `i` has or will have: its taker's `i + 1`-th... the replay gives every swap
+    /// the nonce of its index.
+    function _idOf(uint256 i) internal view returns (bytes32) {
+        return keccak256(abi.encode(takers[i], _nonceOf(i)));
+    }
+
+    function _nonceOf(uint256 i) internal pure returns (bytes16) {
+        return bytes16(uint128(0xA000 + i));
+    }
+
+    /// The share the maker funds swap `i` with (direction B).
+    function _fundSecretOf(uint256 i) internal pure returns (uint256) {
+        return _share(string.concat("replay funding share ", vm.toString(i)));
     }
 
     /// The saturation sequence starts with counters at their maxima. The proxy is upgraded to a
@@ -176,7 +253,7 @@ contract ReplayTest is Base {
 
     /// A step that must succeed (the opening and the set-up of a row).
     function _must(string memory l, string memory p) internal {
-        _prepare(l, p);
+        _prepare(l, p, true);
         Call memory c = _encode(l, p);
         vm.prank(c.from);
         (bool ok, bytes memory ret) = address(swap).call{value: c.value}(c.data);
@@ -186,12 +263,18 @@ contract ReplayTest is Base {
                 revert(add(ret, 0x20), mload(ret))
             }
         }
-        if (_isOpen(c.name)) id = _id(o);
+        if (_isOpen(c.name)) _opened();
     }
 
-    /// A step with an expectation.
-    function _step(string memory l, string memory p, bool inSequence) internal {
-        _prepare(l, p);
+    function _opened() internal {
+        ids[cur] = _id(o);
+        id = ids[cur];
+    }
+
+    /// A step with an expectation. Returns whether it opened a swap.
+    function _step(string memory l, string memory p, bool inSequence) internal returns (bool opened) {
+        // Only a row may start from an open value or a pending count that no replayed call made.
+        _prepare(l, p, !inSequence);
         Call memory c = _encode(l, p);
         string memory e = string.concat(p, ".expect");
         bool expectOk = vm.parseJsonBool(l, string.concat(e, ".ok"));
@@ -208,37 +291,69 @@ contract ReplayTest is Base {
             assertEq(ret.length, 4, string.concat(what, ": custom error expected"));
             assertEq(bytes4(ret), _selector(err), string.concat(what, ": error is not ", err));
             assertEq(_fingerprint(), before, string.concat(what, ": a rejected call changed state"));
-            return;
+            return false;
         }
         if (!ok) {
             emit log_named_string("step failed", what);
             emit log_named_bytes("revert data", ret);
             fail();
-            return;
+            return false;
         }
-        if (_isOpen(c.name)) id = _id(o);
+        if (_isOpen(c.name)) {
+            _opened();
+            opened = true;
+        }
         _checkEffects(l, e, c, pre, what, inSequence);
     }
 
-    /// Clock, pay-or-park environment and the maker's open-pending count for a step.
-    function _prepare(string memory l, string memory p) internal {
+    /// Clock, pay-or-park environment, caps, pause, and what a row presets.
+    function _prepare(string memory l, string memory p, bool mayPreset) internal {
         vm.warp(vm.parseJsonUint(l, string.concat(p, ".at")));
         string memory env = string.concat(p, ".env");
         _setReceive(taker, vm.parseJsonBool(l, string.concat(env, ".taker_can_receive")));
         bool makerCan = vm.parseJsonBool(l, string.concat(env, ".maker_can_receive"));
         _setReceive(payout, makerCan);
         _setReceive(operator, makerCan);
+        _setReceive(payoutOther, vm.parseJsonBool(l, string.concat(env, ".payout_can_receive")));
         assertTrue(vm.parseJsonBool(l, string.concat(env, ".treasury_can_receive")), "treasury accrual cannot fail");
+
+        // The admin's switches, exactly as the step's env has them.
+        bool wantOn = vm.parseJsonBool(l, string.concat(env, ".caps.on"));
+        uint256 wantSwap = vm.parseJsonUint(l, string.concat(env, ".caps.max_swap"));
+        uint256 wantOpen = vm.parseJsonUint(l, string.concat(env, ".caps.max_open"));
+        (bool on, uint128 maxSwap, uint128 maxOpen, uint128 openValue) = swap.capsOf(token);
+        if (on != wantOn) {
+            vm.prank(owner);
+            swap.setCapsOn(wantOn);
+        }
+        if (maxSwap != wantSwap || maxOpen != wantOpen) {
+            vm.prank(owner);
+            swap.setCaps(token, uint128(wantSwap), uint128(wantOpen));
+        }
+        bool wantPaused = vm.parseJsonBool(l, string.concat(env, ".maker_paused"));
+        if (swap.getMaker(makerOwner).paused != wantPaused) {
+            vm.prank(makerOwner);
+            swap.setPaused(wantPaused);
+        }
+
+        // The open value before the call is the env's at every step. A lock or take row may start
+        // with other swaps open ("the replay presets it", as with open_pending).
+        uint256 wantValue = vm.parseJsonUint(l, string.concat(env, ".caps.open_value"));
         string memory call = vm.parseJsonString(l, string.concat(p, ".call"));
         if (_isOpen(call)) {
-            uint256 want = vm.parseJsonUint(l, string.concat(env, ".open_pending"));
-            uint8 direction = _eq(call, "lock") ? 0 : 1;
-            for (uint256 have = swap.getMaker(makerOwner).openPending; have < want; ++have) {
-                // One piconero at a price of 10^12: the smallest swap there is.
-                Open memory f = _open(direction, token, 1, 1e12);
-                f.sender = filler;
-                _send(f);
+            uint256 wantPending = vm.parseJsonUint(l, string.concat(env, ".open_pending"));
+            uint256 havePending = swap.getMaker(makerOwner).openPending;
+            if (openValue != wantValue || havePending != wantPending) {
+                assertTrue(mayPreset, "a sequence step starts from a state no replayed call made");
+                XmrSwapSeeder seeder = new XmrSwapSeeder();
+                vm.startPrank(owner);
+                swap.upgradeToAndCall(address(seeder), "");
+                XmrSwapSeeder(address(swap)).seedOpen(token, uint128(wantValue), makerOwner, uint16(wantPending));
+                swap.upgradeToAndCall(address(impl), "");
+                vm.stopPrank();
             }
+        } else {
+            assertEq(openValue, wantValue, string.concat(_label(l), " ", p, ": open value before the call"));
         }
     }
 
@@ -253,18 +368,34 @@ contract ReplayTest is Base {
         }
     }
 
+    /// The maker-side account that holds a parked payout, if any: the payout address (a claim in
+    /// A), the operator (a refund in B) or the maker's owner address (B11).
+    function _makerOwedAccount() internal view returns (address) {
+        if (swap.owedOf(token, payout) != 0) return payout;
+        if (swap.owedOf(token, operator) != 0) return operator;
+        return makerOwner;
+    }
+
     function _who(string memory role) internal view returns (address) {
         if (_eq(role, "taker")) return taker;
         if (_eq(role, "session")) return session;
         if (_eq(role, "operator")) return operator;
         if (_eq(role, "anyone")) return anyone;
-        if (_eq(role, "owner")) {
-            // "Ethereum: the account the parked payout is owed to".
-            if (swap.owedOf(token, payout) != 0) return payout;
-            if (swap.owedOf(token, operator) != 0) return operator;
-            return makerOwner;
-        }
+        // "The watcher key the swap names; on a swap that names none, any other key."
+        if (_eq(role, "watcher")) return watcherKey;
+        // "The payout address named at take, when it is not the taker's own."
+        if (_eq(role, "payout")) return payoutOther;
+        // "Ethereum: the account the parked payout is owed to."
+        if (_eq(role, "owner")) return _makerOwedAccount();
         revert(string.concat("unknown caller ", role));
+    }
+
+    /// The account behind a `who` of withdraw_owed and push_owed.
+    function _owedAccount(string memory who) internal view returns (address) {
+        if (_eq(who, "taker")) return taker;
+        if (_eq(who, "payout")) return payoutOther;
+        if (_eq(who, "maker")) return _makerOwedAccount();
+        revert(string.concat("unknown owed party ", who));
     }
 
     /// Translate a vector step into a contract call.
@@ -280,12 +411,7 @@ contract ReplayTest is Base {
         } else if (h == keccak256("approve")) {
             c.data = abi.encodeCall(IXmrSwap.approve, (id, _expectedOpen(l, a)));
         } else if (h == keccak256("fund")) {
-            IXmrSwap.Swap memory s = _get(id);
-            (address k, address k2) = _twin(_fundSecret());
-            c.value = token == ETH ? s.amount : 0;
-            c.data = abi.encodeCall(
-                IXmrSwap.fund, (id, _expectedOpen(l, a), k, k2, _spendPub(_fundSecret()), _view("maker view share"))
-            );
+            c = _encodeFund(l, a, c);
         } else if (h == keccak256("reject")) {
             uint8 reason = uint8(vm.parseJsonUint(l, string.concat(a, ".reason")));
             c.data = abi.encodeCall(IXmrSwap.reject, (id, _expectedOpen(l, a), reason));
@@ -297,6 +423,8 @@ contract ReplayTest is Base {
             c.data = abi.encodeCall(IXmrSwap.postNotice, (id, _commitment(id), _ciphertext()));
         } else if (h == keccak256("set_ready")) {
             c.data = abi.encodeCall(IXmrSwap.setReady, (id));
+        } else if (h == keccak256("freeze")) {
+            c.data = abi.encodeCall(IXmrSwap.freeze, (id));
         } else if (h == keccak256("abort")) {
             c.data = abi.encodeCall(IXmrSwap.abort, (id));
         } else if (h == keccak256("refund_unnoticed")) {
@@ -306,12 +434,12 @@ contract ReplayTest is Base {
         } else if (h == keccak256("refund")) {
             // "secret_ok false: any other scalar in range".
             uint256 secret = vm.parseJsonBool(l, string.concat(a, ".secret_ok"))
-                ? (_get(id).direction == 0 ? takerSecret : _fundSecret())
+                ? (_get(id).direction == 0 ? takerSecret : _fundSecretOf(cur))
                 : _share("some other scalar");
             c.data = abi.encodeCall(IXmrSwap.refund, (id, secret));
         } else if (h == keccak256("claim")) {
             uint256 secret = vm.parseJsonBool(l, string.concat(a, ".secret_ok"))
-                ? (_get(id).direction == 0 ? makerSecrets[0] : takerSecret)
+                ? (_get(id).direction == 0 ? makerSecrets[cur] : takerSecret)
                 : _share("some other scalar");
             c.data = abi.encodeCall(IXmrSwap.claim, (id, secret));
         } else if (h == keccak256("release_deposit")) {
@@ -326,10 +454,36 @@ contract ReplayTest is Base {
                 _evidence(vm.parseJsonBool(l, string.concat(a, ".opens")) ? "opens" : "mismatch");
             c.data = abi.encodeCall(IXmrSwap.publishEvidence, (id, txid, v));
         } else if (h == keccak256("withdraw_owed")) {
+            // withdrawOwed pays the caller's own parked balance, whatever `who` the step names.
             c.data = abi.encodeCall(IXmrSwap.withdrawOwed, (token, c.from));
+        } else if (h == keccak256("push_owed")) {
+            // pushOwed(token, account): anyone delivers `who`'s parked balance to `who` itself.
+            c.data = abi.encodeCall(
+                IXmrSwap.pushOwed, (token, _owedAccount(vm.parseJsonString(l, string.concat(a, ".who"))))
+            );
         } else {
             revert(string.concat("unknown call ", c.name));
         }
+    }
+
+    function _encodeFund(string memory l, string memory a, Call memory c) internal view returns (Call memory) {
+        IXmrSwap.Swap memory s = _get(id);
+        uint256 secret = _fundSecretOf(cur);
+        (address k, address k2) = _twin(secret);
+        c.value = token == ETH ? s.amount : 0;
+        c.data = abi.encodeCall(
+            IXmrSwap.fund,
+            (
+                id,
+                _expectedOpen(l, a),
+                k,
+                k2,
+                _spendPub(secret),
+                _view("maker view share"),
+                vm.parseJsonBool(l, string.concat(a, ".watcher")) ? watcherKey : address(0)
+            )
+        );
+        return c;
     }
 
     /// "absent: none (Ethereum zeros). opens: the notice opening. mismatch: any other pair".
@@ -358,6 +512,8 @@ contract ReplayTest is Base {
             price = amount * 1e12 / xmr;
         }
         Open memory n = _open(direction, token, uint64(xmr), price);
+        n.nonce = _nonceOf(cur);
+        n.leafIndex = uint32(cur);
         // The quote sets no size floor: a refusal of a zero size is the contract's own rule.
         n.q.minXmr = 0;
         uint256 offerMode = vm.parseJsonUint(l, string.concat(a, ".offer_mode"));
@@ -371,23 +527,50 @@ contract ReplayTest is Base {
         n.q.claimDelay = uint32(vm.parseJsonUint(l, string.concat(a, ".d_c")));
         n.q.claimWindow = uint32(vm.parseJsonUint(l, string.concat(a, ".w_c")));
         n.q.finalWindow = uint32(vm.parseJsonUint(l, string.concat(a, ".w_f")));
+        n.q.freezeWindow = uint32(vm.parseJsonUint(l, string.concat(a, ".w_z")));
+        // A quote is signed for the maker's current epoch, pause or no pause.
+        n.q.epoch = swap.getMaker(makerOwner).quoteEpoch;
         n.sig = _signQuote(n.q);
         n.sender = c.from;
         if (vm.parseJsonBool(l, string.concat(a, ".approval"))) {
             n.a = _approval(c.from);
             n.approvalSig = _signApproval(n.a);
         }
+        // "watcher: lock (direction A): a watcher key is named."
+        if (vm.parseJsonBool(l, string.concat(a, ".watcher"))) {
+            assertEq(direction, 0, "only a lock names the taker's watcher");
+            n.watcher = watcherKey;
+        }
+        // "payout: take only. taker: the taker's own address. other: another valid address.
+        // invalid: Ethereum, the zero address."
+        string memory payoutArg = vm.parseJsonString(l, string.concat(a, ".payout"));
+        address payoutTo = _eq(payoutArg, "taker") ? taker : (_eq(payoutArg, "other") ? payoutOther : address(0));
+        if (direction == 0) assertEq(payoutArg, "taker", "lock ignores the payout");
         o = n;
         (, uint256 stake) = _stake(n);
         c.value = token == ETH ? stake : 0;
         if (direction == 0) {
             c.data = abi.encodeCall(
                 IXmrSwap.lock,
-                (n.q, n.sig, n.xmr, n.limit, n.nonce, n.sessionKey, n.budget, n.tk, _leaf(0), n.a, n.approvalSig)
+                (
+                    n.q,
+                    n.sig,
+                    n.xmr,
+                    n.limit,
+                    n.nonce,
+                    n.sessionKey,
+                    n.budget,
+                    n.tk,
+                    _leaf(n.leafIndex),
+                    n.a,
+                    n.approvalSig,
+                    n.watcher
+                )
             );
         } else {
             c.data = abi.encodeCall(
-                IXmrSwap.take, (n.q, n.sig, n.xmr, n.limit, n.nonce, n.sessionKey, n.budget, n.tk, n.a, n.approvalSig)
+                IXmrSwap.take,
+                (n.q, n.sig, n.xmr, n.limit, n.nonce, n.sessionKey, n.budget, n.tk, n.a, n.approvalSig, payoutTo)
             );
         }
         return c;
@@ -395,21 +578,31 @@ contract ReplayTest is Base {
 
     // ------------------------------------------------------------------ expectations
 
+    function _accounts() internal view returns (address[ACCOUNTS] memory) {
+        return [taker, payout, operator, makerOwner, payoutOther, watcherKey];
+    }
+
     function _snap() internal view returns (Snap memory s) {
-        address[4] memory who = [taker, payout, operator, makerOwner];
-        for (uint256 i; i < 4; ++i) {
+        address[ACCOUNTS] memory who = _accounts();
+        for (uint256 i; i < ACCOUNTS; ++i) {
             s.bal[i] = _bal(token, who[i]);
             s.owed[i] = swap.owedOf(token, who[i]);
         }
         s.accrued = swap.treasuryAccrued(token);
         s.escrow = _bal(token, address(swap));
         (s.volume, s.withheld) = swap.volumeOf(makerOwner, token);
+        (,,, uint128 openValue) = swap.capsOf(token);
+        s.openValue = openValue;
         s.maker = swap.getMaker(makerOwner);
     }
 
     /// Everything a rejected call must leave untouched.
     function _fingerprint() internal view returns (bytes32) {
-        return keccak256(abi.encode(_snap(), _get(id), _get(_id(o)), _bal(token, session), _bal(token, anyone)));
+        bytes32 all = keccak256(abi.encode(_snap(), _bal(token, session), _bal(token, anyone)));
+        for (uint256 i; i < SWAPS; ++i) {
+            all = keccak256(abi.encode(all, _get(ids[i]), _get(_idOf(i)), _bal(token, takers[i])));
+        }
+        return all;
     }
 
     function _checkEffects(
@@ -427,10 +620,21 @@ contract ReplayTest is Base {
             vm.parseJsonString(l, string.concat(e, ".state")),
             string.concat(what, ": state")
         );
+        _checkPayouts(l, e, c, pre, post, what);
+        _checkAccounting(l, e, pre, post, what, inSequence);
+    }
 
-        // Payouts: expected change of every balance and of every parked amount.
-        int256[4] memory dBal;
-        int256[4] memory dOwed;
+    /// Payouts: the expected change of every balance and of every parked amount.
+    function _checkPayouts(
+        string memory l,
+        string memory e,
+        Call memory c,
+        Snap memory pre,
+        Snap memory post,
+        string memory what
+    ) internal view {
+        int256[ACCOUNTS] memory dBal;
+        int256[ACCOUNTS] memory dOwed;
         uint256 accrued;
         uint256 left; // what left the escrow
         uint256 escrowIn = vm.parseJsonUint(l, string.concat(e, ".escrow_in"));
@@ -438,6 +642,7 @@ contract ReplayTest is Base {
             // lock, take: the taker pays. fund: the operator pays.
             dBal[_eq(c.name, "fund") ? 2 : 0] -= int256(escrowIn);
         }
+        bool pull = _eq(c.name, "withdraw_owed") || _eq(c.name, "push_owed");
         for (uint256 i;; ++i) {
             string memory pp = string.concat(e, ".payouts[", vm.toString(i), "]");
             if (!vm.keyExistsJson(l, pp)) break;
@@ -451,8 +656,8 @@ contract ReplayTest is Base {
                 accrued += amount;
                 continue;
             }
-            uint256 idx = _eq(to, "taker") ? 0 : _makerAccount(c);
-            if (_eq(c.name, "withdraw_owed")) {
+            uint256 idx = _eq(to, "taker") ? 0 : (_eq(to, "payout") ? 4 : _makerAccount(c, pre));
+            if (pull) {
                 dOwed[idx] -= int256(amount);
                 dBal[idx] += int256(amount);
                 left += amount;
@@ -463,16 +668,29 @@ contract ReplayTest is Base {
                 left += amount;
             }
         }
-        string[4] memory names = ["taker", "payout", "operator", "makerOwner"];
-        for (uint256 i; i < 4; ++i) {
+        string[ACCOUNTS] memory names = ["taker", "payout", "operator", "makerOwner", "payout address", "watcher"];
+        for (uint256 i; i < ACCOUNTS; ++i) {
             assertEq(int256(post.bal[i]) - int256(pre.bal[i]), dBal[i], string.concat(what, ": balance of ", names[i]));
             assertEq(
                 int256(post.owed[i]) - int256(pre.owed[i]), dOwed[i], string.concat(what, ": parked for ", names[i])
             );
         }
+        // SPEC 11.6: no payout ever names the watcher.
+        assertEq(dBal[5], 0);
+        assertEq(dOwed[5], 0);
         assertEq(post.accrued - pre.accrued, accrued, string.concat(what, ": treasury accrual"));
         assertEq(post.escrow + left, pre.escrow + escrowIn, string.concat(what, ": escrow balance"));
+    }
 
+    /// Counters, the open value and the maker's sums.
+    function _checkAccounting(
+        string memory l,
+        string memory e,
+        Snap memory pre,
+        Snap memory post,
+        string memory what,
+        bool inSequence
+    ) internal view {
         // Exactly one counter moves (or none), saturating.
         string memory counterName = vm.parseJsonString(l, string.concat(e, ".counter_name"));
         uint256 counter = _eq(counterName, "null") ? 255 : vm.parseJsonUint(l, string.concat(e, ".counter"));
@@ -486,16 +704,29 @@ contract ReplayTest is Base {
             vm.parseJsonInt(l, string.concat(e, ".open_pending")),
             string.concat(what, ": open_pending")
         );
-        uint256 volume = vm.parseJsonUint(l, string.concat(e, ".volume"));
-        uint256 withheld = vm.parseJsonUint(l, string.concat(e, ".withheld_volume"));
-        string memory rs = string.concat(e, ".response_secs");
-        uint256 responseSecs = _eq(vm.parseJsonString(l, rs), "null") ? 0 : vm.parseJsonUint(l, rs);
+        // "Plus the counted value at lock/take, minus it at the one transition that enters HOLD or
+        // DONE, otherwise unchanged."
+        assertEq(
+            post.openValue,
+            vm.parseJsonUint(l, string.concat(e, ".open_value_after")),
+            string.concat(what, ": open value after")
+        );
         if (inSequence) {
             // Absolute values, which also cover saturation.
             _checkMaker(l, string.concat(e, ".maker"), what);
         } else {
-            assertEq(post.volume - pre.volume, volume, string.concat(what, ": volume"));
-            assertEq(post.withheld - pre.withheld, withheld, string.concat(what, ": withheld volume"));
+            string memory rs = string.concat(e, ".response_secs");
+            uint256 responseSecs = _eq(vm.parseJsonString(l, rs), "null") ? 0 : vm.parseJsonUint(l, rs);
+            assertEq(
+                post.volume - pre.volume,
+                vm.parseJsonUint(l, string.concat(e, ".volume")),
+                string.concat(what, ": volume")
+            );
+            assertEq(
+                post.withheld - pre.withheld,
+                vm.parseJsonUint(l, string.concat(e, ".withheld_volume")),
+                string.concat(what, ": withheld volume")
+            );
             assertEq(
                 post.maker.responseSecsSum - pre.maker.responseSecsSum,
                 responseSecs,
@@ -505,13 +736,14 @@ contract ReplayTest is Base {
     }
 
     /// Which account stands for the model's "maker" destination in this call.
-    function _makerAccount(Call memory c) internal view returns (uint256) {
+    function _makerAccount(Call memory c, Snap memory pre) internal view returns (uint256) {
         bytes32 h = keccak256(bytes(c.name));
-        if (h == keccak256("claim")) return 1; // the payout address
+        if (h == keccak256("claim")) return 1; // the payout address of the maker's record
         if (h == keccak256("refund")) return 2; // the current operator
         if (h == keccak256("expire_unnoticed")) return 3; // parked for the maker's owner address
-        if (h == keccak256("withdraw_owed")) {
-            return c.from == payout ? 1 : (c.from == operator ? 2 : 3);
+        if (h == keccak256("withdraw_owed") || h == keccak256("push_owed")) {
+            // The maker-side account that held the parked amount before the call.
+            return pre.owed[1] != 0 ? 1 : (pre.owed[2] != 0 ? 2 : 3);
         }
         revert(string.concat("no maker payout expected in ", c.name));
     }
@@ -524,6 +756,7 @@ contract ReplayTest is Base {
         assertEq(s.claimDelay, _u(l, p, ".d_c"), string.concat(what, "d_c"));
         assertEq(s.claimWindow, _u(l, p, ".w_c"), string.concat(what, "w_c"));
         assertEq(s.noticeWindow, _u(l, p, ".w_n"), string.concat(what, "w_n"));
+        assertEq(s.freezeSecs, _u(l, p, ".w_z"), string.concat(what, "w_z"));
         assertEq(s.depositState, _u(l, p, ".deposit_state"), string.concat(what, "deposit_state"));
         assertEq(s.depth, _u(l, p, ".depth"), string.concat(what, "depth"));
         assertEq(s.direction, _eq(vm.parseJsonString(l, string.concat(p, ".direction")), "A") ? 0 : 1, what);
@@ -544,13 +777,38 @@ contract ReplayTest is Base {
         assertEq(s.tFinal, _u(l, p, ".t_final"), string.concat(what, "t_final"));
         assertEq(s.tRefund, _u(l, p, ".t_refund"), string.concat(what, "t_refund"));
         assertEq(s.tSettled, _u(l, p, ".t_settled"), string.concat(what, "t_settled"));
-        assertEq(swap.owedOf(token, taker), _u(l, p, ".owed_taker"), string.concat(what, "owed_taker"));
+        assertEq(s.tFreeze, _u(l, p, ".t_freeze"), string.concat(what, "t_freeze"));
+        _checkSwapParties(l, p, s, what);
+    }
+
+    function _checkSwapParties(string memory l, string memory p, IXmrSwap.Swap memory s, string memory what)
+        internal
+        view
+    {
+        // "payout: none (direction A, zeros on chain), taker (the taker's own address), other."
+        string memory payoutTo = vm.parseJsonString(l, string.concat(p, ".payout"));
+        address wantPayout = _eq(payoutTo, "none") ? address(0) : (_eq(payoutTo, "taker") ? taker : payoutOther);
+        assertTrue(_eq(payoutTo, "none") || _eq(payoutTo, "taker") || _eq(payoutTo, "other"), what);
+        assertEq(s.payout, wantPayout, string.concat(what, "payout"));
+        // "watcher: a watcher is named."
+        assertEq(
+            s.watcher,
+            vm.parseJsonBool(l, string.concat(p, ".watcher")) ? watcherKey : address(0),
+            string.concat(what, "watcher")
+        );
+        // "On a direction-B swap that ended in a claim with payout = other, owed_taker is owed to
+        // the payout address (Ethereum: owed[token][payout])."
+        bool payoutOwed = s.direction == 1 && s.payout != s.taker && s.flags & 4 != 0 && s.flags & 8 == 0;
+        uint256 owedTaker = _u(l, p, ".owed_taker");
+        assertEq(swap.owedOf(token, taker), payoutOwed ? 0 : owedTaker, string.concat(what, "owed_taker"));
+        assertEq(swap.owedOf(token, payoutOther), payoutOwed ? owedTaker : 0, string.concat(what, "owed to the payout"));
         assertEq(
             swap.owedOf(token, payout) + swap.owedOf(token, operator) + swap.owedOf(token, makerOwner),
             _u(l, p, ".owed_maker"),
             string.concat(what, "owed_maker")
         );
         assertEq(_u(l, p, ".owed_treasury"), 0, string.concat(what, "owed_treasury"));
+        assertEq(swap.owedOf(token, watcherKey), 0, string.concat(what, "nothing is ever owed to a watcher"));
         // Bit 2 of flags: a secret is on record, and it is kept in storage.
         assertEq(s.revealed != 0, s.flags & 4 != 0, string.concat(what, "revealed"));
     }
@@ -594,8 +852,18 @@ contract ReplayTest is Base {
     }
 
     function _stateName(uint8 state) internal pure returns (string memory) {
-        string[10] memory n = [
-            "NONE", "PENDING", "ACTIVE", "NOTICED", "READY", "ABORTED_FREE", "ABORTED_HOLD", "HOLD", "WITHHELD", "DONE"
+        string[11] memory n = [
+            "NONE",
+            "PENDING",
+            "ACTIVE",
+            "NOTICED",
+            "READY",
+            "ABORTED_FREE",
+            "ABORTED_HOLD",
+            "HOLD",
+            "WITHHELD",
+            "DONE",
+            "FROZEN"
         ];
         return n[state];
     }

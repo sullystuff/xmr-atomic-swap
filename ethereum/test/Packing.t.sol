@@ -12,7 +12,7 @@ import {XmrSwapSeeder} from "./utils/Mocks.sol";
 contract PackingTest is Base {
     // keccak256(abi.encode(uint256(keccak256("xmrswap.storage.v1")) - 1)) & ~bytes32(uint256(0xff))
     bytes32 internal constant NAMESPACE = 0x72d7395cd54647fc1d07503abee35a2743d3fbf166f40f42b88abee6111c6600;
-    uint256 internal constant FIELDS = 49;
+    uint256 internal constant FIELDS = 53;
     uint256 internal constant MAX128 = type(uint128).max;
 
     XmrSwapSeeder internal seeder;
@@ -29,6 +29,9 @@ contract PackingTest is Base {
     function _roundTrip(IXmrSwap.Swap memory v, string memory what) internal {
         bytes32 id = keccak256(abi.encode(what, v.taker, v.revealed));
         seeder.seedSwap(id, v);
+        // One field is derived on the way out: a direction-B record that stores no payout address
+        // pays the taker (the slot is written only when the two differ, SPEC 11.8).
+        if (v.payout == address(0) && v.direction != 0) v.payout = v.taker;
         assertEq(keccak256(abi.encode(swap.getSwap(id))), keccak256(abi.encode(v)), what);
     }
 
@@ -91,6 +94,10 @@ contract PackingTest is Base {
         if (i == 46) v.tFinal = type(uint64).max;
         if (i == 47) v.tRefund = type(uint64).max;
         if (i == 48) v.tSettled = type(uint64).max;
+        if (i == 49) v.payout = a;
+        if (i == 50) v.watcher = a;
+        if (i == 51) v.freezeSecs = type(uint32).max;
+        if (i == 52) v.tFreeze = type(uint64).max;
     }
 
     /// Each field alone at its maximum, every other field zero: the field comes back whole and
@@ -178,6 +185,10 @@ contract PackingTest is Base {
         v.tFinal = uint64(_r(seed, 46));
         v.tRefund = uint64(_r(seed, 47));
         v.tSettled = uint64(_r(seed, 48));
+        v.payout = address(uint160(_r(seed, 52)));
+        v.watcher = address(uint160(_r(seed, 53)));
+        v.freezeSecs = uint32(_r(seed, 54));
+        v.tFreeze = uint64(_r(seed, 55));
         assertEq(v.noticeCiphertext.length, 104);
         _roundTrip(v, "fuzz");
     }
@@ -214,31 +225,61 @@ contract PackingTest is Base {
         usdc.mint(taker, MAX128);
         usdc.mint(operator, MAX128);
 
-        // One XMR at a price of 2^128 - 1: the amount is the price.
+        // One XMR at a price of 2^128 - 1: the amount is the price. In direction B the take
+        // deposit is escrowed and counted beside the amount, and their sum must fit 128 bits too
+        // (SPEC 11.1 as corrected by a1-deviations D2): with a deposit the largest amount is refused,
+        // with the switch on (above every possible cap) and off alike; nothing wraps.
         Open memory o = _open(direction, token, uint64(ONE_XMR), MAX128);
         o.q.depositBps = 500;
         o.sig = _signQuote(o.q);
+        if (directionB) {
+            vm.expectRevert(IXmrSwap.OpenCapExceeded.selector);
+            this.sendOpen(o);
+            vm.prank(owner);
+            swap.setCapsOn(false);
+            vm.expectRevert(IXmrSwap.AmountOutOfRange.selector);
+            this.sendOpen(o);
+            vm.prank(owner);
+            swap.setCapsOn(true);
+            // The largest amount whose 5% deposit still fits beside it.
+            uint256 fits = _largestB();
+            assertLe(fits + fits * 500 / 10_000, MAX128);
+            assertGt(fits + 1 + (fits + 1) * 500 / 10_000, MAX128);
+            o = _open(direction, token, uint64(ONE_XMR), fits + 1);
+            o.q.depositBps = 500;
+            o.sig = _signQuote(o.q);
+            vm.expectRevert(IXmrSwap.OpenCapExceeded.selector);
+            this.sendOpen(o);
+            o = _open(direction, token, uint64(ONE_XMR), fits);
+            o.q.depositBps = 500;
+            o.sig = _signQuote(o.q);
+        }
+        uint256 amount = directionB ? _largestB() : MAX128;
         bytes32 id = _send(o);
         IXmrSwap.Swap memory s = _get(id);
-        assertEq(s.amount, MAX128, "stored whole");
-        assertEq(s.price, MAX128);
-        assertEq(s.deposit, MAX128 * 500 / 10_000);
+        assertEq(s.amount, amount, "stored whole");
+        assertEq(s.price, amount);
+        assertEq(s.deposit, amount * 500 / 10_000);
         assertEq(_bal(token, address(swap)), directionB ? s.deposit : s.amount);
+        (,,, uint128 openValue) = swap.capsOf(token);
+        assertEq(openValue, directionB ? amount + s.deposit : amount, "the open value is exact");
 
         // The full flow moves the full amount.
         _activate(id);
-        assertEq(_bal(token, address(swap)), directionB ? MAX128 + s.deposit : MAX128);
+        assertEq(_bal(token, address(swap)), directionB ? amount + s.deposit : amount);
         _notice(id);
         skip(600);
         _ready(id);
         address to = directionB ? taker : payout;
         uint256 before = _bal(token, to);
         _claim(id);
-        uint256 fee = MAX128 * 5 / 10_000;
-        assertEq(_bal(token, to) - before, MAX128 - fee + (directionB ? s.deposit : 0));
+        uint256 fee = amount * 5 / 10_000;
+        assertEq(_bal(token, to) - before, amount - fee + (directionB ? s.deposit : 0));
         assertEq(swap.treasuryAccrued(token), fee);
         (uint256 volume,) = swap.volumeOf(makerOwner, token);
-        assertEq(volume, MAX128);
+        assertEq(volume, amount);
+        (,,, openValue) = swap.capsOf(token);
+        assertEq(openValue, 0);
 
         // One piconero more than one XMR at that price: above 2^128 - 1 in both rounding modes.
         o = _open(direction, token, uint64(ONE_XMR + 1), MAX128);
@@ -256,6 +297,13 @@ contract PackingTest is Base {
         vm.expectRevert(IXmrSwap.AmountOutOfRange.selector);
         this.sendOpen(o);
         assertEq(swap.swapsOf(taker, 0, 10).length, 1);
+    }
+
+    /// The largest direction-B amount whose 5% deposit still fits beside it in 128 bits.
+    function _largestB() internal pure returns (uint256 x) {
+        x = MAX128 * 10_000 / 10_500;
+        while (x + 1 + (x + 1) * 500 / 10_000 <= MAX128) x++;
+        while (x + x * 500 / 10_000 > MAX128) x--;
     }
 
     /// A swap whose every timestamp is near the top of uint64 keeps exact deadlines.
@@ -377,18 +425,93 @@ contract PackingTest is Base {
         assertEq(bytes32(_slot(id, 21)), s.evidenceTxid);
         assertEq(bytes32(_slot(id, 22)), s.evidenceView);
         assertEq(_slot(id, 23), s.revealed);
-        assertEq(_slot(id, 24), 0, "the record ends at slot 23");
+        // Amendment 1: slots 24 and 25, untouched by a swap with the default payout, no freeze
+        // window and no watcher.
+        assertEq(_slot(id, 24), 0);
+        assertEq(_slot(id, 25), 0);
+        assertEq(_slot(id, 26), 0, "the record ends at slot 25");
     }
 
     /// `lock` writes exactly slots 0 to 16 of the record; `take` leaves the maker's five for `fund`.
     function test_layout_slotsWrittenAtOpen() public {
         bytes32 a = _swapIn(0, ETH, PENDING);
         bytes32 b = _swapIn(1, ETH, PENDING);
-        for (uint256 n; n < 24; ++n) {
+        for (uint256 n; n < 26; ++n) {
             assertEq(_slot(a, n) != 0, n <= 16, string.concat("lock, slot ", vm.toString(n)));
             bool makerSlot = n == 6 || n == 7 || n == 11 || n == 12 || n == 15;
             // Slot 6 also holds depBps, which `take` writes.
             assertEq(_slot(b, n) != 0, n <= 16 && (!makerSlot || n == 6), string.concat("take, slot ", vm.toString(n)));
         }
+    }
+
+    /// Slots 24 and 25 (SPEC 11.8): payout, freeze time and freeze window share slot 24, the
+    /// watcher has slot 25, and each is written only by the call the layout names.
+    function test_layout_amendmentSlots() public {
+        address watcher = makeAddr("watcher");
+        address payoutTo = makeAddr("fresh payout");
+        uint256 a = type(uint160).max;
+
+        // Direction A with a freeze window and a watcher: lock writes freezeSecs and the watcher.
+        Open memory o = _open(0, ETH, uint64(ONE_XMR), 61e15);
+        o.q.freezeWindow = 86_400;
+        o.sig = _signQuote(o.q);
+        o.watcher = watcher;
+        bytes32 id = _send(o);
+        uint256 w = _slot(id, 24);
+        assertEq(w & a, 0, "no payout address in direction A");
+        assertEq((w >> 160) & type(uint64).max, 0, "not frozen");
+        assertEq(w >> 224, 86_400);
+        assertEq(_slot(id, 25), uint256(uint160(watcher)));
+        _approve(id);
+        _notice(id);
+        skip(5);
+        vm.prank(watcher);
+        swap.freeze(id);
+        w = _slot(id, 24);
+        assertEq((w >> 160) & type(uint64).max, vm.getBlockTimestamp(), "tFreeze");
+        assertEq(w >> 224, 86_400);
+        IXmrSwap.Swap memory s = _get(id);
+        assertEq(s.payout, address(0));
+        assertEq(s.watcher, watcher);
+        assertEq(s.freezeSecs, 86_400);
+        assertEq(s.tFreeze, vm.getBlockTimestamp());
+
+        // Direction B with another payout address: take writes it; fund writes the watcher.
+        o = _open(1, ETH, uint64(ONE_XMR), 61e15);
+        o.q.freezeWindow = 3_600;
+        o.sig = _signQuote(o.q);
+        o.payout = payoutTo;
+        id = _send(o);
+        w = _slot(id, 24);
+        assertEq(address(uint160(w & a)), payoutTo);
+        assertEq(w >> 224, 3_600);
+        assertEq(_slot(id, 25), 0, "the maker names its watcher at fund");
+        fundWatcher = watcher;
+        _fund(id);
+        assertEq(_slot(id, 25), uint256(uint160(watcher)));
+        assertEq(_get(id).payout, payoutTo);
+
+        // The default payout is the taker and is not stored.
+        o = _open(1, ETH, uint64(ONE_XMR), 61e15);
+        id = _send(o);
+        assertEq(_slot(id, 24), 0);
+        assertEq(_get(id).payout, taker);
+    }
+
+    /// The root (SPEC 11.8): slot 13 holds the caps mapping (two slots per token), slot 14 the switch.
+    function test_layout_capsSlots() public {
+        vm.prank(owner);
+        swap.setCaps(ETH, 200e15, 300e15);
+        bytes32 capSlot = keccak256(abi.encode(ETH, uint256(NAMESPACE) + 13));
+        uint256 w = uint256(vm.load(address(swap), capSlot));
+        assertEq(w & MAX128, 200e15, "maxSwap");
+        assertEq(w >> 128, 300e15, "maxOpen");
+        assertEq(uint256(vm.load(address(swap), bytes32(uint256(capSlot) + 1))), 0, "openValue");
+        _swapIn(0, ETH, PENDING); // 2 XMR at 0.061 ETH
+        assertEq(uint256(vm.load(address(swap), bytes32(uint256(capSlot) + 1))), 122e15, "openValue");
+        assertEq(uint256(vm.load(address(swap), bytes32(uint256(NAMESPACE) + 14))), 1, "capsOn");
+        vm.prank(owner);
+        swap.setCapsOn(false);
+        assertEq(uint256(vm.load(address(swap), bytes32(uint256(NAMESPACE) + 14))), 0);
     }
 }

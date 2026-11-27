@@ -29,17 +29,20 @@ contract MathHarness {
         return SwapMath.tierValue(xmr, above, values);
     }
 
-    function bounds(uint256[7] memory p, uint256 pending) external pure {
-        SwapMath.checkBounds(p[0], p[1], p[2], p[3], p[4], p[5], p[6], pending);
+    function bounds(uint256[8] memory p, uint256 pending) external pure {
+        SwapMath.checkBounds(p, pending);
     }
 
     function verifyProof(bytes32[] calldata proof, bytes32 root, bytes32 leaf) external pure returns (bool) {
         return MerkleProof.verifyCalldata(proof, root, leaf);
     }
 
-    function openHash(bytes32 swapId, IXmrSwap.Swap memory m, bytes32 takerView) external returns (bytes32) {
+    function openHash(bytes32 swapId, IXmrSwap.Swap memory m, bytes32 takerView, address payout, address watcher)
+        external
+        returns (bytes32)
+    {
         TestStore.store(s, m);
-        return SwapMath.openHash(swapId, s, takerView);
+        return SwapMath.openHash(swapId, s, takerView, payout, watcher);
     }
 }
 
@@ -241,7 +244,7 @@ contract VectorsTest is Base {
 
     // ------------------------------------------------------------------ deadlines.json
 
-    function _params(string memory json, string memory c) internal pure returns (uint256[7] memory p) {
+    function _params(string memory json, string memory c) internal pure returns (uint256[8] memory p) {
         string memory q = string.concat(c, ".input.params");
         p[0] = vm.parseJsonUint(json, string.concat(q, ".dep_bps"));
         p[1] = vm.parseJsonUint(json, string.concat(q, ".w_a"));
@@ -250,6 +253,7 @@ contract VectorsTest is Base {
         p[4] = vm.parseJsonUint(json, string.concat(q, ".d_c"));
         p[5] = vm.parseJsonUint(json, string.concat(q, ".w_c"));
         p[6] = vm.parseJsonUint(json, string.concat(q, ".w_f"));
+        p[7] = vm.parseJsonUint(json, string.concat(q, ".w_z"));
     }
 
     function _pending(string memory json, string memory c) internal pure returns (uint256) {
@@ -295,7 +299,7 @@ contract VectorsTest is Base {
             if (!_eq(vm.parseJsonString(json, string.concat(c, ".input.chain")), "ethereum")) continue;
             if (!_eq(vm.parseJsonString(json, string.concat(c, ".input.op")), "bounds")) continue;
             string memory name = vm.parseJsonString(json, string.concat(c, ".name"));
-            uint256[7] memory p = _params(json, c);
+            uint256[8] memory p = _params(json, c);
             uint256 pending = _pending(json, c);
             if (vm.parseJsonBool(json, string.concat(c, ".valid"))) {
                 h.bounds(p, pending);
@@ -309,7 +313,7 @@ contract VectorsTest is Base {
                     SwapMath.minClaimWindow(), vm.parseJsonUint(json, string.concat(out, ".min_claim_window")), name
                 );
                 assertEq(
-                    SwapMath.minFinalWindow(wP, p[2], p[4], p[5]),
+                    SwapMath.minFinalWindow(wP, p[2], p[4], p[7], p[5]),
                     vm.parseJsonUint(json, string.concat(out, ".min_final_window")),
                     name
                 );
@@ -324,8 +328,8 @@ contract VectorsTest is Base {
                 refused++;
             }
         }
-        assertEq(accepted, 20);
-        assertEq(refused, 16);
+        assertEq(accepted, 26);
+        assertEq(refused, 23);
     }
 
     /// The `derive` cases through a real direction-B swap: take at `t_lock`, fund at `t_active`,
@@ -345,7 +349,7 @@ contract VectorsTest is Base {
             vm.revertToState(snap);
             ran++;
         }
-        assertEq(ran, 7);
+        assertEq(ran, 10);
     }
 
     function _time(string memory json, string memory key) internal pure returns (uint256) {
@@ -355,7 +359,7 @@ contract VectorsTest is Base {
     function _derive(string memory json, string memory c) internal {
         string memory name = vm.parseJsonString(json, string.concat(c, ".name"));
         string memory out = string.concat(c, ".output");
-        uint256[7] memory p = _params(json, c);
+        uint256[8] memory p = _params(json, c);
         vm.warp(vm.parseJsonUint(json, string.concat(c, ".input.t_lock")));
         Open memory o = _open(1, ETH, uint64(ONE_XMR), 61e15);
         o.q.depositBps = uint16(p[0]);
@@ -365,9 +369,14 @@ contract VectorsTest is Base {
         o.q.claimDelay = uint32(p[4]);
         o.q.claimWindow = uint32(p[5]);
         o.q.finalWindow = uint32(p[6]);
+        o.q.freezeWindow = uint32(p[7]);
         o.sig = _signQuote(o.q);
+        // With a freeze window the maker names a watcher when it funds.
+        address watcher = makeAddr("watcher");
+        if (p[7] != 0) fundWatcher = watcher;
         bytes32 id = _send(o);
         IXmrSwap.Swap memory s = _get(id);
+        assertEq(s.freezeSecs, p[7], string.concat(name, ": w_z"));
         assertEq(s.tFinal, _time(json, string.concat(out, ".t_final")), string.concat(name, ": t_final"));
         // Ethereum starts every swap PENDING with W_p = W_a (EXPLICIT_APPROVE); the cases generated
         // for the other two pending kinds describe swaps the contract cannot produce.
@@ -387,6 +396,27 @@ contract VectorsTest is Base {
         s = _get(id);
         assertEq(s.tCut, _time(json, string.concat(out, ".t_cut")), string.concat(name, ": t_cut"));
         assertEq(s.tClaimOpen, _time(json, string.concat(out, ".t_co")), string.concat(name, ": t_co"));
+
+        // A freeze: the event states T_ff = max(t_Z + W_z, T_co), and ready closes there.
+        uint256 tFf = _time(json, string.concat(out, ".t_ff"));
+        t = _time(json, string.concat(c, ".input.t_freeze"));
+        if (t != 0) {
+            vm.warp(t);
+            vm.prank(watcher);
+            vm.expectEmit(address(swap));
+            emit IXmrSwap.Frozen(id, makerOwner, 33, taker, watcher, uint64(tFf));
+            swap.freeze(id);
+            assertEq(_get(id).tFreeze, t, string.concat(name, ": t_freeze"));
+            assertEq(_get(id).state, FROZEN, name);
+            uint256 snap = vm.snapshotState();
+            vm.warp(tFf);
+            vm.prank(operator);
+            vm.expectRevert(IXmrSwap.TooLate.selector);
+            swap.setReady(id);
+            vm.revertToState(snap);
+        } else {
+            assertEq(tFf, 0, name);
+        }
 
         t = _time(json, string.concat(c, ".input.t_ready"));
         if (t == 0) return;
@@ -485,7 +515,7 @@ contract VectorsTest is Base {
         (, uint256 stake) = _stake(o);
         vm.prank(o.sender);
         return swap.lock{value: stake}(
-            o.q, o.sig, o.xmr, o.limit, o.nonce, o.sessionKey, o.budget, o.tk, leaf, o.a, o.approvalSig
+            o.q, o.sig, o.xmr, o.limit, o.nonce, o.sessionKey, o.budget, o.tk, leaf, o.a, o.approvalSig, address(0)
         );
     }
 
@@ -554,7 +584,9 @@ contract VectorsTest is Base {
             bytes32 got = h.openHash(
                 vm.parseJsonBytes32(json, string.concat(in_, ".swap_id")),
                 s,
-                vm.parseJsonBytes32(json, string.concat(in_, ".taker_view"))
+                vm.parseJsonBytes32(json, string.concat(in_, ".taker_view")),
+                vm.parseJsonAddress(json, string.concat(in_, ".payout")),
+                vm.parseJsonAddress(json, string.concat(in_, ".watcher"))
             );
             assertEq(got, vm.parseJsonBytes32(json, string.concat(c, ".output.open_hash")));
             // A replaced lock at the same id has another open hash.
@@ -562,6 +594,6 @@ contract VectorsTest is Base {
             previous = got;
             ran++;
         }
-        assertEq(ran, 3);
+        assertEq(ran, 5);
     }
 }

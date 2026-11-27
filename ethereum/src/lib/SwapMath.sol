@@ -24,6 +24,8 @@ library SwapMath {
     uint256 internal constant MIN_APPROVAL_SECS = 30;
     uint256 internal constant MAX_APPROVAL_SECS = 3_600;
     uint256 internal constant MAX_FINAL_SECS = 2_592_000;
+    uint256 internal constant MIN_FREEZE_SECS = 3_600;
+    uint256 internal constant MAX_FREEZE_SECS = 259_200;
     uint256 internal constant READY_MIN_SECS_PER_CONF = 60;
     uint256 internal constant LINK_DELAY_SECS = 604_800;
     uint256 internal constant MAX_OPEN_PENDING = 64;
@@ -123,31 +125,34 @@ library SwapMath {
         return pending == PENDING_NONE ? 0 : (pending == PENDING_APPROVAL ? wA : wN);
     }
 
-    /// `W_p + W_n + D_c + W_c + 86,400`.
-    function minFinalWindow(uint256 wP, uint256 wN, uint256 dC, uint256 wC) internal pure returns (uint256) {
-        return wP + wN + dC + wC + DAY_SECS;
+    /// `W_p + W_n + D_c + W_z + W_c + 86,400` (`W_z` is zero for a quote without a freeze window).
+    function minFinalWindow(uint256 wP, uint256 wN, uint256 dC, uint256 wZ, uint256 wC)
+        internal
+        pure
+        returns (uint256)
+    {
+        return wP + wN + dC + wZ + wC + DAY_SECS;
     }
 
-    /// Every per-swap bound of SPEC 3.1, in the frozen order of `deadlines.json`.
-    function checkBounds(
-        uint256 depBps,
-        uint256 wA,
-        uint256 wN,
-        uint256 depth,
-        uint256 dC,
-        uint256 wC,
-        uint256 wF,
-        uint256 pending
-    ) internal pure {
-        if (depBps > MAX_DEPOSIT_BPS) revert IXmrSwap.DepositTooHigh();
-        if (pending == PENDING_APPROVAL && (wA < MIN_APPROVAL_SECS || wA > MAX_APPROVAL_SECS)) {
+    /// `W_z` is zero (no watcher accepted) or within `[MIN_FREEZE_SECS, MAX_FREEZE_SECS]`.
+    function freezeWindowOk(uint256 wZ) internal pure returns (bool) {
+        return wZ == 0 || (wZ >= MIN_FREEZE_SECS && wZ <= MAX_FREEZE_SECS);
+    }
+
+    /// Every per-swap bound of SPEC 3.1 and 11.6, in the frozen order of `deadlines.json`.
+    /// `p` = [depBps, W_a, W_n, depth, D_c, W_c, W_f, W_z].
+    function checkBounds(uint256[8] memory p, uint256 pending) internal pure {
+        if (p[0] > MAX_DEPOSIT_BPS) revert IXmrSwap.DepositTooHigh();
+        if (pending == PENDING_APPROVAL && (p[1] < MIN_APPROVAL_SECS || p[1] > MAX_APPROVAL_SECS)) {
             revert IXmrSwap.ApprovalWindowOutOfRange();
         }
-        if (wN < MIN_NOTICE_SECS || wN > MAX_NOTICE_SECS) revert IXmrSwap.NoticeWindowOutOfRange();
-        if (depth == 0 || depth > 255) revert IXmrSwap.DepthInvalid();
-        if (dC < minClaimDelay(depth)) revert IXmrSwap.ClaimDelayTooShort();
-        if (wC < minClaimWindow()) revert IXmrSwap.ClaimWindowTooShort();
-        if (wF < minFinalWindow(pendingWindow(wA, wN, pending), wN, dC, wC) || wF > MAX_FINAL_SECS) {
+        if (p[2] < MIN_NOTICE_SECS || p[2] > MAX_NOTICE_SECS) revert IXmrSwap.NoticeWindowOutOfRange();
+        if (p[3] == 0 || p[3] > 255) revert IXmrSwap.DepthInvalid();
+        if (p[4] < minClaimDelay(p[3])) revert IXmrSwap.ClaimDelayTooShort();
+        if (p[5] < minClaimWindow()) revert IXmrSwap.ClaimWindowTooShort();
+        if (!freezeWindowOk(p[7])) revert IXmrSwap.FreezeWindowOutOfRange();
+        if (p[6] < minFinalWindow(pendingWindow(p[1], p[2], pending), p[2], p[4], p[7], p[5]) || p[6] > MAX_FINAL_SECS)
+        {
             revert IXmrSwap.FinalWindowOutOfRange();
         }
     }
@@ -193,8 +198,13 @@ library SwapMath {
         return sha256(abi.encodePacked("xmrswap/v1/notice", bytes1(0), swapId, txid, viewShare));
     }
 
-    /// The open hash of SPEC 3.12, from the stored swap.
-    function openHash(bytes32 swapId, SwapStore.Record storage s, bytes32 takerView) internal view returns (bytes32) {
+    /// The open hash of SPEC 3.12, from the stored swap. `payout` is the argument of `take` as
+    /// passed (zero in direction A) and `watcher` the argument of `lock` (zero in direction B).
+    function openHash(bytes32 swapId, SwapStore.Record storage s, bytes32 takerView, address payout, address watcher)
+        internal
+        view
+        returns (bytes32)
+    {
         return sha256(
             bytes.concat(
                 abi.encodePacked(
@@ -210,7 +220,8 @@ library SwapMath {
                 ),
                 abi.encodePacked(
                     s.takerSpendPub, s.takerKey, s.takerKey2, takerView, s.takerEncKey, s.makerEncKey, s.keyLeaf
-                )
+                ),
+                abi.encodePacked(payout, watcher)
             )
         );
     }

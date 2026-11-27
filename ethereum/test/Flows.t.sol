@@ -75,7 +75,11 @@ contract FlowsTest is Base {
                 direction == 0 ? s.lockerView : bytes32(0),
                 s.takerEncKey,
                 s.makerEncKey,
-                s.keyLeaf
+                s.keyLeaf,
+                // Amendment 1: the payout argument of take (the taker's own here; zero in A) and
+                // the watcher argument of lock (none here).
+                direction == 0 ? address(0) : taker,
+                address(0)
             )
         );
         assertEq(s.openHash, want);
@@ -167,8 +171,8 @@ contract FlowsTest is Base {
             (address k, address k2) = _twin(_fundSecret());
             uint256 value = token == ETH ? _get(id).amount : 0;
             vm.expectRevert(IXmrSwap.BadState.selector);
-            swap.fund{value: value}(id, seen, k, k2, _spendPub(_fundSecret()), _view("maker view share"));
-            swap.fund{value: value}(id, actual, k, k2, _spendPub(_fundSecret()), _view("maker view share"));
+            swap.fund{value: value}(id, seen, k, k2, _spendPub(_fundSecret()), _view("maker view share"), address(0));
+            swap.fund{value: value}(id, actual, k, k2, _spendPub(_fundSecret()), _view("maker view share"), address(0));
         }
         vm.stopPrank();
         assertEq(_get(id).state, ACTIVE);
@@ -1046,9 +1050,9 @@ contract FlowsTest is Base {
         IXmrSwap.PoolLeaf memory leaf = _leaf(0);
         vm.startPrank(taker);
         vm.expectRevert(IXmrSwap.BadValue.selector);
-        swap.lock{value: stake - 1}(o.q, o.sig, o.xmr, o.limit, o.nonce, session, 0, o.tk, leaf, o.a, "");
+        swap.lock{value: stake - 1}(o.q, o.sig, o.xmr, o.limit, o.nonce, session, 0, o.tk, leaf, o.a, "", address(0));
         vm.expectRevert(IXmrSwap.BadValue.selector);
-        swap.lock{value: stake + 1}(o.q, o.sig, o.xmr, o.limit, o.nonce, session, 0, o.tk, leaf, o.a, "");
+        swap.lock{value: stake + 1}(o.q, o.sig, o.xmr, o.limit, o.nonce, session, 0, o.tk, leaf, o.a, "", address(0));
         vm.stopPrank();
 
         // The session budget is forwarded to the session key.
@@ -1069,7 +1073,7 @@ contract FlowsTest is Base {
         // ETH sent with a USDC lock must be exactly the session budget.
         vm.prank(taker);
         vm.expectRevert(IXmrSwap.BadValue.selector);
-        swap.lock{value: 1}(o.q, o.sig, o.xmr, o.limit, o.nonce, session, 0, o.tk, leaf, o.a, "");
+        swap.lock{value: 1}(o.q, o.sig, o.xmr, o.limit, o.nonce, session, 0, o.tk, leaf, o.a, "", address(0));
 
         o.budget = 0.01 ether;
         uint256 sessionBefore = session.balance;
@@ -1103,22 +1107,22 @@ contract FlowsTest is Base {
         uint256 right = token == ETH ? s.amount : 0;
         vm.startPrank(operator);
         vm.expectRevert(IXmrSwap.BadValue.selector);
-        swap.fund{value: right + 1}(id, s.openHash, k, k2, pub, v);
+        swap.fund{value: right + 1}(id, s.openHash, k, k2, pub, v, address(0));
         if (token == ETH) {
             vm.expectRevert(IXmrSwap.BadValue.selector);
-            swap.fund{value: right - 1}(id, s.openHash, k, k2, pub, v);
+            swap.fund{value: right - 1}(id, s.openHash, k, k2, pub, v, address(0));
         }
         // The maker's view share must be canonical and nonzero.
         vm.expectRevert(IXmrSwap.ViewInvalid.selector);
-        swap.fund{value: right}(id, s.openHash, k, k2, pub, bytes32(0));
+        swap.fund{value: right}(id, s.openHash, k, k2, pub, bytes32(0), address(0));
         vm.expectRevert(IXmrSwap.ViewInvalid.selector);
-        swap.fund{value: right}(id, s.openHash, k, k2, pub, bytes32(type(uint256).max));
+        swap.fund{value: right}(id, s.openHash, k, k2, pub, bytes32(type(uint256).max), address(0));
         vm.expectRevert(IXmrSwap.BadKey.selector);
-        swap.fund{value: right}(id, s.openHash, k, k2, bytes32(0), v);
+        swap.fund{value: right}(id, s.openHash, k, k2, bytes32(0), v, address(0));
         uint256 before = _bal(token, operator);
         vm.expectEmit(address(swap));
-        emit IXmrSwap.Funded(id, makerOwner, 2, k, k2, pub, v);
-        swap.fund{value: right}(id, s.openHash, k, k2, pub, v);
+        emit IXmrSwap.Funded(id, makerOwner, 2, k, k2, pub, v, address(0));
+        swap.fund{value: right}(id, s.openHash, k, k2, pub, v, address(0));
         vm.stopPrank();
         assertEq(before - _bal(token, operator), s.amount, "amount from the operator");
         assertEq(_bal(token, address(swap)), s.amount + s.deposit);
@@ -1310,21 +1314,21 @@ contract FlowsTest is Base {
         vm.startPrank(taker);
         leaf.index = 1; // the right share under the wrong index
         vm.expectRevert(IXmrSwap.BadKey.selector);
-        swap.lock{value: stake}(o.q, o.sig, o.xmr, o.limit, o.nonce, session, 0, o.tk, leaf, o.a, "");
+        swap.lock{value: stake}(o.q, o.sig, o.xmr, o.limit, o.nonce, session, 0, o.tk, leaf, o.a, "", address(0));
         leaf = _leaf(2);
         leaf.spendPub = bytes32(uint256(leaf.spendPub) ^ 1);
         vm.expectRevert(IXmrSwap.BadKey.selector);
-        swap.lock{value: stake}(o.q, o.sig, o.xmr, o.limit, o.nonce, session, 0, o.tk, leaf, o.a, "");
+        swap.lock{value: stake}(o.q, o.sig, o.xmr, o.limit, o.nonce, session, 0, o.tk, leaf, o.a, "", address(0));
         leaf = _leaf(2);
         (leaf.key, leaf.key2) = _twin(takerSecret); // a key the taker can open
         vm.expectRevert(IXmrSwap.BadKey.selector);
-        swap.lock{value: stake}(o.q, o.sig, o.xmr, o.limit, o.nonce, session, 0, o.tk, leaf, o.a, "");
+        swap.lock{value: stake}(o.q, o.sig, o.xmr, o.limit, o.nonce, session, 0, o.tk, leaf, o.a, "", address(0));
         leaf = _leaf(2);
         leaf.proof[0] = bytes32(uint256(leaf.proof[0]) ^ 1);
         vm.expectRevert(IXmrSwap.BadKey.selector);
-        swap.lock{value: stake}(o.q, o.sig, o.xmr, o.limit, o.nonce, session, 0, o.tk, leaf, o.a, "");
+        swap.lock{value: stake}(o.q, o.sig, o.xmr, o.limit, o.nonce, session, 0, o.tk, leaf, o.a, "", address(0));
         leaf = _leaf(2);
-        swap.lock{value: stake}(o.q, o.sig, o.xmr, o.limit, o.nonce, session, 0, o.tk, leaf, o.a, "");
+        swap.lock{value: stake}(o.q, o.sig, o.xmr, o.limit, o.nonce, session, 0, o.tk, leaf, o.a, "", address(0));
         vm.stopPrank();
     }
 
@@ -1335,7 +1339,22 @@ contract FlowsTest is Base {
         bytes32 id = _id(o);
         vm.expectEmit(address(swap));
         emit IXmrSwap.Locked(
-            id, makerOwner, taker, 0, ETH, 0, 0, 122e15, 122e13, uint64(2 * ONE_XMR), 10, o.nonce, o.tk, poolLeaves[0]
+            id,
+            makerOwner,
+            taker,
+            0,
+            ETH,
+            0,
+            0,
+            122e15,
+            122e13,
+            uint64(2 * ONE_XMR),
+            10,
+            o.nonce,
+            o.tk,
+            poolLeaves[0],
+            address(0),
+            address(0)
         );
         assertEq(_send(o), id);
         IXmrSwap.Swap memory s = _get(id);

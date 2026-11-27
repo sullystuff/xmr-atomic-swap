@@ -91,6 +91,7 @@ contract Eip712Test is Base {
         q.epoch = uint32(vm.parseJsonUint(json, string.concat(m, ".epoch")));
         q.keyRoot = vm.parseJsonBytes32(json, string.concat(m, ".keyRoot"));
         q.quoteId = uint64(vm.parseJsonUint(json, string.concat(m, ".quoteId")));
+        q.freezeWindow = uint32(vm.parseJsonUint(json, string.concat(m, ".freezeWindow")));
     }
 
     function _approvalOf(string memory c) internal view returns (IXmrSwap.Approval memory a) {
@@ -195,7 +196,7 @@ contract Eip712Test is Base {
             vm.revertToState(snap);
             withDigest++;
         }
-        assertEq(withDigest, 15);
+        assertEq(withDigest, 17);
     }
 
     /// SPEC 9.1: a signature produced by `cast` from typed-data JSON is accepted. The JSON is
@@ -258,7 +259,7 @@ contract Eip712Test is Base {
             '{"name":"claimDelay","type":"uint32"},{"name":"claimWindow","type":"uint32"},',
             '{"name":"finalWindow","type":"uint32"},{"name":"validUntil","type":"uint64"},',
             '{"name":"epoch","type":"uint32"},{"name":"keyRoot","type":"bytes32"},',
-            '{"name":"quoteId","type":"uint64"}]'
+            '{"name":"quoteId","type":"uint64"},{"name":"freezeWindow","type":"uint32"}]'
         );
         string memory m1 = string.concat(
             _field("maker", vm.toString(q.maker), true),
@@ -285,7 +286,8 @@ contract Eip712Test is Base {
             _field("keyRoot", vm.toString(q.keyRoot), true),
             '"quoteId":"',
             vm.toString(q.quoteId),
-            '"'
+            '","freezeWindow":',
+            vm.toString(q.freezeWindow)
         );
         return string.concat(
             '{"types":{',
@@ -335,6 +337,25 @@ contract Eip712Test is Base {
         _expectOpen(o, IXmrSwap.BadKey.selector);
         o.sender = anyone;
         _expectOpen(o, IXmrSwap.WrongParty.selector);
+    }
+
+    /// The vectors' direction-B quote with a three-day freeze window, taken with its own signature:
+    /// the swap carries the window, and the type hash of the vectors is the contract's.
+    function test_vectorQuote_withFreezeWindow_take() public {
+        assertEq(
+            keccak256(bytes(vm.parseJsonString(json, ".quote_type"))), vm.parseJsonBytes32(json, ".quote_type_hash")
+        );
+        Open memory o = _vectorOpen(_case("quote-freeze-window-three-days-b"), 2e12);
+        bytes32 id = _send(o);
+        IXmrSwap.Swap memory s = _get(id);
+        assertEq(s.freezeSecs, 259_200);
+        assertEq(s.payout, vTaker);
+        assertEq(s.watcher, address(0));
+        // The direction-A quote with a one-hour window passes every quote check (its pool is not
+        // published, so the lock stops at the leaf).
+        o = _vectorOpen(_case("quote-freeze-window-one-hour"), 2e12);
+        o.watcher = makeAddr("watcher");
+        _expectOpen(o, IXmrSwap.BadKey.selector);
     }
 
     function test_quoteValidUntil_isInclusive() public {
@@ -390,7 +411,7 @@ contract Eip712Test is Base {
         _expectOpen(_vectorOpen(c, 2e12), _selector(vm.parseJsonString(json, string.concat(c, ".error"))));
 
         // Each field of a quote is covered by the signature.
-        for (uint256 field; field < 21; ++field) {
+        for (uint256 field; field < 22; ++field) {
             Open memory o = _open(0, ETH, 2e12, 61e15);
             _tamper(o.q, field);
             _expectOpen(o, IXmrSwap.BadSigner.selector);
@@ -419,6 +440,7 @@ contract Eip712Test is Base {
         if (field == 18) q.quoteId += 1;
         if (field == 19) q.tierPrice[2] = 1;
         if (field == 20) q.depth[1] = 3;
+        if (field == 21) q.freezeWindow = 3600;
         if (field == 0) q.direction = 0; // field 0 on this maker is a no-op; flip the price instead
         if (field == 0) q.tierPrice[1] = 9;
     }
@@ -535,7 +557,7 @@ contract Eip712Test is Base {
         (, uint256 stake) = _stake(o);
         vm.prank(vTaker);
         vm.expectRevert(IXmrSwap.WrongDirection.selector);
-        swap.take{value: stake}(o.q, o.sig, o.xmr, 0, o.nonce, session, 0, _takerKeys(1), o.a, o.approvalSig);
+        swap.take{value: stake}(o.q, o.sig, o.xmr, 0, o.nonce, session, 0, _takerKeys(1), o.a, o.approvalSig, vTaker);
 
         MockUSDC other = new MockUSDC();
         o = _open(0, address(other), 2e12, 61e15);

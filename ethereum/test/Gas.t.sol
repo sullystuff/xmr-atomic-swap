@@ -46,7 +46,20 @@ contract GasTest is Base {
                 value,
                 abi.encodeCall(
                     IXmrSwap.lock,
-                    (o.q, o.sig, o.xmr, o.limit, o.nonce, o.sessionKey, o.budget, o.tk, _leaf(3), o.a, o.approvalSig)
+                    (
+                        o.q,
+                        o.sig,
+                        o.xmr,
+                        o.limit,
+                        o.nonce,
+                        o.sessionKey,
+                        o.budget,
+                        o.tk,
+                        _leaf(3),
+                        o.a,
+                        o.approvalSig,
+                        address(0)
+                    )
                 ),
                 700_000
             );
@@ -57,7 +70,7 @@ contract GasTest is Base {
                 value,
                 abi.encodeCall(
                     IXmrSwap.take,
-                    (o.q, o.sig, o.xmr, o.limit, o.nonce, o.sessionKey, o.budget, o.tk, o.a, o.approvalSig)
+                    (o.q, o.sig, o.xmr, o.limit, o.nonce, o.sessionKey, o.budget, o.tk, o.a, o.approvalSig, taker)
                 ),
                 700_000
             );
@@ -76,7 +89,9 @@ contract GasTest is Base {
                 string.concat("fund ", tag),
                 operator,
                 token == ETH ? amount : 0,
-                abi.encodeCall(IXmrSwap.fund, (id, h, k, k2, _spendPub(makerSecret), _view("maker view share"))),
+                abi.encodeCall(
+                    IXmrSwap.fund, (id, h, k, k2, _spendPub(makerSecret), _view("maker view share"), address(0))
+                ),
                 300_000
             );
         }

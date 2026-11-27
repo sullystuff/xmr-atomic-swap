@@ -27,6 +27,7 @@ abstract contract Base is Test {
     uint8 internal constant HOLD = 7;
     uint8 internal constant WITHHELD = 8;
     uint8 internal constant DONE = 9;
+    uint8 internal constant FROZEN = 10;
 
     XmrSwap internal impl;
     XmrSwap internal swap;
@@ -68,6 +69,8 @@ abstract contract Base is Test {
         IXmrSwap.Approval a;
         bytes approvalSig;
         address sender;
+        address payout; // direction B; zero = the sender's own address
+        address watcher; // direction A; zero = none
     }
 
     function setUp() public virtual {
@@ -92,6 +95,16 @@ abstract contract Base is Test {
             deployCodeTo("ERC1967Proxy.sol:ERC1967Proxy", abi.encode(address(impl), init), at);
             swap = XmrSwap(at);
         }
+        _openCaps();
+    }
+
+    /// A fresh deployment is fail-closed (caps on, every cap zero). The tests' world keeps the
+    /// switch on with the largest caps, so every open goes through the check and the accounting.
+    function _openCaps() internal {
+        vm.startPrank(owner);
+        swap.setCaps(ETH, type(uint128).max, type(uint128).max);
+        swap.setCaps(address(usdc), type(uint128).max, type(uint128).max);
+        vm.stopPrank();
     }
 
     function _fundActors() internal {
@@ -282,12 +295,13 @@ abstract contract Base is Test {
             IXmrSwap.PoolLeaf memory leaf = _leaf(o.leafIndex);
             vm.prank(o.sender);
             id = swap.lock{value: value}(
-                o.q, o.sig, o.xmr, o.limit, o.nonce, o.sessionKey, o.budget, o.tk, leaf, o.a, o.approvalSig
+                o.q, o.sig, o.xmr, o.limit, o.nonce, o.sessionKey, o.budget, o.tk, leaf, o.a, o.approvalSig, o.watcher
             );
         } else {
+            address payout_ = o.payout == address(0) ? o.sender : o.payout;
             vm.prank(o.sender);
             id = swap.take{value: value}(
-                o.q, o.sig, o.xmr, o.limit, o.nonce, o.sessionKey, o.budget, o.tk, o.a, o.approvalSig
+                o.q, o.sig, o.xmr, o.limit, o.nonce, o.sessionKey, o.budget, o.tk, o.a, o.approvalSig, payout_
             );
         }
     }
@@ -315,12 +329,16 @@ abstract contract Base is Test {
         _fundWith(id, _fundSecret(), _get(id).openHash, operator);
     }
 
+    /// The watcher the maker names in `_fund` (direction B); zero = none.
+    address internal fundWatcher;
+
     function _fundWith(bytes32 id, uint256 secret, bytes32 expectedOpen, address from) internal {
         IXmrSwap.Swap memory s = _get(id);
         (address k, address k2) = _twin(secret);
+        address watcher_ = fundWatcher;
         vm.prank(from);
         swap.fund{value: s.token == ETH ? s.amount : 0}(
-            id, expectedOpen, k, k2, _spendPub(secret), _view("maker view share")
+            id, expectedOpen, k, k2, _spendPub(secret), _view("maker view share"), watcher_
         );
     }
 
@@ -440,6 +458,54 @@ abstract contract Base is Test {
         }
         skip(1200);
         _ready(id);
+    }
+
+    address internal watcherKey = makeAddr("watcher");
+    uint256 internal constant FREEZE_WINDOW = 86_400;
+
+    /// A default swap (2 XMR) whose quote has a one-day freeze window and which names
+    /// `watcherKey` (the taker at lock in A, the maker at fund in B), driven to NOTICED.
+    function _watched(uint8 direction, address token) internal returns (bytes32 id) {
+        Open memory o = _open(direction, token, uint64(2 * ONE_XMR), _defaultPrice(token));
+        o.q.freezeWindow = uint32(FREEZE_WINDOW);
+        o.sig = _signQuote(o.q);
+        if (direction == 0) {
+            o.leafIndex = nextLeaf++ % uint32(POOL);
+            o.watcher = watcherKey;
+        }
+        id = _send(o);
+        skip(12);
+        address before = fundWatcher;
+        fundWatcher = watcherKey;
+        _activate(id);
+        fundWatcher = before;
+        skip(90);
+        _notice(id);
+    }
+
+    /// The same, frozen by the watcher 600 s after the notice.
+    function _frozen(uint8 direction, address token) internal returns (bytes32 id) {
+        id = _watched(direction, token);
+        skip(600);
+        vm.prank(watcherKey);
+        swap.freeze(id);
+    }
+
+    /// T_ff = max(t_Z + W_z, T_co).
+    function _tFf(bytes32 id) internal view returns (uint256 t) {
+        IXmrSwap.Swap memory s = _get(id);
+        t = uint256(s.tFreeze) + s.freezeSecs;
+        if (t < s.tClaimOpen) t = s.tClaimOpen;
+    }
+
+    function _openValue(address token) internal view returns (uint256 v) {
+        (,,, v) = swap.capsOf(token);
+    }
+
+    /// What a swap adds to the open value while it is open: `amount` in A, `amount + deposit` in B.
+    function _counted(bytes32 id) internal view returns (uint256) {
+        IXmrSwap.Swap memory s = _get(id);
+        return s.direction == 0 ? s.amount : s.amount + s.deposit;
     }
 
     function _defaultPrice(address token) internal pure returns (uint256) {

@@ -45,6 +45,9 @@ contract XmrSwap is
         SwapStore.Layout storage $ = SwapStore.layout();
         $.treasury = treasury_;
         $.usdc = usdc_;
+        // Fail closed (SPEC 11.1): the switch is on and every cap is zero, so nothing can open
+        // until the owner sets caps.
+        $.capsOn = true;
     }
 
     /// @dev After `renounceOwnership()` the owner is address(0) and no upgrade can ever pass.
@@ -205,9 +208,12 @@ contract XmrSwap is
         TakerKeys calldata tk,
         PoolLeaf calldata leaf,
         Approval calldata a,
-        bytes calldata approvalSig
+        bytes calldata approvalSig,
+        address watcher
     ) external payable nonReentrant returns (bytes32 swapId) {
-        return SwapOpen.lock(q, sig, xmr, maxPay, swapNonce, sessionKey, sessionBudget, tk, leaf, a, approvalSig);
+        return SwapOpen.lock(
+            q, sig, xmr, maxPay, swapNonce, sessionKey, sessionBudget, tk, leaf, a, approvalSig, watcher
+        );
     }
 
     /// @inheritdoc IXmrSwap
@@ -221,9 +227,10 @@ contract XmrSwap is
         uint256 sessionBudget,
         TakerKeys calldata tk,
         Approval calldata a,
-        bytes calldata approvalSig
+        bytes calldata approvalSig,
+        address payout
     ) external payable nonReentrant returns (bytes32 swapId) {
-        return SwapOpen.take(q, sig, xmr, minReceive, swapNonce, sessionKey, sessionBudget, tk, a, approvalSig);
+        return SwapOpen.take(q, sig, xmr, minReceive, swapNonce, sessionKey, sessionBudget, tk, a, approvalSig, payout);
     }
 
     /// @inheritdoc IXmrSwap
@@ -232,12 +239,16 @@ contract XmrSwap is
     }
 
     /// @inheritdoc IXmrSwap
-    function fund(bytes32 swapId, bytes32 expectedOpen, address key, address key2, bytes32 spendPub, bytes32 viewShare)
-        external
-        payable
-        nonReentrant
-    {
-        SwapSettle.fund(swapId, expectedOpen, key, key2, spendPub, viewShare);
+    function fund(
+        bytes32 swapId,
+        bytes32 expectedOpen,
+        address key,
+        address key2,
+        bytes32 spendPub,
+        bytes32 viewShare,
+        address watcher
+    ) external payable nonReentrant {
+        SwapSettle.fund(swapId, expectedOpen, key, key2, spendPub, viewShare, watcher);
     }
 
     /// @inheritdoc IXmrSwap
@@ -263,6 +274,11 @@ contract XmrSwap is
     /// @inheritdoc IXmrSwap
     function setReady(bytes32 swapId) external nonReentrant {
         SwapSettle.setReady(swapId);
+    }
+
+    /// @inheritdoc IXmrSwap
+    function freeze(bytes32 swapId) external nonReentrant {
+        SwapSettle.freeze(swapId);
     }
 
     /// @inheritdoc IXmrSwap
@@ -319,6 +335,46 @@ contract XmrSwap is
         if (amount == 0) revert NothingOwed();
         $.owed[token][msg.sender] = 0;
         SwapStore._send(token, to, amount);
+    }
+
+    /// @inheritdoc IXmrSwap
+    /// @dev The destination is `account` itself and nothing else, so anyone may send it: parked
+    /// proceeds of a payout address that holds no ETH for gas are not stranded (SPEC 11.2). It
+    /// carries no secret, so a push that still fails reverts and the balance stays parked.
+    function pushOwed(address token, address account) external nonReentrant {
+        SwapStore.Layout storage $ = SwapStore.layout();
+        uint256 amount = $.owed[token][account];
+        if (amount == 0) revert NothingOwed();
+        $.owed[token][account] = 0;
+        SwapStore._send(token, account, amount);
+    }
+
+    // ------------------------------------------------------------------ beta caps (SPEC 11.1)
+    // Caps gate only new exposure: `lock` and `take` read them and no other call does.
+
+    /// @inheritdoc IXmrSwap
+    function setCaps(address token, uint128 maxSwap, uint128 maxOpen) external onlyOwner {
+        SwapStore.Cap storage cap = SwapStore.layout().caps[token];
+        cap.maxSwap = maxSwap;
+        cap.maxOpen = maxOpen;
+        emit CapsChanged(token, maxSwap, maxOpen);
+    }
+
+    /// @inheritdoc IXmrSwap
+    function setCapsOn(bool on) external onlyOwner {
+        SwapStore.layout().capsOn = on;
+        emit CapsSwitched(on);
+    }
+
+    /// @inheritdoc IXmrSwap
+    function capsOf(address token)
+        external
+        view
+        returns (bool on, uint128 maxSwap, uint128 maxOpen, uint128 openValue)
+    {
+        SwapStore.Layout storage $ = SwapStore.layout();
+        SwapStore.Cap storage cap = $.caps[token];
+        return ($.capsOn, cap.maxSwap, cap.maxOpen, cap.openValue);
     }
 
     /// @inheritdoc IXmrSwap
