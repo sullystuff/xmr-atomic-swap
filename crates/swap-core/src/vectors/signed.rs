@@ -149,8 +149,8 @@ fn largest_responses(op_seed: &[u8; 32]) -> Vec<(&'static str, String)> {
   });
   // Solana quote_response.
   let sol_quote = json!({ "t": "quote_response", "ok": true, "chain": "solana", "quote_id": d(u64::MAX), "expires_at": d(i64::MAX) });
-  // Ethereum quote_response: the compact form with its signature (316 bytes).
-  let eth_quote = json!({ "t": "quote_response", "ok": true, "chain": "ethereum", "quote": b64(&[0xff; 316]) });
+  // Ethereum quote_response: the compact form with its signature (320 bytes).
+  let eth_quote = json!({ "t": "quote_response", "ok": true, "chain": "ethereum", "quote": b64(&[0xff; 320]) });
   vec![
     ("largest-approval-response-solana", sol_approval.to_string()),
     ("largest-approval-response-ethereum", eth_approval.to_string()),
@@ -484,6 +484,7 @@ pub fn sol_signed() -> VectorFile {
         "swap": h(o.swap), "t_lock": o.t_lock, "direction": o.direction, "asset": o.asset, "xmr": d(o.xmr), "amount": d(o.amount),
         "deposit": d(o.deposit), "taker_spend_pub": h(o.taker_spend_pub), "locker_view": h(o.locker_view),
         "taker_enc_key": h(o.taker_enc_key), "maker_enc_key": h(o.maker_enc_key),
+        "payout": h(o.payout), "watcher": h(o.watcher),
       }),
       json!({ "open_hash": h(open_hash_solana(o)) }),
     )
@@ -500,11 +501,23 @@ pub fn sol_signed() -> VectorFile {
     locker_view: scalar("open/view"),
     taker_enc_key: x25519_public(&fixed("open/taker-enc")),
     maker_enc_key: x25519_public(&fixed("open/maker-enc")),
+    payout: [0u8; 32],
+    watcher: [0u8; 32],
   };
   cases.push(open("open-hash-direction-a", &oa));
-  // Direction B: the locker's view share is zeros at take time.
-  let ob = OpenHashSolanaInput { direction: 1, asset: 0, locker_view: [0u8; 32], amount: 1_500_000_000, deposit: 15_000_000, ..oa.clone() };
+  // SPEC 11.6: the watcher the taker names at lock is part of the hash.
+  let watched = OpenHashSolanaInput { watcher: ed25519_public(&fixed("open/watcher")), ..oa.clone() };
+  assert_ne!(open_hash_solana(&watched), open_hash_solana(&oa));
+  cases.push(open("open-hash-direction-a-watcher", &watched));
+  // Direction B: the locker's view share is zeros at take time; the payout address is the
+  // taker's own by default, and the maker's watcher (named at fund) is not part of the hash.
+  let taker_wallet = ed25519_public(&fixed("open/taker-wallet"));
+  let ob = OpenHashSolanaInput { direction: 1, asset: 0, locker_view: [0u8; 32], amount: 1_500_000_000, deposit: 15_000_000, payout: taker_wallet, ..oa.clone() };
   cases.push(open("open-hash-direction-b", &ob));
+  // SPEC 11.2: another payout address, another hash: the maker funds knowing where a claim pays.
+  let ob_payout = OpenHashSolanaInput { payout: ed25519_public(&fixed("open/payout")), ..ob.clone() };
+  assert_ne!(open_hash_solana(&ob_payout), open_hash_solana(&ob));
+  cases.push(open("open-hash-direction-b-payout", &ob_payout));
   // A re-lock at the same PDA with another size: another hash.
   let relock = OpenHashSolanaInput { t_lock: oa.t_lock + 30, xmr: oa.xmr * 2, amount: oa.amount * 2, deposit: oa.deposit * 2, ..oa.clone() };
   assert_ne!(open_hash_solana(&relock), open_hash_solana(&oa));
@@ -537,6 +550,7 @@ fn quote_message(q: &EthQuote) -> Value {
     "depositBps": q.deposit_bps, "approvalWindow": q.approval_window, "noticeWindow": q.notice_window,
     "claimDelay": q.claim_delay, "claimWindow": q.claim_window, "finalWindow": q.final_window,
     "validUntil": d(q.valid_until), "epoch": q.epoch, "keyRoot": h0x(q.key_root), "quoteId": d(q.quote_id),
+    "freezeWindow": q.freeze_window,
   })
 }
 fn approval_message(a: &EthApproval) -> Value {
@@ -600,6 +614,7 @@ pub fn eip712() -> VectorFile {
     epoch: 3,
     key_root: fixed("eip712/key-root"),
     quote_id: 42,
+    freeze_window: 0,
   };
   let quotes: Vec<(&str, EthQuote)> = vec![
     ("quote-public-eth-a", base.clone()),
@@ -620,6 +635,9 @@ pub fn eip712() -> VectorFile {
     ),
     // Direction B: no key pool, so keyRoot is zero.
     ("quote-public-eth-b", EthQuote { direction: 1, key_root: [0; 32], approval_mode: 2, quote_id: 44, ..base.clone() }),
+    // SPEC 11.6: quotes that accept a watcher, at the floor and the cap of the freeze window.
+    ("quote-freeze-window-one-hour", EthQuote { freeze_window: 3_600, quote_id: 45, ..base.clone() }),
+    ("quote-freeze-window-three-days-b", EthQuote { direction: 1, key_root: [0; 32], freeze_window: 259_200, quote_id: 46, ..base.clone() }),
     // Field extremes: every integer at its maximum (prices at the u128 the compact form holds).
     (
       "quote-extremes",
@@ -645,6 +663,7 @@ pub fn eip712() -> VectorFile {
         epoch: u32::MAX,
         key_root: [0xff; 32],
         quote_id: u64::MAX,
+        freeze_window: u32::MAX,
       },
     ),
   ];
@@ -805,6 +824,8 @@ pub fn eip712() -> VectorFile {
     taker_enc_key: x25519_public(&fixed("eip712/taker-enc")),
     maker_enc_key: x25519_public(&fixed("eip712/maker-enc")),
     key_leaf: fixed("eip712/key-leaf"),
+    payout: [0; 20],
+    watcher: [0; 20],
   };
   let open_case = |name: &str, o: &OpenHashEthereumInput| {
     ok_case(
@@ -814,13 +835,22 @@ pub fn eip712() -> VectorFile {
         "amount": d(o.amount), "deposit": d(o.deposit), "taker_spend_pub": h0x(o.taker_spend_pub), "taker_key": h0x(o.taker_key),
         "taker_key2": h0x(o.taker_key2), "taker_view": h0x(o.taker_view), "taker_enc_key": h0x(o.taker_enc_key),
         "maker_enc_key": h0x(o.maker_enc_key), "key_leaf": h0x(o.key_leaf),
+        "payout": h0x(o.payout), "watcher": h0x(o.watcher),
       }),
       json!({ "open_hash": h0x(open_hash_ethereum(o)) }),
     )
   };
   cases.push(open_case("open-hash-direction-a", &open_a));
-  let open_b = OpenHashEthereumInput { direction: 1, token: usdc, amount: 330_500_000, deposit: 3_305_000, taker_view: [0; 32], key_leaf: [0; 32], ..open_a.clone() };
+  // SPEC 11.6: the watcher named at lock.
+  let open_watched = OpenHashEthereumInput { watcher: fixed_n("eip712/watcher"), ..open_a.clone() };
+  assert_ne!(open_hash_ethereum(&open_watched), open_hash_ethereum(&open_a));
+  cases.push(open_case("open-hash-direction-a-watcher", &open_watched));
+  // Direction B: the payout argument of take (the taker's own address by default).
+  let open_b = OpenHashEthereumInput { direction: 1, token: usdc, amount: 330_500_000, deposit: 3_305_000, taker_view: [0; 32], key_leaf: [0; 32], payout: taker, ..open_a.clone() };
   cases.push(open_case("open-hash-direction-b", &open_b));
+  let open_b_payout = OpenHashEthereumInput { payout: fixed_n("eip712/payout"), ..open_b.clone() };
+  assert_ne!(open_hash_ethereum(&open_b_payout), open_hash_ethereum(&open_b));
+  cases.push(open_case("open-hash-direction-b-payout", &open_b_payout));
   // A reorg replaces the lock with another at the same id: other commitments, another hash.
   let ts2 = share("eip712/taker-share-2");
   let tw2 = twin_commitments(&ts2).unwrap();
@@ -847,8 +877,135 @@ pub fn eip712() -> VectorFile {
       ("approval_type_hash", json!(h0x(approval_type_hash()))),
       ("any_token", json!(h0x(ANY_TOKEN))),
       ("any_direction", json!(ANY_DIRECTION)),
-      ("compact_len", json!(251)),
+      ("compact_len", json!(255)),
       ("signature_format", json!("r || s || v, 65 bytes, low-s, v in {27, 28}; RFC 6979 nonce")),
+    ],
+  )
+}
+
+/// SPEC 11.3: `wallet_seed.json`. Real signatures from fixed test keys over the two fixed
+/// messages, and the seed each gives.
+pub fn wallet_seed() -> VectorFile {
+  use crate::{
+    keys::derive_keys,
+    primitives::ChainTag,
+    wallet_key::{
+      base58, normalize_eth_signature, wallet_key_digest, wallet_key_message_solana, wallet_key_struct_hash,
+      wallet_key_type_hash, wallet_seed as seed_of, WALLET_KEY_NOTICE, WALLET_KEY_TYPE, WALLET_KEY_VERSION,
+    },
+  };
+  // A stand-in for `WALLET_KEY_SITE`: the vectors must not depend on the name the owner picks.
+  let site = "swap.example";
+  let nonce: [u8; 16] = fixed_n("wallet-seed/swap-nonce");
+  let mut cases = Vec::new();
+
+  // Solana.
+  let sol_key = fixed("wallet-seed/solana-wallet");
+  let sol_wallet = ed25519_public(&sol_key);
+  let genesis = fixed("wallet-seed/genesis-hash");
+  let program = fixed("wallet-seed/program-id");
+  let msg = wallet_key_message_solana(site, &genesis, &program, &sol_wallet);
+  let sig = ed25519_sign(&sol_key, &msg);
+  assert!(ed25519_verify(&sol_wallet, &msg, &sig));
+  let sol_seed = seed_of(ChainTag::Solana, &sol_wallet, &sig).unwrap();
+  let sol_input = |wallet: &[u8], sig: &[u8]| json!({ "chain_tag": 1, "wallet": h(wallet), "signature": h(sig) });
+  let derived = |chain: ChainTag, seed: &[u8; 32]| {
+    let k = derive_keys(seed, chain, &nonce).unwrap();
+    json!({ "seed": h(seed), "swap_nonce": h(nonce), "spend_pub": h(k.spend_pub) })
+  };
+  let mut c = ok_case("solana", sol_input(&sol_wallet, &sig), derived(ChainTag::Solana, &sol_seed));
+  c.as_object_mut().unwrap().insert(
+    "message".into(),
+    json!({
+      "site": site, "genesis_hash": h(genesis), "genesis_hash_base58": base58(&genesis), "program_id": h(program),
+      "program_id_base58": base58(&program), "wallet_base58": base58(&sol_wallet), "wallet_private_seed": h(sol_key),
+      "text": String::from_utf8(msg.clone()).unwrap(), "bytes": h(&msg),
+    }),
+  );
+  cases.push(c);
+  // The seed is per wallet: the same signature bytes under another address give another seed.
+  let other_wallet = ed25519_public(&fixed("wallet-seed/solana-wallet-2"));
+  let other = seed_of(ChainTag::Solana, &other_wallet, &sig).unwrap();
+  assert_ne!(other, sol_seed);
+  cases.push(ok_case("solana-another-wallet-address", sol_input(&other_wallet, &sig), derived(ChainTag::Solana, &other)));
+  cases.push(err_case("solana-signature-63-bytes", sol_input(&sol_wallet, &sig[..63]), "BadLength"));
+  cases.push(err_case("solana-signature-65-bytes", sol_input(&sol_wallet, &[&sig[..], &[0u8][..]].concat()), "BadLength"));
+  cases.push(err_case("solana-wallet-20-bytes", sol_input(&sol_wallet[..20], &sig), "BadLength"));
+
+  // Ethereum.
+  let eth_key = fixed("wallet-seed/ethereum-wallet");
+  let eth_wallet = eth_address_of_secret(&eth_key).unwrap();
+  let domain = Eip712Domain { chain_id: 31_337, verifying_contract: fixed_n("eip712/contract") };
+  let digest = wallet_key_digest(&domain, site, &eth_wallet);
+  let sig = ecdsa_sign_digest(&eth_key, &digest).unwrap();
+  assert_eq!(ecdsa_recover_address(&digest, &sig).unwrap(), eth_wallet);
+  let eth_seed = seed_of(ChainTag::Ethereum, &eth_wallet, &sig).unwrap();
+  let eth_input = |wallet: &[u8], sig: &[u8]| json!({ "chain_tag": 2, "wallet": h0x(wallet), "signature": h0x(sig) });
+  let eth_out = |seed: &[u8; 32], normalised: &[u8; 65]| {
+    let mut v = derived(ChainTag::Ethereum, seed);
+    v.as_object_mut().unwrap().insert("normalised_signature".into(), json!(h0x(normalised)));
+    v
+  };
+  let message = json!({ "notice": WALLET_KEY_NOTICE, "site": site, "keyVersion": WALLET_KEY_VERSION, "wallet": h0x(eth_wallet) });
+  let mut c = ok_case("ethereum", eth_input(&eth_wallet, &sig), eth_out(&eth_seed, &sig));
+  c.as_object_mut().unwrap().insert(
+    "message".into(),
+    json!({
+      "typed_data": typed_data(&domain, "WalletKey", WALLET_KEY_TYPE, message),
+      "struct_hash": h0x(wallet_key_struct_hash(site, &eth_wallet)), "digest": h0x(digest), "wallet_private_key": h0x(eth_key),
+    }),
+  );
+  cases.push(c);
+  // The same signature spelled with a high s (and the other v): normalised, the same seed.
+  let mut high = sig;
+  {
+    use sigma_fun::secp256k1::fun::{marker::*, Scalar};
+    let s_low = Scalar::<Public, NonZero>::from_bytes(sig[32..64].try_into().unwrap()).unwrap();
+    high[32..64].copy_from_slice(&(-s_low).to_bytes());
+    high[64] = if sig[64] == 27 { 28 } else { 27 };
+  }
+  assert_eq!(normalize_eth_signature(&high).unwrap(), sig);
+  assert_eq!(seed_of(ChainTag::Ethereum, &eth_wallet, &high).unwrap(), eth_seed);
+  cases.push(ok_case("ethereum-high-s-normalised", eth_input(&eth_wallet, &high), eth_out(&eth_seed, &sig)));
+  // v as 0/1 instead of 27/28.
+  let mut v01 = sig;
+  v01[64] -= 27;
+  assert_eq!(seed_of(ChainTag::Ethereum, &eth_wallet, &v01).unwrap(), eth_seed);
+  cases.push(ok_case("ethereum-v-zero-or-one", eth_input(&eth_wallet, &v01), eth_out(&eth_seed, &sig)));
+  let mut high01 = high;
+  high01[64] -= 27;
+  cases.push(ok_case("ethereum-high-s-and-v-zero-or-one", eth_input(&eth_wallet, &high01), eth_out(&eth_seed, &sig)));
+  let mut bad_v = sig;
+  bad_v[64] = 29;
+  cases.push(err_case("ethereum-v-29", eth_input(&eth_wallet, &bad_v), "SignatureInvalid"));
+  let mut zero_s = sig;
+  zero_s[32..64].fill(0);
+  cases.push(err_case("ethereum-s-zero", eth_input(&eth_wallet, &zero_s), "SignatureInvalid"));
+  let mut big_s = sig;
+  big_s[32..64].fill(0xff);
+  cases.push(err_case("ethereum-s-above-the-group-order", eth_input(&eth_wallet, &big_s), "SignatureInvalid"));
+  let mut zero_r = sig;
+  zero_r[..32].fill(0);
+  cases.push(err_case("ethereum-r-zero", eth_input(&eth_wallet, &zero_r), "SignatureInvalid"));
+  cases.push(err_case("ethereum-signature-64-bytes", eth_input(&eth_wallet, &sig[..64]), "BadLength"));
+  cases.push(err_case("ethereum-wallet-32-bytes", eth_input(&[0x11; 32], &sig), "BadLength"));
+  cases.push(err_case("unknown-chain-tag", json!({ "chain_tag": 3, "wallet": h0x(eth_wallet), "signature": h0x(sig) }), "UnknownChainTag"));
+  // The two chains never share a seed, even for equal bytes.
+  assert_ne!(sol_seed, eth_seed);
+
+  suite(
+    "wallet_seed",
+    cases,
+    vec![
+      ("derivation", json!("seed = HKDF-SHA256(ikm = sig, salt = \"xmrswap/v1/wallet-seed\" || 0x00, info = chain_tag (1 byte) || wallet address bytes, L = 32). sig: Solana, the 64 signature bytes; Ethereum, r || s || v (65 bytes) with s in the low half and v in {27, 28}")),
+      ("site", json!(site)),
+      ("site_note", json!("a stand-in for WALLET_KEY_SITE of @xmrswap/protocol; only the `message` objects depend on it")),
+      ("key_version", json!(WALLET_KEY_VERSION)),
+      ("wallet_key_type", json!(WALLET_KEY_TYPE)),
+      ("wallet_key_type_hash", json!(h0x(wallet_key_type_hash()))),
+      ("wallet_key_notice", json!(WALLET_KEY_NOTICE)),
+      ("domain", json!({ "name": EIP712_NAME, "version": EIP712_VERSION, "chainId": domain.chain_id, "verifyingContract": h0x(domain.verifying_contract) })),
+      ("spend_pub", json!("derive_keys(seed, chain_tag, share_id = swap_nonce).spend_pub: what a returning user compares with the commitment stored in its swap")),
     ],
   )
 }

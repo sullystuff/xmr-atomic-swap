@@ -478,6 +478,8 @@ pub fn terms_hash(f: JsValue) -> JsResult<Vec<u8>> {
       w_f: get_u32(&f, "wF")?,
       depth_above: get_array(&f, "depthAbove", |v, k| u64::try_from(to_u128(v, k)?).map_err(|_| bad(k)))?,
       depths: get_array(&f, "depths", |v, k| u8::try_from(to_u128(v, k)?).map_err(|_| bad(k)))?,
+      // Amendment 1 (SPEC 11.6): the freeze window is a term; 0 = no watcher accepted.
+      w_z: get_u32(&f, "wZ")?,
     })
     .to_vec(),
   )
@@ -498,6 +500,9 @@ pub fn open_hash_solana(f: JsValue) -> JsResult<Vec<u8>> {
       locker_view: get_bytes(&f, "lockerView")?,
       taker_enc_key: get_bytes(&f, "takerEncKey")?,
       maker_enc_key: get_bytes(&f, "makerEncKey")?,
+      // Amendment 1: zeros when absent (direction A has no payout; no watcher named).
+      payout: get_opt_bytes(&f, "payout")?.unwrap_or([0u8; 32]),
+      watcher: get_opt_bytes(&f, "watcher")?.unwrap_or([0u8; 32]),
     })
     .to_vec(),
   )
@@ -521,6 +526,9 @@ pub fn open_hash_ethereum(f: JsValue) -> JsResult<Vec<u8>> {
       taker_enc_key: get_bytes(&f, "takerEncKey")?,
       maker_enc_key: get_bytes(&f, "makerEncKey")?,
       key_leaf: get_bytes(&f, "keyLeaf")?,
+      // Amendment 1: the zero address when absent.
+      payout: get_opt_bytes(&f, "payout")?.unwrap_or([0u8; 20]),
+      watcher: get_opt_bytes(&f, "watcher")?.unwrap_or([0u8; 20]),
     })
     .to_vec(),
   )
@@ -558,6 +566,7 @@ fn quote_of(q: &JsValue) -> JsResult<EthQuote> {
     epoch: get_u32(q, "epoch")?,
     key_root: get_bytes(q, "keyRoot")?,
     quote_id: get_u64(q, "quoteId")?,
+    freeze_window: get_u32(q, "freezeWindow")?,
   })
 }
 fn quote_obj(q: &EthQuote) -> JsValue {
@@ -584,13 +593,14 @@ fn quote_obj(q: &EthQuote) -> JsValue {
     .set("epoch", q.epoch)
     .set("keyRoot", bytes(&q.key_root))
     .set("quoteId", big(q.quote_id as u128))
+    .set("freezeWindow", q.freeze_window)
     .done()
 }
 fn domain_of(d: &JsValue) -> JsResult<Eip712Domain> {
   Ok(Eip712Domain { chain_id: get_u64(d, "chainId")?, verifying_contract: get_bytes(d, "verifyingContract")? })
 }
 
-/// `encodeEthQuoteCompact(quote, sig?)` → 251 bytes, or 316 with the signature.
+/// `encodeEthQuoteCompact(quote, sig?)` → 255 bytes, or 320 with the signature.
 #[wasm_bindgen(js_name = encodeEthQuoteCompact)]
 pub fn encode_eth_quote_compact(quote: JsValue, sig: Option<Vec<u8>>) -> JsResult<Vec<u8>> {
   let q = quote_of(&quote)?;
@@ -679,7 +689,7 @@ pub fn split_of(deposit: JsValue) -> JsResult<JsValue> {
   Ok(Obj::new().set("toTaker", big(taker)).set("toTreasury", big(treasury)).done())
 }
 
-/// `deadlines({ chain, pending, wA, wN, dC, wC, wF, depth, depBps, tLock, tActive?, tNotice?, tReady?, tRefund? })`
+/// `deadlines({ chain, pending, wA, wN, dC, wC, wF, depth, depBps, wZ?, tLock, tActive?, tNotice?, tFreeze?, tReady?, tRefund? })`
 ///
 /// Returns the bound check for a swap that starts in `pending` (`"none"`, `"approval"` or
 /// `"funding"`), the derived minima, and every deadline the given event times determine.
@@ -701,11 +711,13 @@ pub fn deadlines(p: JsValue) -> JsResult<JsValue> {
     w_f: get_u32(&p, "wF")?,
     depth: get_u8(&p, "depth")?,
     dep_bps: get_u16(&p, "depBps")?,
+    w_z: if has(&p, "wZ") { get_u32(&p, "wZ")? } else { 0 },
   };
   let times = EventTimes {
     t_lock: get_i64(&p, "tLock")?,
     t_active: get_opt_i64(&p, "tActive")?,
     t_notice: get_opt_i64(&p, "tNotice")?,
+    t_freeze: get_opt_i64(&p, "tFreeze")?,
     t_ready: get_opt_i64(&p, "tReady")?,
     t_refund: get_opt_i64(&p, "tRefund")?,
   };
@@ -728,6 +740,7 @@ pub fn deadlines(p: JsValue) -> JsResult<JsValue> {
       .set("tCut", opt(d.t_cut))
       .set("tCo", opt(d.t_co))
       .set("tReadyMin", opt(d.t_ready_min))
+      .set("tFf", opt(d.t_ff))
       .set("tCd", opt(d.t_cd))
       .set("tFinal", big_i(d.t_final))
       .set("tNl", big_i(d.t_nl))
@@ -856,6 +869,40 @@ fn variant(e: &sweep::SweepError) -> &'static str {
 #[wasm_bindgen(js_name = coreVersion)]
 pub fn core_version() -> String {
   env!("CARGO_PKG_VERSION").to_string()
+}
+
+// ---------------------------------------------------------------- wallet-derived key (SPEC 11.3)
+
+/// `walletSeed(chainTag, wallet, signature)` → the 32-byte swap seed.
+///
+/// `chainTag` 1 (Solana): `wallet` is the 32-byte address, `signature` the 64 bytes of
+/// `signMessage` over `walletKeySolanaMessage`. `chainTag` 2 (Ethereum): `wallet` is the 20-byte
+/// address, `signature` the 65 bytes of `eth_signTypedData_v4` over the `WalletKey` message; a
+/// high-s or 0/1-`v` spelling is normalised first. The signature is as secret as the seed: pass
+/// it here and drop it.
+#[wasm_bindgen(js_name = walletSeed)]
+pub fn wallet_seed(chain_tag: u8, wallet: &[u8], signature: &[u8]) -> JsResult<Vec<u8>> {
+  let chain = crate::primitives::ChainTag::from_u8(chain_tag).map_err(err)?;
+  Ok(crate::wallet_key::wallet_seed(chain, wallet, signature).map_err(err)?.to_vec())
+}
+
+/// The exact bytes a Solana wallet signs: `site` is `WALLET_KEY_SITE`; the three keys are raw
+/// 32-byte values (the genesis hash, the program id, the wallet address).
+#[wasm_bindgen(js_name = walletKeySolanaMessage)]
+pub fn wallet_key_solana_message(site: &str, genesis_hash: &[u8], program_id: &[u8], wallet: &[u8]) -> JsResult<Vec<u8>> {
+  Ok(crate::wallet_key::wallet_key_message_solana(site, &fixed(genesis_hash, "genesisHash")?, &fixed(program_id, "programId")?, &fixed(wallet, "wallet")?))
+}
+
+/// The EIP-712 digest of the Ethereum `WalletKey` message under the contract's domain.
+#[wasm_bindgen(js_name = walletKeyDigest)]
+pub fn wallet_key_digest(domain: JsValue, site: &str, wallet: &[u8]) -> JsResult<Vec<u8>> {
+  Ok(crate::wallet_key::wallet_key_digest(&domain_of(&domain)?, site, &fixed(wallet, "wallet")?).to_vec())
+}
+
+/// An Ethereum signature in its canonical spelling: 65 bytes, low s, `v` in {27, 28}.
+#[wasm_bindgen(js_name = normalizeEthSignature)]
+pub fn normalize_eth_signature(signature: &[u8]) -> JsResult<Vec<u8>> {
+  Ok(crate::wallet_key::normalize_eth_signature(signature).map_err(err)?.to_vec())
 }
 
 // ---------------------------------------------------------------- reference model (SPEC 3)

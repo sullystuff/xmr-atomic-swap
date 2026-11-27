@@ -10,7 +10,7 @@ use crate::{
 pub const EIP712_NAME: &str = "XmrAtomicSwap";
 pub const EIP712_VERSION: &str = "1";
 pub const DOMAIN_TYPE: &str = "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)";
-pub const QUOTE_TYPE: &str = "Quote(address maker,address taker,address token,uint8 direction,uint8 approvalMode,uint64 minXmr,uint64 maxXmr,uint64[3] tierXmr,uint256[3] tierPrice,uint64[3] depthXmr,uint8[3] depth,uint16 depositBps,uint32 approvalWindow,uint32 noticeWindow,uint32 claimDelay,uint32 claimWindow,uint32 finalWindow,uint64 validUntil,uint32 epoch,bytes32 keyRoot,uint64 quoteId)";
+pub const QUOTE_TYPE: &str = "Quote(address maker,address taker,address token,uint8 direction,uint8 approvalMode,uint64 minXmr,uint64 maxXmr,uint64[3] tierXmr,uint256[3] tierPrice,uint64[3] depthXmr,uint8[3] depth,uint16 depositBps,uint32 approvalWindow,uint32 noticeWindow,uint32 claimDelay,uint32 claimWindow,uint32 finalWindow,uint64 validUntil,uint32 epoch,bytes32 keyRoot,uint64 quoteId,uint32 freezeWindow)";
 pub const APPROVAL_TYPE: &str = "Approval(address maker,address taker,address token,uint8 direction,uint64 maxXmr,uint64 notBefore,uint64 validUntil,uint32 epoch,bytes32 approvalId)";
 
 /// `token` wildcard in an `Approval`.
@@ -18,7 +18,7 @@ pub const ANY_TOKEN: [u8; 20] = [0xff; 20];
 /// `direction` wildcard in an `Approval`.
 pub const ANY_DIRECTION: u8 = 255;
 /// Compact quote without the signature.
-pub const COMPACT_QUOTE_LEN: usize = 251;
+pub const COMPACT_QUOTE_LEN: usize = 255;
 pub const ETH_SIG_LEN: usize = 65;
 /// Compact quote followed by its 65-byte signature.
 pub const COMPACT_QUOTE_SIGNED_LEN: usize = COMPACT_QUOTE_LEN + ETH_SIG_LEN;
@@ -61,6 +61,9 @@ pub struct EthQuote {
   pub epoch: u32,
   pub key_root: [u8; 32],
   pub quote_id: u64,
+  /// `W_z` (SPEC 11.6); 0 = no watcher accepted. The last field of the struct, of the type
+  /// string and of the compact form.
+  pub freeze_window: u32,
 }
 
 /// The signed Ethereum advance approval.
@@ -136,6 +139,7 @@ pub fn quote_struct_hash(q: &EthQuote) -> [u8; 32] {
     &word_u(q.epoch as u128),
     &q.key_root,
     &word_u(q.quote_id as u128),
+    &word_u(q.freeze_window as u128),
   ])
 }
 
@@ -166,8 +170,8 @@ pub fn approval_digest(d: &Eip712Domain, a: &EthApproval) -> [u8; 32] {
 }
 
 /// `encodeEthQuoteCompact(fields)`: the struct fields in order, little-endian, `address` as 20
-/// bytes, prices as `u128`: 251 bytes. Dynamic fields: `tierPrice` at 102..150, `validUntil` at
-/// 199..207, `quoteId` at 243..251.
+/// bytes, prices as `u128`: 255 bytes. Dynamic fields: `tierPrice` at 102..150, `validUntil` at
+/// 199..207, `quoteId` at 243..251; `freezeWindow` (Amendment 1) at 251..255.
 pub fn encode_eth_quote_compact(q: &EthQuote) -> [u8; COMPACT_QUOTE_LEN] {
   let mut v = Vec::with_capacity(COMPACT_QUOTE_LEN);
   v.extend_from_slice(&q.maker);
@@ -195,7 +199,8 @@ pub fn encode_eth_quote_compact(q: &EthQuote) -> [u8; COMPACT_QUOTE_LEN] {
   v.extend_from_slice(&q.epoch.to_le_bytes());
   v.extend_from_slice(&q.key_root);
   v.extend_from_slice(&q.quote_id.to_le_bytes());
-  v.try_into().expect("251 bytes")
+  v.extend_from_slice(&q.freeze_window.to_le_bytes());
+  v.try_into().expect("255 bytes")
 }
 
 /// The compact form followed by the 65-byte signature, as stored in an `EthBoard` slot pair.
@@ -206,7 +211,7 @@ pub fn encode_eth_quote_compact_signed(q: &EthQuote, sig: &[u8; ETH_SIG_LEN]) ->
   out
 }
 
-/// `decodeEthQuoteCompact(bytes)`: accepts 251 bytes (no signature) or 316 (with one).
+/// `decodeEthQuoteCompact(bytes)`: accepts 255 bytes (no signature) or 320 (with one).
 pub fn decode_eth_quote_compact(b: &[u8]) -> Result<(EthQuote, Option<[u8; ETH_SIG_LEN]>)> {
   if b.len() != COMPACT_QUOTE_LEN && b.len() != COMPACT_QUOTE_SIGNED_LEN {
     return Err(Error::BadLength);
@@ -244,6 +249,7 @@ pub fn decode_eth_quote_compact(b: &[u8]) -> Result<(EthQuote, Option<[u8; ETH_S
   let epoch = u32le(take(4));
   let key_root: [u8; 32] = take(32).try_into().unwrap();
   let quote_id = u64le(take(8));
+  let freeze_window = u32le(take(4));
   let sig = (b.len() == COMPACT_QUOTE_SIGNED_LEN).then(|| take(ETH_SIG_LEN).try_into().unwrap());
   Ok((
     EthQuote {
@@ -268,6 +274,7 @@ pub fn decode_eth_quote_compact(b: &[u8]) -> Result<(EthQuote, Option<[u8; ETH_S
       epoch,
       key_root,
       quote_id,
+      freeze_window,
     },
     sig,
   ))
@@ -297,6 +304,10 @@ pub struct OpenHashEthereumInput {
   pub taker_enc_key: [u8; 32],
   pub maker_enc_key: [u8; 32],
   pub key_leaf: [u8; 32],
+  /// SPEC 11.2: the `payout` argument of `take`; the zero address in direction A.
+  pub payout: [u8; 20],
+  /// SPEC 11.6: the `watcher` argument of `lock`; zero when none, and zero in direction B.
+  pub watcher: [u8; 20],
 }
 
 /// `openHashEthereum(fields)`:
@@ -304,7 +315,8 @@ pub struct OpenHashEthereumInput {
 /// ```text
 /// sha256( abi.encodePacked( "xmrswap/v1/open", bytes1(0), swapId, uint64 tLock, uint8 direction, address token,
 ///         uint64 xmr, uint256 amount, uint256 deposit, bytes32 takerSpendPub, address takerKey, address takerKey2,
-///         bytes32 takerView, bytes32 takerEncKey, bytes32 makerEncKey, bytes32 keyLeaf ) )
+///         bytes32 takerView, bytes32 takerEncKey, bytes32 makerEncKey, bytes32 keyLeaf,
+///         address payout, address watcher ) )
 /// ```
 pub fn open_hash_ethereum(o: &OpenHashEthereumInput) -> [u8; 32] {
   sha256(&[
@@ -324,6 +336,8 @@ pub fn open_hash_ethereum(o: &OpenHashEthereumInput) -> [u8; 32] {
     &o.taker_enc_key,
     &o.maker_enc_key,
     &o.key_leaf,
+    &o.payout,
+    &o.watcher,
   ])
 }
 
@@ -370,6 +384,7 @@ pub(crate) mod tests {
       epoch: 3,
       key_root: [0xab; 32],
       quote_id: 42,
+      freeze_window: 86_400,
     }
   }
   pub(crate) fn sample_domain() -> Eip712Domain {
@@ -380,7 +395,7 @@ pub(crate) mod tests {
   fn type_hashes() {
     // Independent values: `cast keccak "<type string>"`.
     assert_eq!(hex::encode(keccak256(&[DOMAIN_TYPE.as_bytes()])), "8b73c3c69bb8fe3d512ecc4cf759cc79239f7b179b0ffacaa9a75d522b39400f");
-    assert_eq!(hex::encode(quote_type_hash()), "bbaa88f19d79db179edb8c0e0e584639d3b44fd19bfe90f15bafc1b883ce2712");
+    assert_eq!(hex::encode(quote_type_hash()), "437d6c8f35b49f337029753c191dddc397d9a50cdb809108aa224041acc17c28");
     assert_eq!(hex::encode(approval_type_hash()), "6a011fedd9a048a0d601d9ffb67283b6b706782fc0291875b93d3521c799de3f");
   }
 
@@ -394,7 +409,7 @@ pub(crate) mod tests {
   fn compact_layout_and_round_trip() {
     let q = sample_quote();
     let c = encode_eth_quote_compact(&q);
-    assert_eq!(c.len(), 251);
+    assert_eq!(c.len(), 255);
     // Offsets frozen in SPEC 4.2 (EthBoard).
     assert_eq!(&c[..20], &[0x11; 20]);
     assert_eq!(c[60], 0);
@@ -408,10 +423,16 @@ pub(crate) mod tests {
     assert_eq!(&c[207..211], &3u32.to_le_bytes());
     assert_eq!(&c[211..243], &[0xab; 32]);
     assert_eq!(&c[243..251], &42u64.to_le_bytes());
+    // Amendment 1: the freeze window is appended; no earlier offset moves.
+    assert_eq!(&c[251..255], &86_400u32.to_le_bytes());
     assert_eq!(decode_eth_quote_compact(&c).unwrap(), (q.clone(), None));
     let signed = encode_eth_quote_compact_signed(&q, &[7u8; 65]);
     assert_eq!(decode_eth_quote_compact(&signed).unwrap(), (q, Some([7u8; 65])));
-    assert_eq!(decode_eth_quote_compact(&c[..250]), Err(Error::BadLength));
+    assert_eq!(signed.len(), 320);
+    assert_eq!(decode_eth_quote_compact(&c[..254]), Err(Error::BadLength));
+    // The pre-amendment lengths are refused.
+    assert_eq!(decode_eth_quote_compact(&c[..251]), Err(Error::BadLength));
+    assert_eq!(decode_eth_quote_compact(&signed[..316]), Err(Error::BadLength));
     assert_eq!(decode_eth_quote_compact(&signed[..300]), Err(Error::BadLength));
   }
 
@@ -420,7 +441,7 @@ pub(crate) mod tests {
     let d = sample_domain();
     let q = sample_quote();
     let base = quote_digest(&d, &q);
-    let muts: [&dyn Fn(&mut EthQuote); 21] = [
+    let muts: [&dyn Fn(&mut EthQuote); 22] = [
       &|q| q.maker[0] ^= 1,
       &|q| q.taker[0] ^= 1,
       &|q| q.token[0] ^= 1,
@@ -442,6 +463,7 @@ pub(crate) mod tests {
       &|q| q.epoch += 1,
       &|q| q.key_root[0] ^= 1,
       &|q| q.quote_id += 1,
+      &|q| q.freeze_window += 1,
     ];
     for f in muts {
       let mut m = q.clone();
@@ -521,9 +543,11 @@ pub(crate) mod tests {
       taker_enc_key: [5; 32],
       maker_enc_key: [6; 32],
       key_leaf: [7; 32],
+      payout: [8; 20],
+      watcher: [9; 20],
     };
     let h = open_hash_ethereum(&o);
-    // Packed length: 15 + 1 + 32 + 8 + 1 + 20 + 8 + 32 + 32 + 32 + 20 + 20 + 32×4.
+    // Packed length: 15 + 1 + 32 + 8 + 1 + 20 + 8 + 32 + 32 + 32 + 20 + 20 + 32×4 + 20 + 20.
     let mut pre = b"xmrswap/v1/open\0".to_vec();
     pre.extend_from_slice(&id);
     pre.extend_from_slice(&1_800_000_000u64.to_be_bytes());
@@ -538,8 +562,15 @@ pub(crate) mod tests {
     for b in [4u8, 5, 6, 7] {
       pre.extend_from_slice(&[b; 32]);
     }
-    assert_eq!(pre.len(), 16 + 32 + 8 + 1 + 20 + 8 + 64 + 32 + 40 + 128);
+    pre.extend_from_slice(&[8; 20]);
+    pre.extend_from_slice(&[9; 20]);
+    assert_eq!(pre.len(), 16 + 32 + 8 + 1 + 20 + 8 + 64 + 32 + 40 + 128 + 40);
     assert_eq!(h, sha256(&[&pre]));
+    for f in [(|o: &mut OpenHashEthereumInput| o.payout[0] ^= 1) as fn(&mut OpenHashEthereumInput), |o| o.watcher[0] ^= 1] {
+      let mut m = o.clone();
+      f(&mut m);
+      assert_ne!(open_hash_ethereum(&m), h);
+    }
     let mut o2 = o.clone();
     o2.key_leaf[0] ^= 1;
     assert_ne!(open_hash_ethereum(&o2), h);

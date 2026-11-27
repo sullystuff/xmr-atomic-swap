@@ -3,7 +3,7 @@
 # toolchain's cargo 1.84, LiteSVM 0.16.0 on Agave 4.2.2, and the core crate on neither.
 [workspace]
 resolver = "2"
-members = ["crates/swap-core"]
+members = ["crates/escrow-logic", "crates/swap-core"]
 exclude = ["solana/program", "solana/tests", "tools/svm-rpc", "docs/research/prototypes"]
 
 # Tests run the cross-curve proof and scrypt; unoptimised dependencies make them minutes long.
@@ -15,3 +15,10 @@ opt-level = "s"
 lto = true
 codegen-units = 1
 strip = "debuginfo"
+
+# Kani (SPEC 11.4): `cargo kani -p escrow-logic && cargo kani -p swap-core`. The proof harnesses
+# replace `fee_of`/`deposit_of` by their proven contracts in the state-machine proofs, which
+# needs Kani's stubbing feature. Version and results: crates/escrow-logic/KANI.md.
+[workspace.metadata.kani.unstable]
+stubbing = true
+

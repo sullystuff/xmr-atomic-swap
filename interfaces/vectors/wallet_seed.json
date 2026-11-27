@@ -1,0 +1,277 @@
+{
+  "cases": [
+    {
+      "input": {
+        "chain_tag": 1,
+        "signature": "a50f670004472deb0f868ec6c83b8af3a5b273d393c62f8de9de303d3b527bb4bc0e01baf3054de5fdbd2e56115485d063dd823125ea26228389db9314982504",
+        "wallet": "a3233d02378f6bd3058a30477310a78d1dc0fafa7176f7c985451a2892cab8b0"
+      },
+      "message": {
+        "bytes": "5369676e2074686973206f6e6c79206f6e20737761702e6578616d706c6520746f20756e6c6f636b20796f757220584d522073776170206b6579732e0a416e796f6e652077686f20676574732074686973207369676e61747572652063616e2074616b6520584d5220796f752068617665206e6f7420636f6c6c656374656420616e6420616374206f6e20796f7572206f70656e2073776170732e0a0a786d72737761702077616c6c6574206b65792076310a636c75737465723a20396e356d3572764b59556f4c664b4a383843365976666e3637786233685276446a56595975507274446938660a70726f6772616d3a20364654705a43686d6534317048324246637372417563324c76553845684e38375739734d72517844373454430a77616c6c65743a2042797063776276536635504a3151636755694e6a32536f536e3666613270613559573633425635577857484d",
+        "genesis_hash": "826a03984a87f53a60e20b733b9c865034f45f4a6b267bb29b4de016723524b0",
+        "genesis_hash_base58": "9n5m5rvKYUoLfKJ88C6Yvfn67xb3hRvDjVYYuPrtDi8f",
+        "program_id": "4dfee42e982daf2ea3098fea06dc7291c26a2d417928c1967d1298d75905ceab",
+        "program_id_base58": "6FTpZChme41pH2BFcsrAuc2LvU8EhN87W9sMrQxD74TC",
+        "site": "swap.example",
+        "text": "Sign this only on swap.example to unlock your XMR swap keys.\nAnyone who gets this signature can take XMR you have not collected and act on your open swaps.\n\nxmrswap wallet key v1\ncluster: 9n5m5rvKYUoLfKJ88C6Yvfn67xb3hRvDjVYYuPrtDi8f\nprogram: 6FTpZChme41pH2BFcsrAuc2LvU8EhN87W9sMrQxD74TC\nwallet: BypcwbvSf5PJ1QcgUiNj2SoSn6fa2pa5YW63BV5WxWHM",
+        "wallet_base58": "BypcwbvSf5PJ1QcgUiNj2SoSn6fa2pa5YW63BV5WxWHM",
+        "wallet_private_seed": "3e6969088138a312ebcab971c159931c0bd09084a0de71a0ca95c2a5a6b33643"
+      },
+      "name": "solana",
+      "output": {
+        "seed": "f7ea67fe2a3929e0fb42abeac4b42eb204416adffb4f8a3cfafc3d70466a3beb",
+        "spend_pub": "4a69a243f019ab5652f449255db3e0868e75fbf8126ecc7c05071501931d1644",
+        "swap_nonce": "c1f8e31a58080bb8be15be3d06af754a"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain_tag": 1,
+        "signature": "a50f670004472deb0f868ec6c83b8af3a5b273d393c62f8de9de303d3b527bb4bc0e01baf3054de5fdbd2e56115485d063dd823125ea26228389db9314982504",
+        "wallet": "1a36f87fcc18054d6e4304f3e18f30f48175c1b2ab282f19091d3192e6e66425"
+      },
+      "name": "solana-another-wallet-address",
+      "output": {
+        "seed": "55880a8e91d19a75624e0b7ca1d7e4221918c4c1423b29c63ac72491400d2347",
+        "spend_pub": "47d15567feb93fd11bcae329752b8851ebe2069bacbef1ad858850d7e403ea81",
+        "swap_nonce": "c1f8e31a58080bb8be15be3d06af754a"
+      },
+      "valid": true
+    },
+    {
+      "error": "BadLength",
+      "input": {
+        "chain_tag": 1,
+        "signature": "a50f670004472deb0f868ec6c83b8af3a5b273d393c62f8de9de303d3b527bb4bc0e01baf3054de5fdbd2e56115485d063dd823125ea26228389db93149825",
+        "wallet": "a3233d02378f6bd3058a30477310a78d1dc0fafa7176f7c985451a2892cab8b0"
+      },
+      "name": "solana-signature-63-bytes",
+      "valid": false
+    },
+    {
+      "error": "BadLength",
+      "input": {
+        "chain_tag": 1,
+        "signature": "a50f670004472deb0f868ec6c83b8af3a5b273d393c62f8de9de303d3b527bb4bc0e01baf3054de5fdbd2e56115485d063dd823125ea26228389db931498250400",
+        "wallet": "a3233d02378f6bd3058a30477310a78d1dc0fafa7176f7c985451a2892cab8b0"
+      },
+      "name": "solana-signature-65-bytes",
+      "valid": false
+    },
+    {
+      "error": "BadLength",
+      "input": {
+        "chain_tag": 1,
+        "signature": "a50f670004472deb0f868ec6c83b8af3a5b273d393c62f8de9de303d3b527bb4bc0e01baf3054de5fdbd2e56115485d063dd823125ea26228389db9314982504",
+        "wallet": "a3233d02378f6bd3058a30477310a78d1dc0fafa"
+      },
+      "name": "solana-wallet-20-bytes",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain_tag": 2,
+        "signature": "0xacd79e1913fa86ac894d7308d1fb83ee3ce3cd316790e050d06472227e12991e28c1522fd337f583cd8d11745a082d209b11d021b21179b5cce02c31abdcaec91c",
+        "wallet": "0xa72693d2c3eaa2c2ebebcc0673f613864d64f102"
+      },
+      "message": {
+        "digest": "0x658a6436e1cabff36e9a6dc7c41b4721a346f7f148895fe752fe2dd95247221e",
+        "struct_hash": "0xa69f82b1f89fed7bd6cd28209618dea972a6ffdd52f6e4496282b3895d3daa13",
+        "typed_data": {
+          "domain": {
+            "chainId": 31337,
+            "name": "XmrAtomicSwap",
+            "verifyingContract": "0xe7501885e3c726ef74694299b7cd49d65e8ed897",
+            "version": "1"
+          },
+          "message": {
+            "keyVersion": 1,
+            "notice": "Sign this only on the site named below. Anyone who gets this signature can take XMR you have not collected and act on your open swaps.",
+            "site": "swap.example",
+            "wallet": "0xa72693d2c3eaa2c2ebebcc0673f613864d64f102"
+          },
+          "primaryType": "WalletKey",
+          "types": {
+            "EIP712Domain": [
+              {
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "name": "version",
+                "type": "string"
+              },
+              {
+                "name": "chainId",
+                "type": "uint256"
+              },
+              {
+                "name": "verifyingContract",
+                "type": "address"
+              }
+            ],
+            "WalletKey": [
+              {
+                "name": "notice",
+                "type": "string"
+              },
+              {
+                "name": "site",
+                "type": "string"
+              },
+              {
+                "name": "keyVersion",
+                "type": "uint32"
+              },
+              {
+                "name": "wallet",
+                "type": "address"
+              }
+            ]
+          }
+        },
+        "wallet_private_key": "0x0ab0055041c6e680e9dd3f6f11437b439a4190056daf1353cdeefe307c6a050c"
+      },
+      "name": "ethereum",
+      "output": {
+        "normalised_signature": "0xacd79e1913fa86ac894d7308d1fb83ee3ce3cd316790e050d06472227e12991e28c1522fd337f583cd8d11745a082d209b11d021b21179b5cce02c31abdcaec91c",
+        "seed": "57ddebcec744517298a64a4956a10df7ace583a8dbb6ff031ceaa33f58a8b7b3",
+        "spend_pub": "f13a702aa3939ab5ff8a244db15198d32846cebf6b37160d9da068e4caa5018a",
+        "swap_nonce": "c1f8e31a58080bb8be15be3d06af754a"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain_tag": 2,
+        "signature": "0xacd79e1913fa86ac894d7308d1fb83ee3ce3cd316790e050d06472227e12991ed73eadd02cc80a7c3272ee8ba5f7d2de1f9d0cc4fd372685f2f2325b245992781b",
+        "wallet": "0xa72693d2c3eaa2c2ebebcc0673f613864d64f102"
+      },
+      "name": "ethereum-high-s-normalised",
+      "output": {
+        "normalised_signature": "0xacd79e1913fa86ac894d7308d1fb83ee3ce3cd316790e050d06472227e12991e28c1522fd337f583cd8d11745a082d209b11d021b21179b5cce02c31abdcaec91c",
+        "seed": "57ddebcec744517298a64a4956a10df7ace583a8dbb6ff031ceaa33f58a8b7b3",
+        "spend_pub": "f13a702aa3939ab5ff8a244db15198d32846cebf6b37160d9da068e4caa5018a",
+        "swap_nonce": "c1f8e31a58080bb8be15be3d06af754a"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain_tag": 2,
+        "signature": "0xacd79e1913fa86ac894d7308d1fb83ee3ce3cd316790e050d06472227e12991e28c1522fd337f583cd8d11745a082d209b11d021b21179b5cce02c31abdcaec901",
+        "wallet": "0xa72693d2c3eaa2c2ebebcc0673f613864d64f102"
+      },
+      "name": "ethereum-v-zero-or-one",
+      "output": {
+        "normalised_signature": "0xacd79e1913fa86ac894d7308d1fb83ee3ce3cd316790e050d06472227e12991e28c1522fd337f583cd8d11745a082d209b11d021b21179b5cce02c31abdcaec91c",
+        "seed": "57ddebcec744517298a64a4956a10df7ace583a8dbb6ff031ceaa33f58a8b7b3",
+        "spend_pub": "f13a702aa3939ab5ff8a244db15198d32846cebf6b37160d9da068e4caa5018a",
+        "swap_nonce": "c1f8e31a58080bb8be15be3d06af754a"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain_tag": 2,
+        "signature": "0xacd79e1913fa86ac894d7308d1fb83ee3ce3cd316790e050d06472227e12991ed73eadd02cc80a7c3272ee8ba5f7d2de1f9d0cc4fd372685f2f2325b2459927800",
+        "wallet": "0xa72693d2c3eaa2c2ebebcc0673f613864d64f102"
+      },
+      "name": "ethereum-high-s-and-v-zero-or-one",
+      "output": {
+        "normalised_signature": "0xacd79e1913fa86ac894d7308d1fb83ee3ce3cd316790e050d06472227e12991e28c1522fd337f583cd8d11745a082d209b11d021b21179b5cce02c31abdcaec91c",
+        "seed": "57ddebcec744517298a64a4956a10df7ace583a8dbb6ff031ceaa33f58a8b7b3",
+        "spend_pub": "f13a702aa3939ab5ff8a244db15198d32846cebf6b37160d9da068e4caa5018a",
+        "swap_nonce": "c1f8e31a58080bb8be15be3d06af754a"
+      },
+      "valid": true
+    },
+    {
+      "error": "SignatureInvalid",
+      "input": {
+        "chain_tag": 2,
+        "signature": "0xacd79e1913fa86ac894d7308d1fb83ee3ce3cd316790e050d06472227e12991e28c1522fd337f583cd8d11745a082d209b11d021b21179b5cce02c31abdcaec91d",
+        "wallet": "0xa72693d2c3eaa2c2ebebcc0673f613864d64f102"
+      },
+      "name": "ethereum-v-29",
+      "valid": false
+    },
+    {
+      "error": "SignatureInvalid",
+      "input": {
+        "chain_tag": 2,
+        "signature": "0xacd79e1913fa86ac894d7308d1fb83ee3ce3cd316790e050d06472227e12991e00000000000000000000000000000000000000000000000000000000000000001c",
+        "wallet": "0xa72693d2c3eaa2c2ebebcc0673f613864d64f102"
+      },
+      "name": "ethereum-s-zero",
+      "valid": false
+    },
+    {
+      "error": "SignatureInvalid",
+      "input": {
+        "chain_tag": 2,
+        "signature": "0xacd79e1913fa86ac894d7308d1fb83ee3ce3cd316790e050d06472227e12991effffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff1c",
+        "wallet": "0xa72693d2c3eaa2c2ebebcc0673f613864d64f102"
+      },
+      "name": "ethereum-s-above-the-group-order",
+      "valid": false
+    },
+    {
+      "error": "SignatureInvalid",
+      "input": {
+        "chain_tag": 2,
+        "signature": "0x000000000000000000000000000000000000000000000000000000000000000028c1522fd337f583cd8d11745a082d209b11d021b21179b5cce02c31abdcaec91c",
+        "wallet": "0xa72693d2c3eaa2c2ebebcc0673f613864d64f102"
+      },
+      "name": "ethereum-r-zero",
+      "valid": false
+    },
+    {
+      "error": "BadLength",
+      "input": {
+        "chain_tag": 2,
+        "signature": "0xacd79e1913fa86ac894d7308d1fb83ee3ce3cd316790e050d06472227e12991e28c1522fd337f583cd8d11745a082d209b11d021b21179b5cce02c31abdcaec9",
+        "wallet": "0xa72693d2c3eaa2c2ebebcc0673f613864d64f102"
+      },
+      "name": "ethereum-signature-64-bytes",
+      "valid": false
+    },
+    {
+      "error": "BadLength",
+      "input": {
+        "chain_tag": 2,
+        "signature": "0xacd79e1913fa86ac894d7308d1fb83ee3ce3cd316790e050d06472227e12991e28c1522fd337f583cd8d11745a082d209b11d021b21179b5cce02c31abdcaec91c",
+        "wallet": "0x1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "name": "ethereum-wallet-32-bytes",
+      "valid": false
+    },
+    {
+      "error": "UnknownChainTag",
+      "input": {
+        "chain_tag": 3,
+        "signature": "0xacd79e1913fa86ac894d7308d1fb83ee3ce3cd316790e050d06472227e12991e28c1522fd337f583cd8d11745a082d209b11d021b21179b5cce02c31abdcaec91c",
+        "wallet": "0xa72693d2c3eaa2c2ebebcc0673f613864d64f102"
+      },
+      "name": "unknown-chain-tag",
+      "valid": false
+    }
+  ],
+  "derivation": "seed = HKDF-SHA256(ikm = sig, salt = \"xmrswap/v1/wallet-seed\" || 0x00, info = chain_tag (1 byte) || wallet address bytes, L = 32). sig: Solana, the 64 signature bytes; Ethereum, r || s || v (65 bytes) with s in the low half and v in {27, 28}",
+  "domain": {
+    "chainId": 31337,
+    "name": "XmrAtomicSwap",
+    "verifyingContract": "0xe7501885e3c726ef74694299b7cd49d65e8ed897",
+    "version": "1"
+  },
+  "format": "xmrswap-vectors/1",
+  "key_version": 1,
+  "site": "swap.example",
+  "site_note": "a stand-in for WALLET_KEY_SITE of @xmrswap/protocol; only the `message` objects depend on it",
+  "spend_pub": "derive_keys(seed, chain_tag, share_id = swap_nonce).spend_pub: what a returning user compares with the commitment stored in its swap",
+  "suite": "wallet_seed",
+  "wallet_key_notice": "Sign this only on the site named below. Anyone who gets this signature can take XMR you have not collected and act on your open swaps.",
+  "wallet_key_type": "WalletKey(string notice,string site,uint32 keyVersion,address wallet)",
+  "wallet_key_type_hash": "0xe3bb51695f7fa67cd15b598258d02602f44de8b18d0f0f8422e917f8981f4a08"
+}

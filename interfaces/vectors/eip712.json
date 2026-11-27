@@ -32,6 +32,7 @@
             "direction": 0,
             "epoch": 3,
             "finalWindow": 604800,
+            "freezeWindow": 0,
             "keyRoot": "0x7a9de06df5f005c5a4303ba0b53f39ee536296d3d55d06abaeec08c690d28dee",
             "maker": "0x0fbfe9b14731dddd51b145d6b23104e8bf7f676b",
             "maxXmr": "100000000000000",
@@ -156,6 +157,10 @@
               {
                 "name": "quoteId",
                 "type": "uint64"
+              },
+              {
+                "name": "freezeWindow",
+                "type": "uint32"
               }
             ]
           }
@@ -163,12 +168,12 @@
       },
       "name": "quote-public-eth-a",
       "output": {
-        "compact": "0fbfe9b14731dddd51b145d6b23104e8bf7f676b00000000000000000000000000000000000000000000000000000000000000000000000000000000000000e876481700000000407a10f35a000000000000000000000010a5d4e800000000203d88792d000000804c432db7d80000000000000000000040e9f06df0d60000000000000000000000869eae29d500000000000000000000000000000000000010a5d4e800000000203d88792d0000020a1964007800000008070000302a000018150000803a090096d2496b00000000030000007a9de06df5f005c5a4303ba0b53f39ee536296d3d55d06abaeec08c690d28dee2a00000000000000",
-        "compact_signed": "0fbfe9b14731dddd51b145d6b23104e8bf7f676b00000000000000000000000000000000000000000000000000000000000000000000000000000000000000e876481700000000407a10f35a000000000000000000000010a5d4e800000000203d88792d000000804c432db7d80000000000000000000040e9f06df0d60000000000000000000000869eae29d500000000000000000000000000000000000010a5d4e800000000203d88792d0000020a1964007800000008070000302a000018150000803a090096d2496b00000000030000007a9de06df5f005c5a4303ba0b53f39ee536296d3d55d06abaeec08c690d28dee2a0000000000000056267b96fbc59394d89d971cfe78f5eb99e452b2be4c0906d9227daa5a6ef902061e7afd3c65a2eaad97e42e95c2b825e6ed1cd64777e5cd6b019c2db00a5e5a1b",
-        "digest": "0x950ee417e3d45f6ccb2d92c58a98fae8d20803022d552d06ff9eaf79c64667ac",
-        "signature": "0x56267b96fbc59394d89d971cfe78f5eb99e452b2be4c0906d9227daa5a6ef902061e7afd3c65a2eaad97e42e95c2b825e6ed1cd64777e5cd6b019c2db00a5e5a1b",
+        "compact": "0fbfe9b14731dddd51b145d6b23104e8bf7f676b00000000000000000000000000000000000000000000000000000000000000000000000000000000000000e876481700000000407a10f35a000000000000000000000010a5d4e800000000203d88792d000000804c432db7d80000000000000000000040e9f06df0d60000000000000000000000869eae29d500000000000000000000000000000000000010a5d4e800000000203d88792d0000020a1964007800000008070000302a000018150000803a090096d2496b00000000030000007a9de06df5f005c5a4303ba0b53f39ee536296d3d55d06abaeec08c690d28dee2a0000000000000000000000",
+        "compact_signed": "0fbfe9b14731dddd51b145d6b23104e8bf7f676b00000000000000000000000000000000000000000000000000000000000000000000000000000000000000e876481700000000407a10f35a000000000000000000000010a5d4e800000000203d88792d000000804c432db7d80000000000000000000040e9f06df0d60000000000000000000000869eae29d500000000000000000000000000000000000010a5d4e800000000203d88792d0000020a1964007800000008070000302a000018150000803a090096d2496b00000000030000007a9de06df5f005c5a4303ba0b53f39ee536296d3d55d06abaeec08c690d28dee2a0000000000000000000000cb09596c669183a33e643665e0317713880ee7a98f1d658440284e5392495b33715b9d1f178deacba72dd239a51fdcc47eae6148d233fe3e94f2f3dc859413ec1c",
+        "digest": "0xbcbb74449e4f5e17ba510f31018f3ece2b22129944950afe400c0fd0784b8a7b",
+        "signature": "0xcb09596c669183a33e643665e0317713880ee7a98f1d658440284e5392495b33715b9d1f178deacba72dd239a51fdcc47eae6148d233fe3e94f2f3dc859413ec1c",
         "signer": "0x19e76488e19f8ea6a4d6d87c28ff9080352ea347",
-        "struct_hash": "0x83abc536f659bc92b9dba08aecc507690d593337e870b281d097c18cec6a3507"
+        "struct_hash": "0x9fd7014ac500fd0eb0240f4349fb1253a8159df4f26c580ad24d2d35cf6394fc"
       },
       "valid": true
     },
@@ -200,6 +205,7 @@
             "direction": 0,
             "epoch": 3,
             "finalWindow": 604800,
+            "freezeWindow": 0,
             "keyRoot": "0x7a9de06df5f005c5a4303ba0b53f39ee536296d3d55d06abaeec08c690d28dee",
             "maker": "0x0fbfe9b14731dddd51b145d6b23104e8bf7f676b",
             "maxXmr": "100000000000000",
@@ -324,6 +330,10 @@
               {
                 "name": "quoteId",
                 "type": "uint64"
+              },
+              {
+                "name": "freezeWindow",
+                "type": "uint32"
               }
             ]
           }
@@ -331,12 +341,12 @@
       },
       "name": "quote-bound-usdc-a",
       "output": {
-        "compact": "0fbfe9b14731dddd51b145d6b23104e8bf7f676b0f8183aefdf068dd8489b6edbf4e07965cf29246f9ab76450f884b429b2c128ac26fca8c2efdd5f5000100e876481700000000407a10f35a0000000000000000000000000000000000000000000000000000d083d909000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000019000064007800000008070000302a000018150000803a090096d2496b00000000030000007a9de06df5f005c5a4303ba0b53f39ee536296d3d55d06abaeec08c690d28dee2b00000000000000",
-        "compact_signed": "0fbfe9b14731dddd51b145d6b23104e8bf7f676b0f8183aefdf068dd8489b6edbf4e07965cf29246f9ab76450f884b429b2c128ac26fca8c2efdd5f5000100e876481700000000407a10f35a0000000000000000000000000000000000000000000000000000d083d909000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000019000064007800000008070000302a000018150000803a090096d2496b00000000030000007a9de06df5f005c5a4303ba0b53f39ee536296d3d55d06abaeec08c690d28dee2b00000000000000586e1ba8d4b082d0fdbc2501f3a7010d7108a801a07b70e9dd7392ef235f2e866a434c537e36168804138b3b408e46d9f18521255dca432a3723c524a2d3db711b",
-        "digest": "0xb43714b03492641416a4d413ff9a10971f8903a936ae3c1f743f2466094de5ed",
-        "signature": "0x586e1ba8d4b082d0fdbc2501f3a7010d7108a801a07b70e9dd7392ef235f2e866a434c537e36168804138b3b408e46d9f18521255dca432a3723c524a2d3db711b",
+        "compact": "0fbfe9b14731dddd51b145d6b23104e8bf7f676b0f8183aefdf068dd8489b6edbf4e07965cf29246f9ab76450f884b429b2c128ac26fca8c2efdd5f5000100e876481700000000407a10f35a0000000000000000000000000000000000000000000000000000d083d909000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000019000064007800000008070000302a000018150000803a090096d2496b00000000030000007a9de06df5f005c5a4303ba0b53f39ee536296d3d55d06abaeec08c690d28dee2b0000000000000000000000",
+        "compact_signed": "0fbfe9b14731dddd51b145d6b23104e8bf7f676b0f8183aefdf068dd8489b6edbf4e07965cf29246f9ab76450f884b429b2c128ac26fca8c2efdd5f5000100e876481700000000407a10f35a0000000000000000000000000000000000000000000000000000d083d909000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000019000064007800000008070000302a000018150000803a090096d2496b00000000030000007a9de06df5f005c5a4303ba0b53f39ee536296d3d55d06abaeec08c690d28dee2b0000000000000000000000626ae130d179dfdcfcef4901111f075a4727358db2fcbe1a4cd17e02c0c8fe6608ee376f04bebff9b3059338b5fdcab831acb5792c6ee3cf2bbc91481dc4fb621b",
+        "digest": "0x09b6af9e69d8efd27c53820d1a7550f2ccc6f81517844c649c151458e2e17eff",
+        "signature": "0x626ae130d179dfdcfcef4901111f075a4727358db2fcbe1a4cd17e02c0c8fe6608ee376f04bebff9b3059338b5fdcab831acb5792c6ee3cf2bbc91481dc4fb621b",
         "signer": "0x19e76488e19f8ea6a4d6d87c28ff9080352ea347",
-        "struct_hash": "0x97d687ed204d8d087684bb0b4a7358291a77d5ffdeb0f0c918d2b8aa91469916"
+        "struct_hash": "0xbc4654f371c004dccb7561b6483be55d87919e0aef2e9d46d75e946d031788d5"
       },
       "valid": true
     },
@@ -368,6 +378,7 @@
             "direction": 1,
             "epoch": 3,
             "finalWindow": 604800,
+            "freezeWindow": 0,
             "keyRoot": "0x0000000000000000000000000000000000000000000000000000000000000000",
             "maker": "0x0fbfe9b14731dddd51b145d6b23104e8bf7f676b",
             "maxXmr": "100000000000000",
@@ -492,6 +503,10 @@
               {
                 "name": "quoteId",
                 "type": "uint64"
+              },
+              {
+                "name": "freezeWindow",
+                "type": "uint32"
               }
             ]
           }
@@ -499,12 +514,358 @@
       },
       "name": "quote-public-eth-b",
       "output": {
-        "compact": "0fbfe9b14731dddd51b145d6b23104e8bf7f676b00000000000000000000000000000000000000000000000000000000000000000000000000000000010200e876481700000000407a10f35a000000000000000000000010a5d4e800000000203d88792d000000804c432db7d80000000000000000000040e9f06df0d60000000000000000000000869eae29d500000000000000000000000000000000000010a5d4e800000000203d88792d0000020a1964007800000008070000302a000018150000803a090096d2496b000000000300000000000000000000000000000000000000000000000000000000000000000000002c00000000000000",
-        "compact_signed": "0fbfe9b14731dddd51b145d6b23104e8bf7f676b00000000000000000000000000000000000000000000000000000000000000000000000000000000010200e876481700000000407a10f35a000000000000000000000010a5d4e800000000203d88792d000000804c432db7d80000000000000000000040e9f06df0d60000000000000000000000869eae29d500000000000000000000000000000000000010a5d4e800000000203d88792d0000020a1964007800000008070000302a000018150000803a090096d2496b000000000300000000000000000000000000000000000000000000000000000000000000000000002c0000000000000056ddaadcbd9f9729d96d098b077cf62c03f6b00a57c4116fa280c8e46f3e60341fed014c46ac1f345af3a1d1e9404f21ed1e7beb7e1a244b80d562f1a20634561b",
-        "digest": "0xffe0c234ffc3916ac365a89992a9a27f411583665d395000e78c4d9b6a53f17d",
-        "signature": "0x56ddaadcbd9f9729d96d098b077cf62c03f6b00a57c4116fa280c8e46f3e60341fed014c46ac1f345af3a1d1e9404f21ed1e7beb7e1a244b80d562f1a20634561b",
+        "compact": "0fbfe9b14731dddd51b145d6b23104e8bf7f676b00000000000000000000000000000000000000000000000000000000000000000000000000000000010200e876481700000000407a10f35a000000000000000000000010a5d4e800000000203d88792d000000804c432db7d80000000000000000000040e9f06df0d60000000000000000000000869eae29d500000000000000000000000000000000000010a5d4e800000000203d88792d0000020a1964007800000008070000302a000018150000803a090096d2496b000000000300000000000000000000000000000000000000000000000000000000000000000000002c0000000000000000000000",
+        "compact_signed": "0fbfe9b14731dddd51b145d6b23104e8bf7f676b00000000000000000000000000000000000000000000000000000000000000000000000000000000010200e876481700000000407a10f35a000000000000000000000010a5d4e800000000203d88792d000000804c432db7d80000000000000000000040e9f06df0d60000000000000000000000869eae29d500000000000000000000000000000000000010a5d4e800000000203d88792d0000020a1964007800000008070000302a000018150000803a090096d2496b000000000300000000000000000000000000000000000000000000000000000000000000000000002c00000000000000000000003ffb81cdd91c49626201e1c6e51cbca6778ee19dc62bcec481d859c5be3820182a318b325021d2437d601629b7bdd936d01891a6e2011515d6e651d30309b81d1c",
+        "digest": "0x7a4a044bbb187da840a4fa1407324770f35533fe6a34f04d72611169674e1c38",
+        "signature": "0x3ffb81cdd91c49626201e1c6e51cbca6778ee19dc62bcec481d859c5be3820182a318b325021d2437d601629b7bdd936d01891a6e2011515d6e651d30309b81d1c",
         "signer": "0x19e76488e19f8ea6a4d6d87c28ff9080352ea347",
-        "struct_hash": "0x2242be0068cb50abb68e0b07db0705305afef44b1bd5ad8bdc3bd108d33451d9"
+        "struct_hash": "0x2b5e14d12fc83733fca6fc9cebf71527072ac963fc39cfb29a858bd5d134656c"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "typed_data": {
+          "domain": {
+            "chainId": 31337,
+            "name": "XmrAtomicSwap",
+            "verifyingContract": "0xe7501885e3c726ef74694299b7cd49d65e8ed897",
+            "version": "1"
+          },
+          "message": {
+            "approvalMode": 0,
+            "approvalWindow": 120,
+            "claimDelay": 10800,
+            "claimWindow": 5400,
+            "depositBps": 100,
+            "depth": [
+              2,
+              10,
+              25
+            ],
+            "depthXmr": [
+              "0",
+              "1000000000000",
+              "50000000000000"
+            ],
+            "direction": 0,
+            "epoch": 3,
+            "finalWindow": 604800,
+            "freezeWindow": 3600,
+            "keyRoot": "0x7a9de06df5f005c5a4303ba0b53f39ee536296d3d55d06abaeec08c690d28dee",
+            "maker": "0x0fbfe9b14731dddd51b145d6b23104e8bf7f676b",
+            "maxXmr": "100000000000000",
+            "minXmr": "100000000000",
+            "noticeWindow": 1800,
+            "quoteId": "45",
+            "taker": "0x0000000000000000000000000000000000000000",
+            "tierPrice": [
+              "61000000000000000",
+              "60500000000000000",
+              "60000000000000000"
+            ],
+            "tierXmr": [
+              "0",
+              "1000000000000",
+              "50000000000000"
+            ],
+            "token": "0x0000000000000000000000000000000000000000",
+            "validUntil": "1800000150"
+          },
+          "primaryType": "Quote",
+          "types": {
+            "EIP712Domain": [
+              {
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "name": "version",
+                "type": "string"
+              },
+              {
+                "name": "chainId",
+                "type": "uint256"
+              },
+              {
+                "name": "verifyingContract",
+                "type": "address"
+              }
+            ],
+            "Quote": [
+              {
+                "name": "maker",
+                "type": "address"
+              },
+              {
+                "name": "taker",
+                "type": "address"
+              },
+              {
+                "name": "token",
+                "type": "address"
+              },
+              {
+                "name": "direction",
+                "type": "uint8"
+              },
+              {
+                "name": "approvalMode",
+                "type": "uint8"
+              },
+              {
+                "name": "minXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "maxXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "tierXmr",
+                "type": "uint64[3]"
+              },
+              {
+                "name": "tierPrice",
+                "type": "uint256[3]"
+              },
+              {
+                "name": "depthXmr",
+                "type": "uint64[3]"
+              },
+              {
+                "name": "depth",
+                "type": "uint8[3]"
+              },
+              {
+                "name": "depositBps",
+                "type": "uint16"
+              },
+              {
+                "name": "approvalWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "noticeWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "claimDelay",
+                "type": "uint32"
+              },
+              {
+                "name": "claimWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "finalWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "validUntil",
+                "type": "uint64"
+              },
+              {
+                "name": "epoch",
+                "type": "uint32"
+              },
+              {
+                "name": "keyRoot",
+                "type": "bytes32"
+              },
+              {
+                "name": "quoteId",
+                "type": "uint64"
+              },
+              {
+                "name": "freezeWindow",
+                "type": "uint32"
+              }
+            ]
+          }
+        }
+      },
+      "name": "quote-freeze-window-one-hour",
+      "output": {
+        "compact": "0fbfe9b14731dddd51b145d6b23104e8bf7f676b00000000000000000000000000000000000000000000000000000000000000000000000000000000000000e876481700000000407a10f35a000000000000000000000010a5d4e800000000203d88792d000000804c432db7d80000000000000000000040e9f06df0d60000000000000000000000869eae29d500000000000000000000000000000000000010a5d4e800000000203d88792d0000020a1964007800000008070000302a000018150000803a090096d2496b00000000030000007a9de06df5f005c5a4303ba0b53f39ee536296d3d55d06abaeec08c690d28dee2d00000000000000100e0000",
+        "compact_signed": "0fbfe9b14731dddd51b145d6b23104e8bf7f676b00000000000000000000000000000000000000000000000000000000000000000000000000000000000000e876481700000000407a10f35a000000000000000000000010a5d4e800000000203d88792d000000804c432db7d80000000000000000000040e9f06df0d60000000000000000000000869eae29d500000000000000000000000000000000000010a5d4e800000000203d88792d0000020a1964007800000008070000302a000018150000803a090096d2496b00000000030000007a9de06df5f005c5a4303ba0b53f39ee536296d3d55d06abaeec08c690d28dee2d00000000000000100e000052426f711f8a4398f43babac6f9bf12eb11ee92463831aa7c460ddfb71f0518a03329632e18b5c3a5cbb2718716af7c4033511909948d3a5a24c60edd4e9f6971b",
+        "digest": "0x2b15b3fccec064a24e35b1ea6a787744444f0afede82b08408d9794a83dedea0",
+        "signature": "0x52426f711f8a4398f43babac6f9bf12eb11ee92463831aa7c460ddfb71f0518a03329632e18b5c3a5cbb2718716af7c4033511909948d3a5a24c60edd4e9f6971b",
+        "signer": "0x19e76488e19f8ea6a4d6d87c28ff9080352ea347",
+        "struct_hash": "0x0db3a008c6a0aa18d7d90b0a2bd09e0e354f6c39cbfd40139256c89d0185810b"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "typed_data": {
+          "domain": {
+            "chainId": 31337,
+            "name": "XmrAtomicSwap",
+            "verifyingContract": "0xe7501885e3c726ef74694299b7cd49d65e8ed897",
+            "version": "1"
+          },
+          "message": {
+            "approvalMode": 0,
+            "approvalWindow": 120,
+            "claimDelay": 10800,
+            "claimWindow": 5400,
+            "depositBps": 100,
+            "depth": [
+              2,
+              10,
+              25
+            ],
+            "depthXmr": [
+              "0",
+              "1000000000000",
+              "50000000000000"
+            ],
+            "direction": 1,
+            "epoch": 3,
+            "finalWindow": 604800,
+            "freezeWindow": 259200,
+            "keyRoot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+            "maker": "0x0fbfe9b14731dddd51b145d6b23104e8bf7f676b",
+            "maxXmr": "100000000000000",
+            "minXmr": "100000000000",
+            "noticeWindow": 1800,
+            "quoteId": "46",
+            "taker": "0x0000000000000000000000000000000000000000",
+            "tierPrice": [
+              "61000000000000000",
+              "60500000000000000",
+              "60000000000000000"
+            ],
+            "tierXmr": [
+              "0",
+              "1000000000000",
+              "50000000000000"
+            ],
+            "token": "0x0000000000000000000000000000000000000000",
+            "validUntil": "1800000150"
+          },
+          "primaryType": "Quote",
+          "types": {
+            "EIP712Domain": [
+              {
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "name": "version",
+                "type": "string"
+              },
+              {
+                "name": "chainId",
+                "type": "uint256"
+              },
+              {
+                "name": "verifyingContract",
+                "type": "address"
+              }
+            ],
+            "Quote": [
+              {
+                "name": "maker",
+                "type": "address"
+              },
+              {
+                "name": "taker",
+                "type": "address"
+              },
+              {
+                "name": "token",
+                "type": "address"
+              },
+              {
+                "name": "direction",
+                "type": "uint8"
+              },
+              {
+                "name": "approvalMode",
+                "type": "uint8"
+              },
+              {
+                "name": "minXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "maxXmr",
+                "type": "uint64"
+              },
+              {
+                "name": "tierXmr",
+                "type": "uint64[3]"
+              },
+              {
+                "name": "tierPrice",
+                "type": "uint256[3]"
+              },
+              {
+                "name": "depthXmr",
+                "type": "uint64[3]"
+              },
+              {
+                "name": "depth",
+                "type": "uint8[3]"
+              },
+              {
+                "name": "depositBps",
+                "type": "uint16"
+              },
+              {
+                "name": "approvalWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "noticeWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "claimDelay",
+                "type": "uint32"
+              },
+              {
+                "name": "claimWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "finalWindow",
+                "type": "uint32"
+              },
+              {
+                "name": "validUntil",
+                "type": "uint64"
+              },
+              {
+                "name": "epoch",
+                "type": "uint32"
+              },
+              {
+                "name": "keyRoot",
+                "type": "bytes32"
+              },
+              {
+                "name": "quoteId",
+                "type": "uint64"
+              },
+              {
+                "name": "freezeWindow",
+                "type": "uint32"
+              }
+            ]
+          }
+        }
+      },
+      "name": "quote-freeze-window-three-days-b",
+      "output": {
+        "compact": "0fbfe9b14731dddd51b145d6b23104e8bf7f676b00000000000000000000000000000000000000000000000000000000000000000000000000000000010000e876481700000000407a10f35a000000000000000000000010a5d4e800000000203d88792d000000804c432db7d80000000000000000000040e9f06df0d60000000000000000000000869eae29d500000000000000000000000000000000000010a5d4e800000000203d88792d0000020a1964007800000008070000302a000018150000803a090096d2496b000000000300000000000000000000000000000000000000000000000000000000000000000000002e0000000000000080f40300",
+        "compact_signed": "0fbfe9b14731dddd51b145d6b23104e8bf7f676b00000000000000000000000000000000000000000000000000000000000000000000000000000000010000e876481700000000407a10f35a000000000000000000000010a5d4e800000000203d88792d000000804c432db7d80000000000000000000040e9f06df0d60000000000000000000000869eae29d500000000000000000000000000000000000010a5d4e800000000203d88792d0000020a1964007800000008070000302a000018150000803a090096d2496b000000000300000000000000000000000000000000000000000000000000000000000000000000002e0000000000000080f40300317f29e324ebe0a2d6a7adf0ae45296cfd52049754bd47dec9ea3168ca6a566c053bccc873ef5731b309edbe4c62f15c120a26171ba913a0af645cfb733981131b",
+        "digest": "0x9f8689abfad46cefe6091068c486a9045a4ca65bfed01f4f0319c65a921c6870",
+        "signature": "0x317f29e324ebe0a2d6a7adf0ae45296cfd52049754bd47dec9ea3168ca6a566c053bccc873ef5731b309edbe4c62f15c120a26171ba913a0af645cfb733981131b",
+        "signer": "0x19e76488e19f8ea6a4d6d87c28ff9080352ea347",
+        "struct_hash": "0xb225a50a28160cd449ceaf576423daf1fedf13b43589123de09a8a8280733386"
       },
       "valid": true
     },
@@ -536,6 +897,7 @@
             "direction": 1,
             "epoch": 4294967295,
             "finalWindow": 4294967295,
+            "freezeWindow": 4294967295,
             "keyRoot": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
             "maker": "0xffffffffffffffffffffffffffffffffffffffff",
             "maxXmr": "18446744073709551615",
@@ -660,6 +1022,10 @@
               {
                 "name": "quoteId",
                 "type": "uint64"
+              },
+              {
+                "name": "freezeWindow",
+                "type": "uint32"
               }
             ]
           }
@@ -667,19 +1033,19 @@
       },
       "name": "quote-extremes",
       "output": {
-        "compact": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0102ffffffffffffffffffffffffffffffff0000000000000000fefffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffffffffffffffffffffffffff010000000000000000000000000000000000000000000000fefffffffffffffffffffffffffffffffffe01ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-        "compact_signed": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0102ffffffffffffffffffffffffffffffff0000000000000000fefffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffffffffffffffffffffffffff010000000000000000000000000000000000000000000000fefffffffffffffffffffffffffffffffffe01ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffd0057023bf8bf4b884785cd90088a3d91bd7abebab74a5da915b6b84245caaa61d8f5a0a879670e58bb8a8ca5ef2a45f6b5bae4ec5f1451c38629281258068011b",
-        "digest": "0xec557f203d3e6dd69a1376a02fd5535a981681dd104e2e5466a9af00b4abf5e5",
-        "signature": "0xd0057023bf8bf4b884785cd90088a3d91bd7abebab74a5da915b6b84245caaa61d8f5a0a879670e58bb8a8ca5ef2a45f6b5bae4ec5f1451c38629281258068011b",
+        "compact": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0102ffffffffffffffffffffffffffffffff0000000000000000fefffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffffffffffffffffffffffffff010000000000000000000000000000000000000000000000fefffffffffffffffffffffffffffffffffe01ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "compact_signed": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0102ffffffffffffffffffffffffffffffff0000000000000000fefffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffffffffffffffffffffffffff010000000000000000000000000000000000000000000000fefffffffffffffffffffffffffffffffffe01ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffbe96b1d6b8187c93f2db0a914655b0db85890b7516ff1aafef98dfc4b5ea46945a397a70dbc4c57bda6d7ff586bad409ac2e8ea637eb7030ca15fb36455fb55f1b",
+        "digest": "0x03ef1a8447cc35c72cdbd522760e6dfa3bf126414849b4b6c8ffaad4de095b58",
+        "signature": "0xbe96b1d6b8187c93f2db0a914655b0db85890b7516ff1aafef98dfc4b5ea46945a397a70dbc4c57bda6d7ff586bad409ac2e8ea637eb7030ca15fb36455fb55f1b",
         "signer": "0x19e76488e19f8ea6a4d6d87c28ff9080352ea347",
-        "struct_hash": "0x5a51d1b0e812c111858263b58fe05a75efcb357c4283ec458481e29d2f673ce5"
+        "struct_hash": "0x44cde15e2cd1ca56b56062e7484b5f6cebc09ce2f89d174fd39950676431e723"
       },
       "valid": true
     },
     {
       "input": {
         "now": "1800000150",
-        "signature": "0x56267b96fbc59394d89d971cfe78f5eb99e452b2be4c0906d9227daa5a6ef902061e7afd3c65a2eaad97e42e95c2b825e6ed1cd64777e5cd6b019c2db00a5e5a1b",
+        "signature": "0xcb09596c669183a33e643665e0317713880ee7a98f1d658440284e5392495b33715b9d1f178deacba72dd239a51fdcc47eae6148d233fe3e94f2f3dc859413ec1c",
         "typed_data": {
           "domain": {
             "chainId": 31337,
@@ -706,6 +1072,7 @@
             "direction": 0,
             "epoch": 3,
             "finalWindow": 604800,
+            "freezeWindow": 0,
             "keyRoot": "0x7a9de06df5f005c5a4303ba0b53f39ee536296d3d55d06abaeec08c690d28dee",
             "maker": "0x0fbfe9b14731dddd51b145d6b23104e8bf7f676b",
             "maxXmr": "100000000000000",
@@ -830,6 +1197,10 @@
               {
                 "name": "quoteId",
                 "type": "uint64"
+              },
+              {
+                "name": "freezeWindow",
+                "type": "uint32"
               }
             ]
           }
@@ -837,7 +1208,7 @@
       },
       "name": "quote-at-valid-until",
       "output": {
-        "digest": "0x950ee417e3d45f6ccb2d92c58a98fae8d20803022d552d06ff9eaf79c64667ac",
+        "digest": "0xbcbb74449e4f5e17ba510f31018f3ece2b22129944950afe400c0fd0784b8a7b",
         "signer": "0x19e76488e19f8ea6a4d6d87c28ff9080352ea347"
       },
       "valid": true
@@ -846,7 +1217,7 @@
       "error": "Expired",
       "input": {
         "now": "1800000151",
-        "signature": "0x56267b96fbc59394d89d971cfe78f5eb99e452b2be4c0906d9227daa5a6ef902061e7afd3c65a2eaad97e42e95c2b825e6ed1cd64777e5cd6b019c2db00a5e5a1b",
+        "signature": "0xcb09596c669183a33e643665e0317713880ee7a98f1d658440284e5392495b33715b9d1f178deacba72dd239a51fdcc47eae6148d233fe3e94f2f3dc859413ec1c",
         "typed_data": {
           "domain": {
             "chainId": 31337,
@@ -873,6 +1244,7 @@
             "direction": 0,
             "epoch": 3,
             "finalWindow": 604800,
+            "freezeWindow": 0,
             "keyRoot": "0x7a9de06df5f005c5a4303ba0b53f39ee536296d3d55d06abaeec08c690d28dee",
             "maker": "0x0fbfe9b14731dddd51b145d6b23104e8bf7f676b",
             "maxXmr": "100000000000000",
@@ -997,6 +1369,10 @@
               {
                 "name": "quoteId",
                 "type": "uint64"
+              },
+              {
+                "name": "freezeWindow",
+                "type": "uint32"
               }
             ]
           }
@@ -1008,9 +1384,9 @@
     {
       "error": "BadSigner",
       "input": {
-        "digest": "0x54580ddf7a3e8c78af4aee4d2b9787dd52e41f99036ea58b958b0701dc4e36c7",
+        "digest": "0xd66adc53971575e667ee391fe387d8071623da5749f8fcc0ffbc20f4ac74a50b",
         "expected_signer": "0x19e76488e19f8ea6a4d6d87c28ff9080352ea347",
-        "signature": "0x56267b96fbc59394d89d971cfe78f5eb99e452b2be4c0906d9227daa5a6ef902061e7afd3c65a2eaad97e42e95c2b825e6ed1cd64777e5cd6b019c2db00a5e5a1b",
+        "signature": "0xcb09596c669183a33e643665e0317713880ee7a98f1d658440284e5392495b33715b9d1f178deacba72dd239a51fdcc47eae6148d233fe3e94f2f3dc859413ec1c",
         "typed_data": {
           "domain": {
             "chainId": 1,
@@ -1037,6 +1413,7 @@
             "direction": 0,
             "epoch": 3,
             "finalWindow": 604800,
+            "freezeWindow": 0,
             "keyRoot": "0x7a9de06df5f005c5a4303ba0b53f39ee536296d3d55d06abaeec08c690d28dee",
             "maker": "0x0fbfe9b14731dddd51b145d6b23104e8bf7f676b",
             "maxXmr": "100000000000000",
@@ -1161,6 +1538,10 @@
               {
                 "name": "quoteId",
                 "type": "uint64"
+              },
+              {
+                "name": "freezeWindow",
+                "type": "uint32"
               }
             ]
           }
@@ -1172,9 +1553,9 @@
     {
       "error": "BadSigner",
       "input": {
-        "digest": "0xd504e01c7decca81435b404835cd011c6521ffe8656b17929c69fd45fea58ddf",
+        "digest": "0x99ca06d0450543502ed02cee87a8a6a2c2ac46f3ef2567cf7e1f6f6d37b5569c",
         "expected_signer": "0x19e76488e19f8ea6a4d6d87c28ff9080352ea347",
-        "signature": "0x56267b96fbc59394d89d971cfe78f5eb99e452b2be4c0906d9227daa5a6ef902061e7afd3c65a2eaad97e42e95c2b825e6ed1cd64777e5cd6b019c2db00a5e5a1b",
+        "signature": "0xcb09596c669183a33e643665e0317713880ee7a98f1d658440284e5392495b33715b9d1f178deacba72dd239a51fdcc47eae6148d233fe3e94f2f3dc859413ec1c",
         "typed_data": {
           "domain": {
             "chainId": 31337,
@@ -1201,6 +1582,7 @@
             "direction": 0,
             "epoch": 3,
             "finalWindow": 604800,
+            "freezeWindow": 0,
             "keyRoot": "0x7a9de06df5f005c5a4303ba0b53f39ee536296d3d55d06abaeec08c690d28dee",
             "maker": "0x0fbfe9b14731dddd51b145d6b23104e8bf7f676b",
             "maxXmr": "100000000000000",
@@ -1325,6 +1707,10 @@
               {
                 "name": "quoteId",
                 "type": "uint64"
+              },
+              {
+                "name": "freezeWindow",
+                "type": "uint32"
               }
             ]
           }
@@ -1336,9 +1722,9 @@
     {
       "error": "BadSigner",
       "input": {
-        "digest": "0x967018fa12490da495af05b3060ebc9d53b77c91bcb74e6908824c7141afb945",
+        "digest": "0x28b7160461d107c9cf0d2c9eda0897d87cd23cb001d527ce43803903b4c406a2",
         "expected_signer": "0x19e76488e19f8ea6a4d6d87c28ff9080352ea347",
-        "signature": "0x56267b96fbc59394d89d971cfe78f5eb99e452b2be4c0906d9227daa5a6ef902061e7afd3c65a2eaad97e42e95c2b825e6ed1cd64777e5cd6b019c2db00a5e5a1b",
+        "signature": "0xcb09596c669183a33e643665e0317713880ee7a98f1d658440284e5392495b33715b9d1f178deacba72dd239a51fdcc47eae6148d233fe3e94f2f3dc859413ec1c",
         "typed_data": {
           "domain": {
             "chainId": 31337,
@@ -1365,6 +1751,7 @@
             "direction": 0,
             "epoch": 3,
             "finalWindow": 604800,
+            "freezeWindow": 0,
             "keyRoot": "0x7a9de06df5f005c5a4303ba0b53f39ee536296d3d55d06abaeec08c690d28dee",
             "maker": "0x0fbfe9b14731dddd51b145d6b23104e8bf7f676b",
             "maxXmr": "100000000000000",
@@ -1489,6 +1876,10 @@
               {
                 "name": "quoteId",
                 "type": "uint64"
+              },
+              {
+                "name": "freezeWindow",
+                "type": "uint32"
               }
             ]
           }
@@ -1500,9 +1891,9 @@
     {
       "error": "BadSigner",
       "input": {
-        "digest": "0x950ee417e3d45f6ccb2d92c58a98fae8d20803022d552d06ff9eaf79c64667ac",
+        "digest": "0xbcbb74449e4f5e17ba510f31018f3ece2b22129944950afe400c0fd0784b8a7b",
         "expected_signer": "0x19e76488e19f8ea6a4d6d87c28ff9080352ea347",
-        "signature": "0x56267b96fbc59394d89d971cfe78f5eb99e452b2be4c0906d9227daa5a6ef902f9e18502c39a5d1552681bd16a3d47d8d3c1c01067d0ba6e54d0c25f202be2e71c",
+        "signature": "0xcb09596c669183a33e643665e0317713880ee7a98f1d658440284e5392495b338ea462e0e872153458d22dc65ae0233a3c007b9ddd14a1fd2adf6ab04aa22d551b",
         "typed_data": {
           "domain": {
             "chainId": 31337,
@@ -1529,6 +1920,7 @@
             "direction": 0,
             "epoch": 3,
             "finalWindow": 604800,
+            "freezeWindow": 0,
             "keyRoot": "0x7a9de06df5f005c5a4303ba0b53f39ee536296d3d55d06abaeec08c690d28dee",
             "maker": "0x0fbfe9b14731dddd51b145d6b23104e8bf7f676b",
             "maxXmr": "100000000000000",
@@ -1653,6 +2045,10 @@
               {
                 "name": "quoteId",
                 "type": "uint64"
+              },
+              {
+                "name": "freezeWindow",
+                "type": "uint32"
               }
             ]
           }
@@ -2905,6 +3301,7 @@
         "direction": 0,
         "key_leaf": "0x4f6eb7467136e583c1243b2902fb268bc14df3c72e845dd640ae04b5c73707a3",
         "maker_enc_key": "0xc32087fe7fed77f41c403d5bc77232222fe44a6cee4e9626e84d64d09349073f",
+        "payout": "0x0000000000000000000000000000000000000000",
         "swap_id": "0xdac1bc67decf7425ed75bb6942b3d82307110a955d341fde89eb790ab30f3305",
         "t_lock": "1800000000",
         "taker_enc_key": "0x6b484c14b3a2e4bb031cfd189ba30a4ebadde3ddff7b51158b816fdf9b247d13",
@@ -2913,34 +3310,12 @@
         "taker_spend_pub": "0x424241bbac19ccf5bcb8636fe7f51fe0738b996452fbdaedf2656ed6633f35c8",
         "taker_view": "0x8667bd36a74696d44928b6fe91f6dbf37b2e4dd19efadc6eaec7df00f6a62605",
         "token": "0x0000000000000000000000000000000000000000",
+        "watcher": "0x0000000000000000000000000000000000000000",
         "xmr": "2000000000000"
       },
       "name": "open-hash-direction-a",
       "output": {
-        "open_hash": "0x0676cd0beb49d5c448c5c675e18d1da064489adf2ace1dc56de895f10e646bad"
-      },
-      "valid": true
-    },
-    {
-      "input": {
-        "amount": "330500000",
-        "deposit": "3305000",
-        "direction": 1,
-        "key_leaf": "0x0000000000000000000000000000000000000000000000000000000000000000",
-        "maker_enc_key": "0xc32087fe7fed77f41c403d5bc77232222fe44a6cee4e9626e84d64d09349073f",
-        "swap_id": "0xdac1bc67decf7425ed75bb6942b3d82307110a955d341fde89eb790ab30f3305",
-        "t_lock": "1800000000",
-        "taker_enc_key": "0x6b484c14b3a2e4bb031cfd189ba30a4ebadde3ddff7b51158b816fdf9b247d13",
-        "taker_key": "0x08f5cbc4564871f0ca60c9a36f99baadcbfea448",
-        "taker_key2": "0xa19f0f910d085afdfc10f9dd276097a093ddae40",
-        "taker_spend_pub": "0x424241bbac19ccf5bcb8636fe7f51fe0738b996452fbdaedf2656ed6633f35c8",
-        "taker_view": "0x0000000000000000000000000000000000000000000000000000000000000000",
-        "token": "0xf9ab76450f884b429b2c128ac26fca8c2efdd5f5",
-        "xmr": "2000000000000"
-      },
-      "name": "open-hash-direction-b",
-      "output": {
-        "open_hash": "0x2c5a2fdf0bc6e59d0fd2bfabd5d37d00f2f0174a6fb734d80a4a392eda7fac3c"
+        "open_hash": "0x5bea6d50b88ec046e547f263c43089e74d7731a9a6e34d16b272e50d96499fb6"
       },
       "valid": true
     },
@@ -2951,6 +3326,82 @@
         "direction": 0,
         "key_leaf": "0x4f6eb7467136e583c1243b2902fb268bc14df3c72e845dd640ae04b5c73707a3",
         "maker_enc_key": "0xc32087fe7fed77f41c403d5bc77232222fe44a6cee4e9626e84d64d09349073f",
+        "payout": "0x0000000000000000000000000000000000000000",
+        "swap_id": "0xdac1bc67decf7425ed75bb6942b3d82307110a955d341fde89eb790ab30f3305",
+        "t_lock": "1800000000",
+        "taker_enc_key": "0x6b484c14b3a2e4bb031cfd189ba30a4ebadde3ddff7b51158b816fdf9b247d13",
+        "taker_key": "0x08f5cbc4564871f0ca60c9a36f99baadcbfea448",
+        "taker_key2": "0xa19f0f910d085afdfc10f9dd276097a093ddae40",
+        "taker_spend_pub": "0x424241bbac19ccf5bcb8636fe7f51fe0738b996452fbdaedf2656ed6633f35c8",
+        "taker_view": "0x8667bd36a74696d44928b6fe91f6dbf37b2e4dd19efadc6eaec7df00f6a62605",
+        "token": "0x0000000000000000000000000000000000000000",
+        "watcher": "0xcbb8df64683b6aff0a3677a6c8e5f7867507cef9",
+        "xmr": "2000000000000"
+      },
+      "name": "open-hash-direction-a-watcher",
+      "output": {
+        "open_hash": "0xdf4818ade8a2cb5c0b6360d7329ee495a3462819a63533a4762113ffa9860732"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "amount": "330500000",
+        "deposit": "3305000",
+        "direction": 1,
+        "key_leaf": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "maker_enc_key": "0xc32087fe7fed77f41c403d5bc77232222fe44a6cee4e9626e84d64d09349073f",
+        "payout": "0x0f8183aefdf068dd8489b6edbf4e07965cf29246",
+        "swap_id": "0xdac1bc67decf7425ed75bb6942b3d82307110a955d341fde89eb790ab30f3305",
+        "t_lock": "1800000000",
+        "taker_enc_key": "0x6b484c14b3a2e4bb031cfd189ba30a4ebadde3ddff7b51158b816fdf9b247d13",
+        "taker_key": "0x08f5cbc4564871f0ca60c9a36f99baadcbfea448",
+        "taker_key2": "0xa19f0f910d085afdfc10f9dd276097a093ddae40",
+        "taker_spend_pub": "0x424241bbac19ccf5bcb8636fe7f51fe0738b996452fbdaedf2656ed6633f35c8",
+        "taker_view": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "token": "0xf9ab76450f884b429b2c128ac26fca8c2efdd5f5",
+        "watcher": "0x0000000000000000000000000000000000000000",
+        "xmr": "2000000000000"
+      },
+      "name": "open-hash-direction-b",
+      "output": {
+        "open_hash": "0x8637d98a39b2db1ef55ed8af3bc692f2a73e0cd5a1528e78d1911534dfee7985"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "amount": "330500000",
+        "deposit": "3305000",
+        "direction": 1,
+        "key_leaf": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "maker_enc_key": "0xc32087fe7fed77f41c403d5bc77232222fe44a6cee4e9626e84d64d09349073f",
+        "payout": "0x285fcfd1c6f42d5c85173a4da93d1700c3445dc5",
+        "swap_id": "0xdac1bc67decf7425ed75bb6942b3d82307110a955d341fde89eb790ab30f3305",
+        "t_lock": "1800000000",
+        "taker_enc_key": "0x6b484c14b3a2e4bb031cfd189ba30a4ebadde3ddff7b51158b816fdf9b247d13",
+        "taker_key": "0x08f5cbc4564871f0ca60c9a36f99baadcbfea448",
+        "taker_key2": "0xa19f0f910d085afdfc10f9dd276097a093ddae40",
+        "taker_spend_pub": "0x424241bbac19ccf5bcb8636fe7f51fe0738b996452fbdaedf2656ed6633f35c8",
+        "taker_view": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "token": "0xf9ab76450f884b429b2c128ac26fca8c2efdd5f5",
+        "watcher": "0x0000000000000000000000000000000000000000",
+        "xmr": "2000000000000"
+      },
+      "name": "open-hash-direction-b-payout",
+      "output": {
+        "open_hash": "0x623a8cf6aa9879ff5a6b21d1b6594921264361d27ae6c5c103f299b6c2e581c2"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "amount": "122000000000000000",
+        "deposit": "1220000000000000",
+        "direction": 0,
+        "key_leaf": "0x4f6eb7467136e583c1243b2902fb268bc14df3c72e845dd640ae04b5c73707a3",
+        "maker_enc_key": "0xc32087fe7fed77f41c403d5bc77232222fe44a6cee4e9626e84d64d09349073f",
+        "payout": "0x0000000000000000000000000000000000000000",
         "swap_id": "0xdac1bc67decf7425ed75bb6942b3d82307110a955d341fde89eb790ab30f3305",
         "t_lock": "1800000000",
         "taker_enc_key": "0x6b484c14b3a2e4bb031cfd189ba30a4ebadde3ddff7b51158b816fdf9b247d13",
@@ -2959,16 +3410,17 @@
         "taker_spend_pub": "0x28a473a2ca36bf8cfc4d3183dabcae1b1285fe0a8e3d9e3580a588157656784b",
         "taker_view": "0x8667bd36a74696d44928b6fe91f6dbf37b2e4dd19efadc6eaec7df00f6a62605",
         "token": "0x0000000000000000000000000000000000000000",
+        "watcher": "0x0000000000000000000000000000000000000000",
         "xmr": "2000000000000"
       },
       "name": "open-hash-replaced-lock-same-id",
       "output": {
-        "open_hash": "0x071451a2db344a1b951c52af695721bdc69691db43d64757782ca45991958c6a"
+        "open_hash": "0xc8c46ce96576428f6d4564c38e8876a55f1bc5b21e8b9cd8c93313daddfea45b"
       },
       "valid": true
     }
   ],
-  "compact_len": 251,
+  "compact_len": 255,
   "domain": {
     "chainId": 31337,
     "name": "XmrAtomicSwap",
@@ -2979,8 +3431,8 @@
   "format": "xmrswap-vectors/1",
   "operator": "0x19e76488e19f8ea6a4d6d87c28ff9080352ea347",
   "operator_private_key": "0x25c0f7a73d052fa587d093e769a22d70d45efacf98ffd877553122c7e82f57e6",
-  "quote_type": "Quote(address maker,address taker,address token,uint8 direction,uint8 approvalMode,uint64 minXmr,uint64 maxXmr,uint64[3] tierXmr,uint256[3] tierPrice,uint64[3] depthXmr,uint8[3] depth,uint16 depositBps,uint32 approvalWindow,uint32 noticeWindow,uint32 claimDelay,uint32 claimWindow,uint32 finalWindow,uint64 validUntil,uint32 epoch,bytes32 keyRoot,uint64 quoteId)",
-  "quote_type_hash": "0xbbaa88f19d79db179edb8c0e0e584639d3b44fd19bfe90f15bafc1b883ce2712",
+  "quote_type": "Quote(address maker,address taker,address token,uint8 direction,uint8 approvalMode,uint64 minXmr,uint64 maxXmr,uint64[3] tierXmr,uint256[3] tierPrice,uint64[3] depthXmr,uint8[3] depth,uint16 depositBps,uint32 approvalWindow,uint32 noticeWindow,uint32 claimDelay,uint32 claimWindow,uint32 finalWindow,uint64 validUntil,uint32 epoch,bytes32 keyRoot,uint64 quoteId,uint32 freezeWindow)",
+  "quote_type_hash": "0x437d6c8f35b49f337029753c191dddc397d9a50cdb809108aa224041acc17c28",
   "signature_format": "r || s || v, 65 bytes, low-s, v in {27, 28}; RFC 6979 nonce",
   "suite": "eip712"
 }

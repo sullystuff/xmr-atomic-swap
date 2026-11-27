@@ -1,0 +1,16 @@
+[package]
+name = "escrow-logic"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.84" # the SBF toolchain's rustc: the Solana program uses this crate by path
+publish = false
+description = "The pure rules of the xmrswap escrow machine (SPEC 3 and 11): arithmetic, bounds, gates, payout plans, cap accounting, byte validators. no_std, no dependencies."
+
+[lib]
+path = "src/lib.rs"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
+# Kani (SPEC 11.4): `cargo kani -p escrow-logic`. The stubbing feature the harnesses need is switched
+# on in the workspace manifest; the pinned version and the results are in KANI.md.

@@ -118,6 +118,8 @@ pub struct OfferTermsHashInput {
   pub w_f: u32,
   pub depth_above: [u64; 3],
   pub depths: [u8; 3],
+  /// `W_z`, the freeze window (SPEC 11.6); 0 = the offer accepts no watcher.
+  pub w_z: u32,
 }
 
 /// `termsHash(fields)`:
@@ -125,17 +127,21 @@ pub struct OfferTermsHashInput {
 /// ```text
 /// SHA256( DS("terms") ‖ asset ‖ direction ‖ mode ‖ dep_bps (u16) ‖ FEE_BPS (u16)
 ///         ‖ w_a ‖ w_n ‖ d_c ‖ w_c ‖ w_f (u32 each)
-///         ‖ depth_above[0] (u64) ‖ depths[0] (u8) ‖ depth_above[1] ‖ depths[1] ‖ depth_above[2] ‖ depths[2] )
+///         ‖ depth_above[0] (u64) ‖ depths[0] (u8) ‖ depth_above[1] ‖ depths[1] ‖ depth_above[2] ‖ depths[2]
+///         ‖ w_z (u32) )
 /// ```
 ///
-/// 54 bytes after the tag.
+/// 58 bytes after the tag (Amendment 1 appended `w_z`).
 pub fn terms_hash(t: &OfferTermsHashInput) -> [u8; 32] {
   sha256(&[&ds("terms"), &terms_preimage(t)])
 }
 
-/// The 54 bytes hashed after the tag.
-pub fn terms_preimage(t: &OfferTermsHashInput) -> [u8; 54] {
-  let mut v = Vec::with_capacity(54);
+/// Length of [`terms_preimage`].
+pub const TERMS_PREIMAGE_LEN: usize = 58;
+
+/// The 58 bytes hashed after the tag.
+pub fn terms_preimage(t: &OfferTermsHashInput) -> [u8; TERMS_PREIMAGE_LEN] {
+  let mut v = Vec::with_capacity(TERMS_PREIMAGE_LEN);
   v.extend_from_slice(&[t.asset, t.direction, t.mode]);
   v.extend_from_slice(&t.dep_bps.to_le_bytes());
   v.extend_from_slice(&t.fee_bps.to_le_bytes());
@@ -146,7 +152,8 @@ pub fn terms_preimage(t: &OfferTermsHashInput) -> [u8; 54] {
     v.extend_from_slice(&t.depth_above[i].to_le_bytes());
     v.push(t.depths[i]);
   }
-  v.try_into().expect("54 bytes")
+  v.extend_from_slice(&t.w_z.to_le_bytes());
+  v.try_into().expect("58 bytes")
 }
 
 /// What `approve`, `fund` and `reject` bind to on Solana (SPEC 3.12). The program recomputes it
@@ -165,13 +172,18 @@ pub struct OpenHashSolanaInput {
   pub locker_view: [u8; 32],
   pub taker_enc_key: [u8; 32],
   pub maker_enc_key: [u8; 32],
+  /// SPEC 11.2: the payout address named at `take` (`Swap.payout`); zeros in direction A.
+  pub payout: [u8; 32],
+  /// SPEC 11.6: the watcher the taker named at `lock`; zeros when none, and zeros in direction
+  /// B (the maker names its watcher at `fund`, after the hash is fixed).
+  pub watcher: [u8; 32],
 }
 
 /// `openHashSolana(fields)`:
 ///
 /// ```text
 /// SHA256( DS("open") ‖ swap PDA ‖ t_lock (i64) ‖ direction ‖ asset ‖ xmr (u64) ‖ amount (u64) ‖ deposit (u64)
-///         ‖ taker_spend_pub ‖ locker_view ‖ taker_enc_key ‖ maker_enc_key )
+///         ‖ taker_spend_pub ‖ locker_view ‖ taker_enc_key ‖ maker_enc_key ‖ payout ‖ watcher )
 /// ```
 pub fn open_hash_solana(o: &OpenHashSolanaInput) -> [u8; 32] {
   sha256(&[
@@ -186,6 +198,8 @@ pub fn open_hash_solana(o: &OpenHashSolanaInput) -> [u8; 32] {
     &o.locker_view,
     &o.taker_enc_key,
     &o.maker_enc_key,
+    &o.payout,
+    &o.watcher,
   ])
 }
 
@@ -283,9 +297,11 @@ mod tests {
       w_f: 604_800,
       depth_above: [0, 1_000_000_000_000, 50_000_000_000_000],
       depths: [2, 10, 25],
+      w_z: 86_400,
     };
     let pre = terms_preimage(&t);
-    assert_eq!(pre.len(), 54);
+    assert_eq!(pre.len(), 58);
+    assert_eq!(&pre[54..58], &86_400u32.to_le_bytes());
     assert_eq!(&pre[..7], &[0, 0, 1, 100, 0, 5, 0]);
     assert_eq!(&pre[7..11], &60u32.to_le_bytes());
     assert_eq!(&pre[23..27], &604_800u32.to_le_bytes());
@@ -302,6 +318,10 @@ mod tests {
     let mut t3 = t.clone();
     t3.depths[2] = 24;
     assert_ne!(terms_hash(&t), terms_hash(&t3));
+    // The freeze window is a term: an offer with one never hashes like the same offer without.
+    let mut t4 = t.clone();
+    t4.w_z = 0;
+    assert_ne!(terms_hash(&t), terms_hash(&t4));
   }
 
   #[test]
@@ -318,9 +338,11 @@ mod tests {
       locker_view: [3; 32],
       taker_enc_key: [4; 32],
       maker_enc_key: [5; 32],
+      payout: [6; 32],
+      watcher: [7; 32],
     };
     let h = open_hash_solana(&base);
-    // Layout: tag(16) ‖ 32 ‖ 8 ‖ 1 ‖ 1 ‖ 8 ‖ 8 ‖ 8 ‖ 32×4.
+    // Layout: tag(16) ‖ 32 ‖ 8 ‖ 1 ‖ 1 ‖ 8 ‖ 8 ‖ 8 ‖ 32×6.
     let mut pre = b"xmrswap/v1/open\0".to_vec();
     pre.extend_from_slice(&[1; 32]);
     pre.extend_from_slice(&1_800_000_000i64.to_le_bytes());
@@ -328,12 +350,12 @@ mod tests {
     pre.extend_from_slice(&2_000_000_000_000u64.to_le_bytes());
     pre.extend_from_slice(&300_000_000u64.to_le_bytes());
     pre.extend_from_slice(&3_000_000u64.to_le_bytes());
-    for b in [2u8, 3, 4, 5] {
+    for b in [2u8, 3, 4, 5, 6, 7] {
       pre.extend_from_slice(&[b; 32]);
     }
-    assert_eq!(pre.len(), 16 + 32 + 8 + 2 + 24 + 128);
+    assert_eq!(pre.len(), 16 + 32 + 8 + 2 + 24 + 192);
     assert_eq!(h, sha256(&[&pre]));
-    let muts: [&dyn Fn(&mut OpenHashSolanaInput); 11] = [
+    let muts: [&dyn Fn(&mut OpenHashSolanaInput); 13] = [
       &|o| o.swap[0] ^= 1,
       &|o| o.t_lock += 1,
       &|o| o.direction = 1,
@@ -345,6 +367,8 @@ mod tests {
       &|o| o.locker_view[0] ^= 1,
       &|o| o.taker_enc_key[0] ^= 1,
       &|o| o.maker_enc_key[0] ^= 1,
+      &|o| o.payout[0] ^= 1,
+      &|o| o.watcher[0] ^= 1,
     ];
     for f in muts {
       let mut o = base.clone();

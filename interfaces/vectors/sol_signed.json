@@ -552,15 +552,39 @@
         "direction": 0,
         "locker_view": "833e62eae72d9d32e1f2fe12128fbcee026ca61e656a216e4ef224f4fbbf8d02",
         "maker_enc_key": "875a6c63ca8e616586e2917a29443bbfb82642201d45e6a29865f6210d3a2341",
+        "payout": "0000000000000000000000000000000000000000000000000000000000000000",
         "swap": "1b625dfcbb178d593f144fd4cdfb92dea873969572290deb4c1252b3dbd911c6",
         "t_lock": 1800000000,
         "taker_enc_key": "cada4cfffa66c95fa22501dc3568f4d429a36c21e73ef45dc63a28f115198b69",
         "taker_spend_pub": "f8ac4e935f75695b1ae55bbec6e6fb4418e68575eb8e34c40412005c19d56b68",
+        "watcher": "0000000000000000000000000000000000000000000000000000000000000000",
         "xmr": "2000000000000"
       },
       "name": "open-hash-direction-a",
       "output": {
-        "open_hash": "e1313f34b403e5baaed45769daf23ce49ef0a0841fdac680a5da091038d98721"
+        "open_hash": "a804a3777821d7f618f6cd7d07f476977a965d1cc54c40b09913ba26cc494cb0"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "amount": "300000000",
+        "asset": 1,
+        "deposit": "3000000",
+        "direction": 0,
+        "locker_view": "833e62eae72d9d32e1f2fe12128fbcee026ca61e656a216e4ef224f4fbbf8d02",
+        "maker_enc_key": "875a6c63ca8e616586e2917a29443bbfb82642201d45e6a29865f6210d3a2341",
+        "payout": "0000000000000000000000000000000000000000000000000000000000000000",
+        "swap": "1b625dfcbb178d593f144fd4cdfb92dea873969572290deb4c1252b3dbd911c6",
+        "t_lock": 1800000000,
+        "taker_enc_key": "cada4cfffa66c95fa22501dc3568f4d429a36c21e73ef45dc63a28f115198b69",
+        "taker_spend_pub": "f8ac4e935f75695b1ae55bbec6e6fb4418e68575eb8e34c40412005c19d56b68",
+        "watcher": "b575186c088909883fe538c8005e7478b564ab076bbc8fa722af6c5736aabb64",
+        "xmr": "2000000000000"
+      },
+      "name": "open-hash-direction-a-watcher",
+      "output": {
+        "open_hash": "8d05db6f876d51f9200ffe5c8aedfacf8e442a56bab7cdeabf966398e13b61a3"
       },
       "valid": true
     },
@@ -572,15 +596,39 @@
         "direction": 1,
         "locker_view": "0000000000000000000000000000000000000000000000000000000000000000",
         "maker_enc_key": "875a6c63ca8e616586e2917a29443bbfb82642201d45e6a29865f6210d3a2341",
+        "payout": "21e68ecf39710e5068cb1e4123fedcba5b38a6a0d56bf208c499bbd6813e4387",
         "swap": "1b625dfcbb178d593f144fd4cdfb92dea873969572290deb4c1252b3dbd911c6",
         "t_lock": 1800000000,
         "taker_enc_key": "cada4cfffa66c95fa22501dc3568f4d429a36c21e73ef45dc63a28f115198b69",
         "taker_spend_pub": "f8ac4e935f75695b1ae55bbec6e6fb4418e68575eb8e34c40412005c19d56b68",
+        "watcher": "0000000000000000000000000000000000000000000000000000000000000000",
         "xmr": "2000000000000"
       },
       "name": "open-hash-direction-b",
       "output": {
-        "open_hash": "54afcd7a3e5f8f3375f34a443c4deecf829f33a1ce57ba1f7a735cbaf92f52b7"
+        "open_hash": "22ce4527f48e47e5ddfb09157dd51acd6af19a46a68afa0527882f7c4d15467b"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "amount": "1500000000",
+        "asset": 0,
+        "deposit": "15000000",
+        "direction": 1,
+        "locker_view": "0000000000000000000000000000000000000000000000000000000000000000",
+        "maker_enc_key": "875a6c63ca8e616586e2917a29443bbfb82642201d45e6a29865f6210d3a2341",
+        "payout": "8fd9b39eafc35e9f92e3d76ba78ea7bfb6b7a188128bf87109291f1fe20b58eb",
+        "swap": "1b625dfcbb178d593f144fd4cdfb92dea873969572290deb4c1252b3dbd911c6",
+        "t_lock": 1800000000,
+        "taker_enc_key": "cada4cfffa66c95fa22501dc3568f4d429a36c21e73ef45dc63a28f115198b69",
+        "taker_spend_pub": "f8ac4e935f75695b1ae55bbec6e6fb4418e68575eb8e34c40412005c19d56b68",
+        "watcher": "0000000000000000000000000000000000000000000000000000000000000000",
+        "xmr": "2000000000000"
+      },
+      "name": "open-hash-direction-b-payout",
+      "output": {
+        "open_hash": "0fbde8bf66940751d1c35161ea2a2a72301730663916fe3ff69ca934f151e2a2"
       },
       "valid": true
     },
@@ -592,15 +640,17 @@
         "direction": 0,
         "locker_view": "833e62eae72d9d32e1f2fe12128fbcee026ca61e656a216e4ef224f4fbbf8d02",
         "maker_enc_key": "875a6c63ca8e616586e2917a29443bbfb82642201d45e6a29865f6210d3a2341",
+        "payout": "0000000000000000000000000000000000000000000000000000000000000000",
         "swap": "1b625dfcbb178d593f144fd4cdfb92dea873969572290deb4c1252b3dbd911c6",
         "t_lock": 1800000030,
         "taker_enc_key": "cada4cfffa66c95fa22501dc3568f4d429a36c21e73ef45dc63a28f115198b69",
         "taker_spend_pub": "f8ac4e935f75695b1ae55bbec6e6fb4418e68575eb8e34c40412005c19d56b68",
+        "watcher": "0000000000000000000000000000000000000000000000000000000000000000",
         "xmr": "4000000000000"
       },
       "name": "open-hash-relock-same-pda",
       "output": {
-        "open_hash": "95c87cd3b516f0179fe126cebcb75e06695d794f57fbd836efaae4650abd51ea"
+        "open_hash": "40fac00538cc56425ee29a7aa4d7fafd98027dd1c3640c232de61faabf3fef7b"
       },
       "valid": true
     }

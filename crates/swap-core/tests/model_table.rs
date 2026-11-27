@@ -11,10 +11,10 @@
 //!   t_R T0+1,500 · T_cd T0+3,300 · T_final T0+604,800 · T_nl T0+513,000 · T_exp T0+3,196,800
 //!   t_refund T0+2,000 · T_hold T0+3,800 · T_split T0+5,186,000
 
-use swap_core::amounts::{ChainConsts, SwapParams, ETHEREUM, SOLANA};
+use swap_core::amounts::{Caps, ChainConsts, SwapParams, ETHEREUM, SOLANA};
 use swap_core::model::{
-  apply, counter as c, deposit_state, flag, mode, Call, Direction, Env, Evidence, ModelError, OpenArgs, Party,
-  RejectReason, Role, State, SwapState,
+  apply, counter as c, deposit_state, flag, mode, Call, Direction, Env, Evidence, ModelError, OpenArgs, Party, PayoutArg,
+  PayoutTo, RejectReason, Role, State, SwapState,
 };
 
 const T0: i64 = 1_800_000_000;
@@ -38,6 +38,11 @@ const T_EXP: i64 = T0 + 3_196_800;
 const T_REFUND: i64 = T0 + 2_000;
 const T_HOLD: i64 = T0 + 3_800;
 const T_SPLIT: i64 = T0 + 5_186_000;
+/// SPEC 11.6: a one-day freeze window, a freeze 400 s after the lock, and `T_ff = t_Z + W_z`
+/// (which is past `T_co` here; `freeze_never_shortens_the_lockers_window` covers the other case).
+const W_Z: u32 = 86_400;
+const T_Z: i64 = T0 + 400;
+const T_FF: i64 = T0 + 86_800;
 
 use Direction::{A, B};
 use Party::{Maker, Taker, Treasury};
@@ -52,9 +57,14 @@ struct From {
   late: bool,
   deposit: u128,
   notice: bool,
+  /// SPEC 11.6: the swap has a freeze window of one day; `watcher`: and names a watcher.
+  w_z: u32,
+  watcher: bool,
+  /// SPEC 11.2: the payout address is not the taker's (direction B).
+  payout_other: bool,
 }
 fn from(dir: Direction, state: State) -> From {
-  From { dir, state, mode: mode::AUTO, late: false, deposit: D, notice: true }
+  From { dir, state, mode: mode::AUTO, late: false, deposit: D, notice: true, w_z: 0, watcher: false, payout_other: false }
 }
 impl From {
   fn window(mut self) -> Self {
@@ -74,10 +84,36 @@ impl From {
     self.notice = false;
     self
   }
+  /// A swap against an offer with a one-day freeze window that names a watcher.
+  fn watched(mut self) -> Self {
+    self.w_z = W_Z;
+    self.watcher = true;
+    self
+  }
+  /// A freeze window, but no watcher named.
+  fn unwatched(mut self) -> Self {
+    self.w_z = W_Z;
+    self
+  }
+  fn payout_other(mut self) -> Self {
+    self.payout_other = true;
+    self
+  }
   fn build(self) -> SwapState {
     let mut s = SwapState::NONE;
     s.state = self.state;
     s.direction = self.dir;
+    s.w_z = self.w_z;
+    s.watcher = self.watcher;
+    s.payout = match (self.dir, self.payout_other) {
+      (A, _) => PayoutTo::None,
+      (B, false) => PayoutTo::Taker,
+      (B, true) => PayoutTo::Other,
+    };
+    // An open swap is counted (SPEC 11.1).
+    if self.state.is_open() {
+      s.flags |= flag::COUNTED;
+    }
     s.mode = self.mode;
     s.depth = 2;
     s.amount = AMOUNT;
@@ -98,7 +134,7 @@ impl From {
     if self.state == Active {
       return s;
     }
-    let post_notice = matches!(self.state, Noticed | Ready | AbortedFree | AbortedHold) || self.notice;
+    let post_notice = matches!(self.state, Noticed | Ready | AbortedFree | AbortedHold | Frozen) || self.notice;
     if post_notice {
       s.flags |= flag::NOTICE;
       if self.late {
@@ -111,6 +147,9 @@ impl From {
     if self.state == Ready {
       s.t_ready = T_R;
       s.t_claim_deadline = T_CD;
+    }
+    if self.state == Frozen {
+      s.t_freeze = T_Z;
     }
     if matches!(self.state, Hold | Withheld) {
       s.t_refund = T_REFUND;
@@ -144,7 +183,7 @@ fn ok(state: State, payouts: &[(Party, u128)], counter: u8) -> Want {
 const REFUND: Call = Call::Refund { secret_ok: true };
 const CLAIM: Call = Call::Claim { secret_ok: true };
 const APPROVE: Call = Call::Approve { open_ok: true };
-const FUND: Call = Call::Fund { open_ok: true };
+const FUND: Call = Call::Fund { open_ok: true, watcher: false };
 const REJECT0: Call = Call::Reject { open_ok: true, reason: RejectReason::MakerChoice };
 const REJECT1: Call = Call::Reject { open_ok: true, reason: RejectReason::UnusableInput };
 const REJECT2: Call = Call::Reject { open_ok: true, reason: RejectReason::LeafConsumed };
@@ -313,7 +352,7 @@ fn table() -> Vec<Row> {
   t.push(row("B5 last second", bpend, FUND, Operator, T_PEND - 1, ok(Active, &[], c::APPROVALS)));
   t.push(row("B5 at T_fund", bpend, FUND, Operator, T_PEND, No(TooLate)));
   t.push(row("B5 wrong caller", bpend, FUND, TakerWallet, T0 + 1, No(Unauthorized)));
-  t.push(row("B5 stale open hash (3.12)", bpend, Call::Fund { open_ok: false }, Operator, T0 + 1, No(BadState)));
+  t.push(row("B5 stale open hash (3.12)", bpend, Call::Fund { open_ok: false, watcher: false }, Operator, T0 + 1, No(BadState)));
   t.push(row("approve in B", bpend, APPROVE, Operator, T0 + 1, No(WrongDirection)));
   // B6 post_notice: taker wallet or session, ACTIVE, now < T_nl; late from T_note.
   let bact = from(B, Active);
@@ -512,10 +551,18 @@ fn ethereum_switches() {
 }
 
 fn params() -> SwapParams {
-  SwapParams { w_a: 60, w_n: 600, d_c: 3_600, w_c: 1_800, w_f: 604_800, depth: 2, dep_bps: 100 }
+  SwapParams { w_a: 60, w_n: 600, d_c: 3_600, w_c: 1_800, w_f: 604_800, depth: 2, dep_bps: 100, w_z: 0 }
+}
+/// Parameters inside the chain's bounds (Ethereum's floors are higher), with the same 1% deposit.
+fn params_on(chain: &ChainConsts) -> SwapParams {
+  if chain.explicit_approve {
+    SwapParams { w_a: 120, w_n: 1_800, d_c: 10_800, w_c: 5_400, w_f: 604_800, depth: 10, dep_bps: 100, w_z: 0 }
+  } else {
+    params()
+  }
 }
 fn open(direction: Direction, offer_mode: u8, approval: bool) -> Call {
-  Call::Open(OpenArgs { direction, offer_mode, approval, xmr: XMR, amount: AMOUNT, params: params() })
+  Call::Open(OpenArgs { direction, offer_mode, approval, xmr: XMR, amount: AMOUNT, params: params(), payout: PayoutArg::Taker, watcher: false })
 }
 
 /// A1, B1 and the approval-mode table of section 3.8, Solana.
@@ -585,9 +632,9 @@ fn opening_a_swap_solana() {
 #[test]
 fn opening_a_swap_ethereum() {
   use State::*;
-  let p = SwapParams { w_a: 120, w_n: 1_800, d_c: 10_800, w_c: 5_400, w_f: 604_800, depth: 10, dep_bps: 100 };
+  let p = SwapParams { w_a: 120, w_n: 1_800, d_c: 10_800, w_c: 5_400, w_f: 604_800, depth: 10, dep_bps: 100, w_z: 0 };
   let go = |direction, offer_mode, approval| {
-    apply(SwapState::NONE, Call::Open(OpenArgs { direction, offer_mode, approval, xmr: XMR, amount: AMOUNT, params: p }), TakerWallet, T0, &Env::OK, &ETHEREUM)
+    apply(SwapState::NONE, Call::Open(OpenArgs { direction, offer_mode, approval, xmr: XMR, amount: AMOUNT, params: p, payout: PayoutArg::Taker, watcher: false }), TakerWallet, T0, &Env::OK, &ETHEREUM)
   };
   for dir in [A, B] {
     for (m, approval) in [(mode::AUTO, false), (mode::WINDOW, false), (mode::WINDOW, true), (mode::ADVANCE, true), (mode::QUOTE, false)] {
@@ -623,10 +670,11 @@ fn recorded_fields() {
   // A6 sets t_N, T_cut = t_N + 1,275, T_co = t_N + 3,600 and flag bit 0.
   let fx = go(from(A, Active), Call::PostNotice, Operator, T0 + 300);
   assert_eq!((fx.state.t_notice, fx.state.t_cut, fx.state.t_claim_open), (T0 + 300, T0 + 1_575, T0 + 3_900));
-  assert_eq!(fx.state.flags, flag::NOTICE);
+  // (Amendment 1: an open swap also carries flag bit 5, "counted in the open value".)
+  assert_eq!(fx.state.flags, flag::NOTICE | flag::COUNTED);
   // B6 at or after T_note sets the late-notice flag as well.
-  assert_eq!(go(from(B, Active), Call::PostNotice, Session, T_NOTE - 1).state.flags, flag::NOTICE);
-  assert_eq!(go(from(B, Active), Call::PostNotice, Session, T_NOTE).state.flags, flag::NOTICE | flag::LATE_NOTICE);
+  assert_eq!(go(from(B, Active), Call::PostNotice, Session, T_NOTE - 1).state.flags, flag::NOTICE | flag::COUNTED);
+  assert_eq!(go(from(B, Active), Call::PostNotice, Session, T_NOTE).state.flags, flag::NOTICE | flag::LATE_NOTICE | flag::COUNTED);
   // A9 sets t_R and T_cd = t_R + 1,800.
   let fx = go(from(A, Noticed), Call::SetReady, Session, T0 + 900);
   assert_eq!((fx.state.t_ready, fx.state.t_claim_deadline), (T0 + 900, T0 + 2_700));
@@ -820,11 +868,11 @@ fn zero_swaps_are_refused() {
   for consts in [&SOLANA, &ETHEREUM] {
     let mut p = params();
     if consts.explicit_approve {
-      p = SwapParams { w_a: 120, w_n: 1_800, d_c: 10_800, w_c: 5_400, w_f: 604_800, depth: 10, dep_bps: 100 };
+      p = SwapParams { w_a: 120, w_n: 1_800, d_c: 10_800, w_c: 5_400, w_f: 604_800, depth: 10, dep_bps: 100, w_z: 0 };
     }
     for dir in [A, B] {
       let go = |xmr: u64, amount: u128| {
-        apply(SwapState::NONE, Call::Open(OpenArgs { direction: dir, offer_mode: mode::AUTO, approval: false, xmr, amount, params: p }), TakerWallet, T0, &Env::OK, consts)
+        apply(SwapState::NONE, Call::Open(OpenArgs { direction: dir, offer_mode: mode::AUTO, approval: false, xmr, amount, params: p, payout: PayoutArg::Taker, watcher: false }), TakerWallet, T0, &Env::OK, consts)
       };
       assert_eq!(go(XMR, 0).unwrap_err(), ModelError::AmountOutOfRange);
       assert_eq!(go(0, AMOUNT).unwrap_err(), ModelError::AmountOutOfRange);
@@ -862,4 +910,403 @@ fn withdraw_by_an_account_owed_nothing() {
   }
   assert!(!SOLANA.taker_is_sender && !SOLANA.pull_own_owed);
   assert!(ETHEREUM.taker_is_sender && ETHEREUM.pull_own_owed);
+}
+
+// ------------------------------------------------------------------ Amendment 1 (SPEC 11)
+
+/// SPEC 11.6, rows Z1 to Z6, written by hand from the table. Frozen swap: freeze window 86,400,
+/// t_Z = T0 + 400, so T_ff = T0 + 86,800; T_co = T0 + 3,700; T_final = T0 + 604,800.
+#[rustfmt::skip]
+#[test]
+fn freeze_rows_z1_to_z6() {
+  use ModelError::*;
+  use Role::Watcher;
+  use State::*;
+  let mut t = Vec::new();
+  for dir in [A, B] {
+    let (locker, claimer) = if dir == A { (Session, Operator) } else { (Operator, Session) };
+    let noticed = from(dir, Noticed).watched();
+    let frozen = from(dir, Frozen).watched();
+    // Z1: the watcher or the locker, NOTICED, now < T_co, a watcher is named. No funds move.
+    t.push(row("Z1 watcher", noticed, Call::Freeze, Watcher, T_N, ok(Frozen, &[], c::FREEZES)));
+    t.push(row("Z1 watcher, last second", noticed, Call::Freeze, Watcher, T_CO - 1, ok(Frozen, &[], c::FREEZES)));
+    t.push(row("Z1 at T_co", noticed, Call::Freeze, Watcher, T_CO, No(TooLate)));
+    t.push(row("Z1 locker", noticed, Call::Freeze, locker, T_CO - 1, ok(Frozen, &[], c::FREEZES)));
+    t.push(row("Z1 claimer", noticed, Call::Freeze, claimer, T_N, No(Unauthorized)));
+    t.push(row("Z1 stranger", noticed, Call::Freeze, Anyone, T_N, No(Unauthorized)));
+    t.push(row("Z1 owner", noticed, Call::Freeze, Owner, T_N, No(Unauthorized)));
+    t.push(row("Z1 no watcher named, locker", from(dir, Noticed).unwatched(), Call::Freeze, locker, T_N, No(BadState)));
+    t.push(row("Z1 no watcher named, a key calling itself one", from(dir, Noticed).unwatched(), Call::Freeze, Watcher, T_N, No(Unauthorized)));
+    t.push(row("Z1 no freeze window", from(dir, Noticed), Call::Freeze, locker, T_N, No(BadState)));
+    t.push(row("Z1 twice", frozen, Call::Freeze, Watcher, T_Z + 1, No(BadState)));
+    t.push(row("Z1 twice, locker", frozen, Call::Freeze, locker, T_Z + 1, No(BadState)));
+    t.push(row("Z1 in READY", from(dir, Ready).watched(), Call::Freeze, Watcher, T_R, No(BadState)));
+    t.push(row("Z1 in ACTIVE", from(dir, Active).watched(), Call::Freeze, Watcher, T_A, No(BadState)));
+    t.push(row("Z1 after an abort", from(dir, AbortedHold).watched(), Call::Freeze, Watcher, T_N + 50, No(BadState)));
+    // Z2: the locker unfreezes; t_N + d × 60 <= now < T_ff.
+    t.push(row("Z2 before the minimum", frozen, Call::SetReady, locker, T_RMIN - 1, No(TooEarly)));
+    t.push(row("Z2 first second", frozen, Call::SetReady, locker, T_RMIN, ok(Ready, &[], c::READIES)));
+    t.push(row("Z2 past T_co", frozen, Call::SetReady, locker, T_CO + 100, ok(Ready, &[], c::READIES)));
+    t.push(row("Z2 last second", frozen, Call::SetReady, locker, T_FF - 1, ok(Ready, &[], c::READIES)));
+    t.push(row("Z2 at T_ff", frozen, Call::SetReady, locker, T_FF, No(TooLate)));
+    t.push(row("Z2 watcher", frozen, Call::SetReady, Watcher, T_RMIN, No(Unauthorized)));
+    t.push(row("Z2 claimer", frozen, Call::SetReady, claimer, T_RMIN, No(Unauthorized)));
+    // Z3: the locker refunds until T_ff.
+    if dir == A {
+      // amount − D to the taker, D held; refunds_after_freeze.
+      t.push(row("Z3", frozen, REFUND, Session, T_Z, ok(Hold, &[(Taker, AMOUNT - D)], c::REFUNDS_AFTER_FREEZE)));
+      t.push(row("Z3 wallet", frozen, REFUND, TakerWallet, T_CO + 5, ok(Hold, &[(Taker, AMOUNT - D)], c::REFUNDS_AFTER_FREEZE)));
+      t.push(row("Z3 last second", frozen, REFUND, Session, T_FF - 1, ok(Hold, &[(Taker, AMOUNT - D)], c::REFUNDS_AFTER_FREEZE)));
+      t.push(row("Z3 D == 0", frozen.no_deposit(), REFUND, Session, T_Z, ok(Done, &[(Taker, AMOUNT)], c::REFUNDS_AFTER_FREEZE)));
+      t.push(row("Z6 expiry", frozen, REFUND, Session, T_EXP, ok(Done, &[(Taker, AMOUNT)], c::EXPIRED_REFUNDS)));
+    } else {
+      // amount to the maker, Dp to the taker at once; backouts_after_freeze; never held.
+      t.push(row("Z3", frozen, REFUND, Operator, T_Z, ok(Done, &[(Maker, AMOUNT), (Taker, D)], c::BACKOUTS_AFTER_FREEZE)));
+      t.push(row("Z3 past T_cut and T_co", frozen, REFUND, Operator, T_CO + 5, ok(Done, &[(Maker, AMOUNT), (Taker, D)], c::BACKOUTS_AFTER_FREEZE)));
+      t.push(row("Z3 last second", frozen, REFUND, Operator, T_FF - 1, ok(Done, &[(Maker, AMOUNT), (Taker, D)], c::BACKOUTS_AFTER_FREEZE)));
+      t.push(row("Z3 late notice", frozen.late(), REFUND, Operator, T_Z, ok(Done, &[(Maker, AMOUNT), (Taker, D)], c::BACKOUTS_AFTER_FREEZE)));
+      t.push(row("Z6 expiry", frozen, REFUND, Operator, T_EXP, ok(Done, &[(Maker, AMOUNT), (Taker, D)], c::EXPIRED_REFUNDS)));
+    }
+    t.push(row("Z3 at T_ff", frozen, REFUND, locker, T_FF, No(TooLate)));
+    t.push(row("Z3 before expiry", frozen, REFUND, locker, T_EXP - 1, No(TooLate)));
+    t.push(row("Z3 wrong secret", frozen, Call::Refund { secret_ok: false }, locker, T_Z, No(BadSecret)));
+    t.push(row("Z3 watcher", frozen, REFUND, Watcher, T_Z, No(Unauthorized)));
+    t.push(row("Z3 claimer", frozen, REFUND, claimer, T_Z, No(Unauthorized)));
+    // Z4: the claimer claims from T_ff, not from T_co.
+    let claim_pays: Vec<(Party, u128)> = if dir == A { vec![(Maker, AMOUNT - FEE), (Treasury, FEE)] } else { vec![(Taker, AMOUNT - FEE + D), (Treasury, FEE)] };
+    t.push(row("Z4 at t_Z", frozen, CLAIM, claimer, T_Z, No(TooEarly)));
+    t.push(row("Z4 at T_co", frozen, CLAIM, claimer, T_CO, No(TooEarly)));
+    t.push(row("Z4 before T_ff", frozen, CLAIM, claimer, T_FF - 1, No(TooEarly)));
+    t.push(row("Z4 at T_ff", frozen, CLAIM, claimer, T_FF, ok(Done, &claim_pays, c::CLAIMS_AFTER_FREEZE)));
+    t.push(row("Z4 last second", frozen, CLAIM, claimer, T_FINAL - 1, ok(Done, &claim_pays, c::CLAIMS_AFTER_FREEZE)));
+    t.push(row("Z6 claim at T_final", frozen, CLAIM, claimer, T_FINAL, ok(Done, &claim_pays, c::CLAIMS_AFTER_FINAL)));
+    t.push(row("Z6 claim before T_exp", frozen, CLAIM, claimer, T_EXP - 1, ok(Done, &claim_pays, c::CLAIMS_AFTER_FINAL)));
+    t.push(row("Z6 claim at T_exp", frozen, CLAIM, claimer, T_EXP, No(TooLate)));
+    t.push(row("Z4 wrong secret", frozen, Call::Claim { secret_ok: false }, claimer, T_FF, No(BadSecret)));
+    t.push(row("Z4 watcher", frozen, CLAIM, Watcher, T_FF, No(Unauthorized)));
+    t.push(row("Z4 locker", frozen, CLAIM, locker, T_FF, No(Unauthorized)));
+    // Z5: the claimer aborts; always into ABORTED_HOLD, so the deposit stays withholdable.
+    let abort_counter = if dir == A { c::ABORTS_LATE } else { c::TAKER_ABORTS };
+    t.push(row("Z5", frozen, Call::Abort, claimer, T_Z, ok(AbortedHold, &[], abort_counter)));
+    t.push(row("Z5 before T_co", frozen, Call::Abort, claimer, T_CO - 1, ok(AbortedHold, &[], abort_counter)));
+    t.push(row("Z5 last second", frozen, Call::Abort, claimer, T_FINAL - 1, ok(AbortedHold, &[], abort_counter)));
+    t.push(row("Z5 at T_final", frozen, Call::Abort, claimer, T_FINAL, No(TooLate)));
+    t.push(row("Z5 watcher", frozen, Call::Abort, Watcher, T_Z, No(Unauthorized)));
+    t.push(row("Z5 locker", frozen, Call::Abort, locker, T_Z, No(Unauthorized)));
+    // Nothing else is possible in FROZEN.
+    t.push(row("FROZEN post_notice", frozen, Call::PostNotice, claimer, T_Z, No(BadState)));
+    t.push(row("FROZEN cancel", frozen, Call::CancelPending, Session, T_Z, No(BadState)));
+    t.push(row("FROZEN release", frozen, Call::ReleaseDeposit, Operator, T_Z, No(BadState)));
+    t.push(row("FROZEN withhold", frozen, Call::Withhold(Evidence::Opens), Operator, T_Z, No(BadState)));
+    t.push(row("FROZEN split", frozen, Call::SplitDeposit, Anyone, T_SPLIT, No(BadState)));
+    t.push(row("FROZEN expire_pending", frozen, Call::ExpirePending, Anyone, T_EXP, No(BadState)));
+  }
+  t.push(row("FROZEN refund_unnoticed", from(A, Frozen).watched(), Call::RefundUnnoticed, Anyone, T_NOTE, No(BadState)));
+  t.push(row("FROZEN expire_unnoticed", from(B, Frozen).watched(), Call::ExpireUnnoticed, Anyone, T_EXP, No(BadState)));
+  assert_eq!(t.len(), 2 * 55 + 2);
+  run(&t, &SOLANA);
+  // The record after a freeze: only the state and t_freeze change.
+  let s = from(A, Noticed).watched().build();
+  let fx = apply(s, Call::Freeze, Watcher, T_N + 7, &Env::OK, &SOLANA).unwrap();
+  assert_eq!(fx.state, SwapState { state: Frozen, t_freeze: T_N + 7, ..s });
+  assert_eq!(fx.state.t_ff(), T_N + 7 + 86_400);
+  assert_eq!((fx.escrow_in, fx.volume, fx.open_pending, fx.closed), (0, 0, 0, false));
+  // Unfreezing: T_cd = t_R + W_c as from NOTICED.
+  let r = apply(fx.state, Call::SetReady, Session, T_CO + 9, &Env::OK, &SOLANA).unwrap().state;
+  assert_eq!((r.t_ready, r.t_claim_deadline, r.t_freeze), (T_CO + 9, T_CO + 9 + 1_800, T_N + 7));
+  // A refund after a freeze in A leaves the deposit withholdable, with evidence.
+  let h = apply(fx.state, REFUND, Session, T_CO + 9, &Env::OK, &SOLANA).unwrap().state;
+  assert_eq!((h.state, h.deposit_state), (Hold, deposit_state::HELD));
+  assert_eq!(apply(h, Call::Withhold(Evidence::Absent), Operator, T_CO + 10, &Env::OK, &SOLANA), Err(EvidenceRequired));
+  assert_eq!(apply(h, Call::Withhold(Evidence::Opens), Operator, T_CO + 10, &Env::OK, &SOLANA).unwrap().state.state, Withheld);
+  // Under Ethereum's open calls a stranger with the right secret may submit the claim or the
+  // refund, in the party's window only; that is not a watcher power.
+  let frozen = from(A, Frozen).watched().build();
+  assert_eq!(apply(frozen, CLAIM, Watcher, T_FF - 1, &Env::OK, &ETHEREUM), Err(TooEarly));
+  assert_eq!(apply(frozen, CLAIM, Watcher, T_FF, &Env::OK, &ETHEREUM), apply(frozen, CLAIM, Anyone, T_FF, &Env::OK, &ETHEREUM));
+  assert_eq!(apply(frozen, Call::SetReady, Watcher, T_RMIN, &Env::OK, &ETHEREUM), Err(Unauthorized));
+  assert_eq!(apply(frozen, Call::Abort, Watcher, T_Z, &Env::OK, &ETHEREUM), Err(Unauthorized));
+}
+
+/// SPEC 11.6: naming a watcher, and the freeze-window bounds.
+#[test]
+fn watcher_and_freeze_window_at_open() {
+  let go = |c: &ChainConsts, direction, w_z: u32, watcher: bool, w_f: u32| {
+    let p = SwapParams { w_a: 120, w_n: 1_800, d_c: 10_800, w_c: 5_400, w_f, depth: 10, dep_bps: 100, w_z };
+    apply(SwapState::NONE, Call::Open(OpenArgs { direction, offer_mode: mode::WINDOW, approval: false, xmr: XMR, amount: AMOUNT, params: p, payout: PayoutArg::Taker, watcher }), TakerWallet, T0, &Env::OK, c)
+  };
+  for chain in [&SOLANA, &ETHEREUM] {
+    use swap_core::amounts::BoundError::*;
+    use ModelError::*;
+    assert_eq!(go(chain, A, 0, true, 604_800), Err(WatcherNotAllowed));
+    let fx = go(chain, A, 3_600, true, 604_800).unwrap();
+    assert_eq!((fx.state.w_z, fx.state.watcher, fx.state.t_freeze), (3_600, true, 0));
+    // No watcher against a freeze window is fine: the option is the locker's.
+    assert_eq!(go(chain, A, 3_600, false, 604_800).unwrap().state.watcher, false);
+    assert_eq!(go(chain, A, 1, true, 604_800), Err(Bound(FreezeWindowOutOfRange)));
+    assert_eq!(go(chain, A, 3_599, true, 604_800), Err(Bound(FreezeWindowOutOfRange)));
+    assert_eq!(go(chain, A, 259_201, true, 604_800), Err(Bound(FreezeWindowOutOfRange)));
+    assert!(go(chain, A, 259_200, true, 604_800).is_ok());
+    // W_p + W_n + D_c + W_z + W_c + 86,400 <= W_f: 120 + 1,800 + 10,800 + 259,200 + 5,400 + 86,400.
+    assert!(go(chain, A, 259_200, true, 363_720).is_ok());
+    assert_eq!(go(chain, A, 259_200, true, 363_719), Err(Bound(FinalWindowOutOfRange)));
+    // The same swap without the freeze window fits a final window 259,200 shorter.
+    assert!(go(chain, A, 0, false, 104_520).is_ok());
+    assert_eq!(go(chain, A, 0, false, 104_519), Err(Bound(FinalWindowOutOfRange)));
+    // T_nl moves earlier by W_z.
+    let s = go(chain, B, 259_200, false, 604_800).unwrap().state;
+    assert_eq!(s.t_nl(), T0 + 604_800 - 10_800 - 259_200 - 5_400 - 86_400);
+    // Direction B: the taker's flag is ignored; the maker names its watcher at fund.
+    assert_eq!(go(chain, B, 0, true, 604_800).unwrap().state.watcher, false);
+    let pending = go(chain, B, 0, false, 604_800).unwrap().state;
+    assert_eq!(apply(pending, Call::Fund { open_ok: true, watcher: true }, Operator, T0 + 5, &Env::OK, chain), Err(WatcherNotAllowed));
+    assert_eq!(apply(pending, Call::Fund { open_ok: true, watcher: false }, Operator, T0 + 5, &Env::OK, chain).unwrap().state.watcher, false);
+    let pending = go(chain, B, 3_600, false, 604_800).unwrap().state;
+    assert_eq!(apply(pending, Call::Fund { open_ok: true, watcher: true }, Operator, T0 + 5, &Env::OK, chain).unwrap().state.watcher, true);
+    // Checks that come first still come first: a stale open hash, a late fund.
+    assert_eq!(apply(pending, Call::Fund { open_ok: false, watcher: true }, Operator, T0 + 5, &Env::OK, chain), Err(BadState));
+  }
+}
+
+/// SPEC 11.1: caps gate only `lock` and `take`; the open value is exact.
+#[test]
+fn caps_and_open_value() {
+  use ModelError::*;
+  let caps = |on, max_swap, max_open, open_value| Env { caps: Caps { on, max_swap, max_open, open_value }, ..Env::OK };
+  let go = |dir, env: &Env, c: &ChainConsts| {
+    let args = OpenArgs { direction: dir, offer_mode: mode::WINDOW, approval: false, xmr: XMR, amount: AMOUNT, params: params_on(c), payout: PayoutArg::Taker, watcher: false };
+    apply(SwapState::NONE, Call::Open(args), TakerWallet, T0, env, c)
+  };
+  for chain in [&SOLANA, &ETHEREUM] {
+    // Direction A counts amount; direction B counts amount + deposit.
+    for (dir, counted) in [(A, AMOUNT), (B, AMOUNT + D)] {
+      // Exactly at a cap is allowed; one unit above is not.
+      assert_eq!(go(dir, &caps(true, AMOUNT, u128::MAX, 0), chain).unwrap().open_value_after, counted);
+      assert_eq!(go(dir, &caps(true, AMOUNT - 1, u128::MAX, 0), chain), Err(SwapCapExceeded));
+      assert_eq!(go(dir, &caps(true, AMOUNT, 5_000_000 + counted, 5_000_000), chain).unwrap().open_value_after, 5_000_000 + counted);
+      assert_eq!(go(dir, &caps(true, AMOUNT, 5_000_000 + counted - 1, 5_000_000), chain), Err(OpenCapExceeded));
+      // The swap cap is checked first.
+      assert_eq!(go(dir, &caps(true, AMOUNT - 1, 0, 0), chain), Err(SwapCapExceeded));
+      // Fail closed: after initialize the switch is on and every cap is zero.
+      assert_eq!(go(dir, &Env { caps: Caps::INITIAL, ..Env::OK }, chain), Err(SwapCapExceeded));
+      // Switched off, nothing is checked and the accounting continues.
+      let fx = go(dir, &caps(false, 0, 0, 77), chain).unwrap();
+      assert_eq!(fx.open_value_after, 77 + counted);
+      assert!(fx.state.has(flag::COUNTED));
+      // A cap lowered below the current open value refuses new opens only.
+      assert_eq!(go(dir, &caps(true, AMOUNT, 10, 5_000_000), chain), Err(OpenCapExceeded));
+      // The add is exact: a sum that does not fit the chain's amount type is refused, with the
+      // switch on (it is above every cap) and with it off.
+      let top = chain.max_amount;
+      assert_eq!(go(dir, &caps(false, 0, 0, top - counted), chain).unwrap().open_value_after, top);
+      assert_eq!(go(dir, &caps(false, 0, 0, top - counted + 1), chain), Err(MathOverflow));
+      assert_eq!(go(dir, &caps(true, top, top, top - counted + 1), chain), Err(OpenCapExceeded));
+      assert_eq!(go(dir, &caps(true, top, top, top - counted), chain).unwrap().open_value_after, top);
+      // The cap check comes after the bounds and before MAX_OPEN_PENDING.
+      let full = Env { open_pending: chain.max_open_pending, ..caps(true, AMOUNT - 1, u128::MAX, 0) };
+      assert_eq!(go(dir, &full, chain), Err(SwapCapExceeded));
+      // The pause refuses an open, and nothing else.
+      assert_eq!(go(dir, &Env { maker_paused: true, ..Env::OK }, chain), Err(Paused));
+    }
+  }
+  // Direction B on Solana: amount + deposit must fit u64 even with the caps off, or the claim
+  // (amount − fee + Dp) and the counted value could not be represented.
+  let big = |amount: u128| Call::Open(OpenArgs { direction: B, offer_mode: mode::AUTO, approval: false, xmr: XMR, amount, params: SwapParams { dep_bps: 500, ..params() }, payout: PayoutArg::Taker, watcher: false });
+  let off = caps(false, 0, 0, 0);
+  let max = u64::MAX as u128;
+  assert_eq!(apply(SwapState::NONE, big(max), TakerWallet, T0, &off, &SOLANA), Err(MathOverflow));
+  let fits = max * 20 / 21; // amount + floor(amount / 20) <= u64::MAX
+  assert!(apply(SwapState::NONE, big(fits), TakerWallet, T0, &off, &SOLANA).is_ok());
+  assert_eq!(apply(SwapState::NONE, big(fits + 2), TakerWallet, T0, &off, &SOLANA), Err(MathOverflow));
+
+  // Every exit subtracts the counted value once, with every cap at zero and the maker paused.
+  let hostile = |open_value| Env { caps: Caps { open_value, ..Caps::INITIAL }, maker_paused: true, ..Env::OK };
+  let exits: [(From, Call, Role, i64, State); 10] = [
+    (from(A, State::Pending).window(), Call::CancelPending, Session, T0 + 5, State::Done),
+    (from(A, State::Pending).window(), REJECT0, Operator, T0 + 5, State::Done),
+    (from(A, State::Active), REFUND, Session, T_A, State::Hold),
+    (from(A, State::Active), Call::RefundUnnoticed, Anyone, T_NOTE, State::Done),
+    (from(A, State::Noticed), CLAIM, Operator, T_CO, State::Done),
+    (from(A, State::Ready), CLAIM, Operator, T_R, State::Done),
+    (from(B, State::Pending), Call::ExpirePending, Anyone, T_PEND, State::Done),
+    (from(B, State::Active), Call::ExpireUnnoticed, Anyone, T_EXP, State::Done),
+    (from(B, State::Noticed), REFUND, Operator, T_CUT, State::Hold),
+    (from(B, State::Frozen).watched(), CLAIM, Session, T_FF, State::Done),
+  ];
+  for (f, call, caller, at, end) in exits {
+    let s = f.build();
+    let counted = if f.dir == A { AMOUNT } else { AMOUNT + D };
+    let fx = apply(s, call, caller, at, &hostile(9_000_000), &SOLANA).unwrap_or_else(|e| panic!("{}: {e:?}", call.name()));
+    assert_eq!(fx.state.state, end, "{}", call.name());
+    assert_eq!(fx.open_value_after, 9_000_000 - counted, "{}", call.name());
+    assert!(!fx.state.has(flag::COUNTED));
+    // The same answer as with no switch set.
+    assert_eq!(apply(s, call, caller, at, &Env { caps: Caps { open_value: 9_000_000, ..Caps::UNLIMITED }, ..Env::OK }, &SOLANA).unwrap(), fx);
+    // The subtraction saturates: it can never fail an exit.
+    assert_eq!(apply(s, call, caller, at, &hostile(3), &SOLANA).unwrap().open_value_after, 0);
+  }
+  // Calls that keep the swap open, and calls after it has left, move no open value.
+  let quiet: [(From, Call, Role, i64); 8] = [
+    (from(B, State::Pending), FUND, Operator, T0 + 5),
+    (from(A, State::Pending).window(), APPROVE, Operator, T0 + 5),
+    (from(A, State::Active), Call::PostNotice, Operator, T_A),
+    (from(A, State::Noticed), Call::SetReady, Session, T_RMIN),
+    (from(A, State::Noticed).watched(), Call::Freeze, Role::Watcher, T_N),
+    (from(A, State::Noticed), Call::Abort, Operator, T_N),
+    (from(A, State::Hold), Call::ReleaseDeposit, Operator, T_REFUND + 1),
+    (from(A, State::Withheld), Call::SplitDeposit, Anyone, T_SPLIT),
+  ];
+  for (f, call, caller, at) in quiet {
+    let fx = apply(f.build(), call, caller, at, &hostile(9_000_000), &SOLANA).unwrap_or_else(|e| panic!("{}: {e:?}", call.name()));
+    assert_eq!(fx.open_value_after, 9_000_000, "{}", call.name());
+    assert_eq!(fx.state.has(flag::COUNTED), fx.state.state.is_open(), "{}", call.name());
+  }
+}
+
+/// SPEC 11.2: a direction-B claim pays the payout address and nobody else can redirect it.
+#[test]
+fn payout_address() {
+  use ModelError::*;
+  use Role::Payout as PayoutKey;
+  // take: the default is the taker's own address; another address is stored; an invalid one is refused.
+  let take = |payout, c: &ChainConsts| {
+    apply(SwapState::NONE, Call::Open(OpenArgs { direction: B, offer_mode: mode::AUTO, approval: false, xmr: XMR, amount: AMOUNT, params: params_on(c), payout, watcher: false }), TakerWallet, T0, &Env::OK, c)
+  };
+  assert_eq!(take(PayoutArg::Taker, &SOLANA).unwrap().state.payout, PayoutTo::Taker);
+  assert_eq!(take(PayoutArg::Other, &SOLANA).unwrap().state.payout, PayoutTo::Other);
+  assert_eq!(take(PayoutArg::Invalid, &SOLANA), Err(PayoutInvalid));
+  assert_eq!(take(PayoutArg::Invalid, &ETHEREUM).unwrap_err().chain_name(swap_core::amounts::Chain::Ethereum), "BadValue");
+  assert_eq!(take(PayoutArg::Invalid, &SOLANA).unwrap_err().chain_name(swap_core::amounts::Chain::Solana), "PayoutInvalid");
+  // Direction A has no payout field: whatever is passed, the record holds none.
+  let lock = apply(SwapState::NONE, Call::Open(OpenArgs { direction: A, offer_mode: mode::AUTO, approval: false, xmr: XMR, amount: AMOUNT, params: params(), payout: PayoutArg::Invalid, watcher: false }), TakerWallet, T0, &Env::OK, &SOLANA);
+  assert_eq!(lock.unwrap().state.payout, PayoutTo::None);
+
+  for chain in [&SOLANA, &ETHEREUM] {
+    let ready = from(B, State::Ready).payout_other().build();
+    // amount − fee + Dp to the payout address; the taking wallet receives nothing.
+    for caller in [Session, TakerWallet] {
+      let fx = apply(ready, CLAIM, caller, T_R, &Env::OK, chain).unwrap();
+      let paid: Vec<(Party, u128, bool)> = fx.payouts.iter().map(|p| (p.to, p.amount, p.parked)).collect();
+      assert_eq!(paid, vec![(Party::Payout, AMOUNT - FEE + D, false), (Treasury, FEE, false)]);
+    }
+    // Every other claim row too.
+    for (f, at) in [(from(B, State::Noticed), T_CO), (from(B, State::AbortedHold), T_FINAL), (from(B, State::Frozen).watched(), T_FF)] {
+      let fx = apply(f.payout_other().build(), CLAIM, Session, at, &Env::OK, chain).unwrap();
+      assert_eq!((fx.payouts[0].to, fx.payouts[0].amount), (Party::Payout, AMOUNT - FEE + D));
+    }
+    // Everything that is not a claim returns the deposit to the taker's own wallet.
+    let not_claims: [(From, Call, Role, i64); 6] = [
+      (from(B, State::Pending), Call::CancelPending, Session, T0 + 5),
+      (from(B, State::Pending), Call::ExpirePending, Anyone, T_PEND),
+      (from(B, State::Active), REFUND, Operator, T_A),
+      (from(B, State::Active), Call::ExpireUnnoticed, Anyone, T_EXP),
+      (from(B, State::Hold), Call::ReleaseDeposit, Anyone, T_HOLD),
+      (from(B, State::Withheld), Call::SplitDeposit, Anyone, T_SPLIT),
+    ];
+    for (f, call, caller, at) in not_claims {
+      let fx = apply(f.payout_other().build(), call, caller, at, &Env::OK, chain).unwrap_or_else(|e| panic!("{}: {e:?}", call.name()));
+      assert!(fx.payouts.iter().any(|p| p.to == Taker), "{}", call.name());
+      assert!(fx.payouts.iter().all(|p| p.to != Party::Payout), "{}", call.name());
+    }
+    // The payout address cannot receive: the claim still succeeds and the proceeds are parked for it.
+    let fx = apply(ready, CLAIM, Session, T_R, &Env { payout_can_receive: false, ..Env::OK }, chain).unwrap();
+    assert_eq!(fx.payouts[0], swap_core::model::Payout { to: Party::Payout, amount: AMOUNT - FEE + D, parked: true });
+    let done = fx.state;
+    assert_eq!((done.state, done.owed_taker), (State::Done, AMOUNT - FEE + D));
+    assert!(done.payout_owed());
+    // The taking wallet and the session key have no power over them.
+    let foreign = if chain.pull_own_owed { NothingOwed } else { Unauthorized };
+    assert_eq!(apply(done, Call::WithdrawOwed(Taker), TakerWallet, T_R + 5, &Env::OK, chain), Err(foreign));
+    assert_eq!(apply(done, Call::WithdrawOwed(Taker), Session, T_R + 5, &Env::OK, chain), Err(foreign));
+    // The payout address pulls them...
+    let pulled = apply(done, Call::WithdrawOwed(Party::Payout), PayoutKey, T_R + 5, &Env::OK, chain).unwrap();
+    assert_eq!(pulled.payouts, vec![swap_core::model::Payout { to: Party::Payout, amount: AMOUNT - FEE + D, parked: false }]);
+    assert_eq!(pulled.state.owed_taker, 0);
+    assert_eq!(apply(pulled.state, Call::WithdrawOwed(Party::Payout), PayoutKey, T_R + 6, &Env::OK, chain), Err(NothingOwed));
+    // ...or a stranger delivers them to the payout address and nowhere else.
+    if chain.push_owed {
+      // Ethereum: withdrawOwed pays the caller's own balance; pushOwed pays the account named.
+      assert_eq!(apply(done, Call::WithdrawOwed(Party::Payout), Anyone, T_R + 5, &Env::OK, chain), Err(NothingOwed));
+      assert_eq!(apply(done, Call::PushOwed(Party::Payout), Anyone, T_R + 5, &Env::OK, chain).unwrap().payouts, pulled.payouts);
+      assert_eq!(apply(done, Call::PushOwed(Taker), Anyone, T_R + 5, &Env::OK, chain), Err(NothingOwed));
+      assert_eq!(apply(done, Call::PushOwed(Maker), Anyone, T_R + 5, &Env::OK, chain), Err(NothingOwed));
+    } else {
+      // Solana: withdraw_owed(0) by anyone, the destination pinned to the payout address.
+      for caller in [Anyone, TakerWallet, Operator] {
+        assert_eq!(apply(done, Call::WithdrawOwed(Party::Payout), caller, T_R + 5, &Env::OK, chain).unwrap().payouts, pulled.payouts);
+      }
+      assert_eq!(apply(done, Call::PushOwed(Party::Payout), Anyone, T_R + 5, &Env::OK, chain), Err(Unauthorized));
+    }
+    // A swap whose payout is the taker's own address: nothing changes from before the amendment.
+    let own = from(B, State::Ready).build();
+    let fx = apply(own, CLAIM, Session, T_R, &Env { taker_can_receive: false, ..Env::OK }, chain).unwrap();
+    assert_eq!((fx.payouts[0].to, fx.payouts[0].parked), (Taker, true));
+    assert!(!fx.state.payout_owed());
+    assert!(apply(fx.state, Call::WithdrawOwed(Taker), TakerWallet, T_R + 5, &Env::OK, chain).is_ok());
+    assert!(apply(fx.state, Call::WithdrawOwed(Party::Payout), PayoutKey, T_R + 5, &Env::OK, chain).is_err());
+    // A deposit parked for the taker of a swap with a payout address stays the taker's.
+    let held = from(B, State::Hold).payout_other().build();
+    let fx = apply(held, Call::ReleaseDeposit, Anyone, T_HOLD, &Env { taker_can_receive: false, ..Env::OK }, chain).unwrap();
+    assert!(!fx.state.payout_owed());
+    assert!(apply(fx.state, Call::WithdrawOwed(Taker), TakerWallet, T_HOLD + 5, &Env::OK, chain).is_ok());
+    assert!(apply(fx.state, Call::WithdrawOwed(Party::Payout), PayoutKey, T_HOLD + 5, &Env::OK, chain).is_err());
+    if chain.push_owed {
+      assert_eq!(apply(fx.state, Call::PushOwed(Taker), Anyone, T_HOLD + 5, &Env::OK, chain).unwrap().payouts[0].to, Taker);
+      assert_eq!(apply(fx.state, Call::PushOwed(Party::Payout), Anyone, T_HOLD + 5, &Env::OK, chain), Err(NothingOwed));
+    }
+  }
+}
+
+/// SPEC 11.1: `split_deposit` never fails on its treasury slot. On Solana an account that is not
+/// the one the current `split_mode` names parks the treasury's half.
+#[test]
+fn split_with_the_other_treasury_slot() {
+  let s = from(A, State::Withheld).build();
+  let fx = apply(s, Call::SplitDeposit, Anyone, T_SPLIT, &Env { treasury_can_receive: false, ..Env::OK }, &SOLANA).unwrap();
+  let paid: Vec<(Party, u128, bool)> = fx.payouts.iter().map(|p| (p.to, p.amount, p.parked)).collect();
+  assert_eq!(paid, vec![(Taker, D - D / 2, false), (Treasury, D / 2, true)]);
+  assert_eq!((fx.state.state, fx.state.owed_treasury, fx.counter), (State::Done, D / 2, Some(c::SPLITS)));
+  let out = apply(fx.state, Call::WithdrawOwed(Treasury), Anyone, T_SPLIT + 1, &Env::OK, &SOLANA).unwrap();
+  assert_eq!((out.payouts[0].amount, out.state.owed_treasury), (D / 2, 0));
+}
+
+/// A freeze must never open the claim earlier than `T_co` or close the locker's refund earlier.
+/// SPEC 11.6 writes `T_ff = t_Z + W_z`; with the shortest window (3,600) and a claim delay
+/// longer than that, a freeze right after the notice would do exactly that, so the model uses
+/// `T_ff = max(t_Z + W_z, T_co)`. Written by hand: claim delay 7,200, notice at T0 + 100, so
+/// T_co = T0 + 7,300; freeze at T0 + 110 with W_z = 3,600, so t_Z + W_z = T0 + 3,710.
+#[test]
+fn freeze_never_shortens_the_lockers_window() {
+  use ModelError::*;
+  for dir in [A, B] {
+    let (locker, claimer) = if dir == A { (Session, Operator) } else { (Operator, Session) };
+    let mut noticed = from(dir, State::Noticed).watched().build();
+    noticed.w_z = 3_600;
+    noticed.d_c = 7_200;
+    noticed.t_claim_open = T0 + 7_300;
+    let frozen = apply(noticed, Call::Freeze, Role::Watcher, T0 + 110, &Env::OK, &SOLANA).unwrap().state;
+    assert_eq!((frozen.state, frozen.t_freeze), (State::Frozen, T0 + 110));
+    assert_eq!(frozen.t_ff(), T0 + 7_300, "T_ff is T_co, not t_Z + W_z");
+    for at in [T0 + 110, T0 + 3_709, T0 + 3_710, T0 + 3_711, T0 + 7_299] {
+      // Everything the locker could do before the freeze, it can still do.
+      assert!(apply(noticed, REFUND, locker, at, &Env::OK, &SOLANA).is_ok(), "{dir:?}: refund before the freeze at T0+{}", at - T0);
+      assert!(apply(frozen, REFUND, locker, at, &Env::OK, &SOLANA).is_ok(), "{dir:?}: refund after the freeze at T0+{}", at - T0);
+      // And the claimer cannot claim any earlier than it could have.
+      assert_eq!(apply(noticed, CLAIM, claimer, at, &Env::OK, &SOLANA), Err(TooEarly));
+      assert_eq!(apply(frozen, CLAIM, claimer, at, &Env::OK, &SOLANA), Err(TooEarly), "{dir:?}: claim at T0+{}", at - T0);
+    }
+    // set_ready stays possible exactly as long as it was (from t_N + 120).
+    for at in [T_RMIN, T0 + 3_710, T0 + 7_299] {
+      assert!(apply(frozen, Call::SetReady, locker, at, &Env::OK, &SOLANA).is_ok(), "{dir:?}: set_ready at T0+{}", at - T0);
+    }
+    assert_eq!(apply(frozen, Call::SetReady, locker, T0 + 7_300, &Env::OK, &SOLANA), Err(TooLate));
+    assert_eq!(apply(frozen, REFUND, locker, T0 + 7_300, &Env::OK, &SOLANA), Err(TooLate));
+    assert_eq!(apply(frozen, CLAIM, claimer, T0 + 7_300, &Env::OK, &SOLANA).unwrap().counter, Some(c::CLAIMS_AFTER_FREEZE));
+    // A late freeze still extends: at T_co − 1 the claim opens at T_co − 1 + W_z.
+    let late = apply(noticed, Call::Freeze, Role::Watcher, T0 + 7_299, &Env::OK, &SOLANA).unwrap().state;
+    assert_eq!(late.t_ff(), T0 + 7_299 + 3_600);
+    assert_eq!(apply(late, CLAIM, claimer, T0 + 10_898, &Env::OK, &SOLANA), Err(TooEarly));
+    assert!(apply(late, CLAIM, claimer, T0 + 10_899, &Env::OK, &SOLANA).is_ok());
+    assert!(apply(late, REFUND, locker, T0 + 10_898, &Env::OK, &SOLANA).is_ok());
+  }
 }

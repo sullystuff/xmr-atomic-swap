@@ -8,9 +8,9 @@
 use std::path::PathBuf;
 
 use serde_json::Value;
-use swap_core::amounts::{Chain, SwapParams};
+use swap_core::amounts::{Caps, Chain, SwapParams};
 use swap_core::model::{
-  apply, Call, Direction, Effects, Env, Evidence, MakerRecord, OpenArgs, Party, RejectReason, Role, State,
+  apply, Call, Direction, Effects, Env, Evidence, MakerRecord, OpenArgs, Party, PayoutArg, RejectReason, Role, State,
   SwapState,
 };
 
@@ -41,6 +41,8 @@ fn role_of(v: &Value) -> Role {
     "session" => Role::Session,
     "operator" => Role::Operator,
     "owner" => Role::Owner,
+    "watcher" => Role::Watcher,
+    "payout" => Role::Payout,
     "anyone" => Role::Anyone,
     other => panic!("caller {other}"),
   }
@@ -73,10 +75,18 @@ fn call_of(step: &Value) -> Call {
         w_f: num(&a["w_f"]),
         depth: num(&a["depth"]),
         dep_bps: num(&a["dep_bps"]),
+        w_z: num(&a["w_z"]),
       },
+      payout: match a["payout"].as_str().unwrap() {
+        "taker" => PayoutArg::Taker,
+        "other" => PayoutArg::Other,
+        "invalid" => PayoutArg::Invalid,
+        other => panic!("payout {other}"),
+      },
+      watcher: b("watcher"),
     }),
     "approve" => Call::Approve { open_ok: b("open_ok") },
-    "fund" => Call::Fund { open_ok: b("open_ok") },
+    "fund" => Call::Fund { open_ok: b("open_ok"), watcher: b("watcher") },
     "reject" => Call::Reject {
       open_ok: b("open_ok"),
       reason: match a["reason"].as_u64().unwrap() {
@@ -90,6 +100,7 @@ fn call_of(step: &Value) -> Call {
     "expire_pending" => Call::ExpirePending,
     "post_notice" => Call::PostNotice,
     "set_ready" => Call::SetReady,
+    "freeze" => Call::Freeze,
     "abort" => Call::Abort,
     "refund_unnoticed" => Call::RefundUnnoticed,
     "expire_unnoticed" => Call::ExpireUnnoticed,
@@ -104,13 +115,18 @@ fn call_of(step: &Value) -> Call {
     }),
     "split_deposit" => Call::SplitDeposit,
     "publish_evidence" => Call::PublishEvidence { opens: b("opens") },
-    "withdraw_owed" => Call::WithdrawOwed(match a["who"].as_str().unwrap() {
-      "taker" => Party::Taker,
-      "maker" => Party::Maker,
-      "treasury" => Party::Treasury,
-      other => panic!("who {other}"),
-    }),
+    "withdraw_owed" => Call::WithdrawOwed(party_of(&a["who"])),
+    "push_owed" => Call::PushOwed(party_of(&a["who"])),
     other => panic!("call {other}"),
+  }
+}
+fn party_of(v: &Value) -> Party {
+  match v.as_str().unwrap() {
+    "taker" => Party::Taker,
+    "maker" => Party::Maker,
+    "treasury" => Party::Treasury,
+    "payout" => Party::Payout,
+    other => panic!("who {other}"),
   }
 }
 fn env_of(step: &Value) -> Env {
@@ -119,7 +135,15 @@ fn env_of(step: &Value) -> Env {
     taker_can_receive: e["taker_can_receive"].as_bool().unwrap(),
     maker_can_receive: e["maker_can_receive"].as_bool().unwrap(),
     treasury_can_receive: e["treasury_can_receive"].as_bool().unwrap(),
+    payout_can_receive: e["payout_can_receive"].as_bool().unwrap(),
     open_pending: num(&e["open_pending"]),
+    caps: Caps {
+      on: e["caps"]["on"].as_bool().unwrap(),
+      max_swap: num(&e["caps"]["max_swap"]),
+      max_open: num(&e["caps"]["max_open"]),
+      open_value: num(&e["caps"]["open_value"]),
+    },
+    maker_paused: e["maker_paused"].as_bool().unwrap(),
   }
 }
 
@@ -150,12 +174,16 @@ fn assert_swap(s: &SwapState, j: &Value, ctx: &str) {
     ("t_final", s.t_final),
     ("t_refund", s.t_refund),
     ("t_settled", s.t_settled),
+    ("w_z", s.w_z as i64),
+    ("t_freeze", s.t_freeze),
   ] {
     assert_eq!(value, j[name].as_i64().unwrap_or_else(|| panic!("{ctx}: {name} missing")), "{ctx}: {name}");
   }
   for (name, value) in [("amount", s.amount), ("deposit", s.deposit), ("owed_taker", s.owed_taker), ("owed_maker", s.owed_maker), ("owed_treasury", s.owed_treasury)] {
     assert_eq!(value, num::<u128>(&j[name]), "{ctx}: {name}");
   }
+  assert_eq!(s.payout.name(), j["payout"], "{ctx}: payout");
+  assert_eq!(s.watcher, j["watcher"].as_bool().unwrap(), "{ctx}: watcher");
 }
 fn assert_maker(m: &MakerRecord, j: &Value, ctx: &str) {
   let counters: Vec<u64> = j["counters"].as_array().unwrap().iter().map(|c| c.as_u64().unwrap()).collect();
@@ -204,6 +232,7 @@ fn check_step(state: SwapState, step: &Value, chain: Chain, ctx: &str) -> Option
       assert_eq!(fx.withheld_volume, num::<u128>(&expect["withheld_volume"]), "{ctx}: withheld_volume");
       assert_eq!(fx.open_pending as i64, expect["open_pending"].as_i64().unwrap(), "{ctx}: open_pending");
       assert_eq!(fx.closed, expect["closed"].as_bool().unwrap(), "{ctx}: closed");
+      assert_eq!(fx.open_value_after, num::<u128>(&expect["open_value_after"]), "{ctx}: open_value_after");
       assert_swap(&fx.state, &expect["swap"], ctx);
       result.ok()
     }
@@ -216,7 +245,7 @@ fn check_step(state: SwapState, step: &Value, chain: Chain, ctx: &str) -> Option
 fn every_row_replays_from_the_json_alone() {
   let t = load("transitions.json");
   let rows = t["rows"].as_array().unwrap();
-  assert!(rows.len() >= 700, "{} rows", rows.len());
+  assert!(rows.len() >= 1_100, "{} rows", rows.len());
   let mut ok = 0;
   let mut rejected = 0;
   for (i, row) in rows.iter().enumerate() {
@@ -251,7 +280,7 @@ fn every_row_replays_from_the_json_alone() {
     }
   }
   // Both sides of every boundary: a healthy share of the rows are rejections.
-  assert!(ok > 300 && rejected > 300, "{ok} accepted, {rejected} rejected");
+  assert!(ok > 500 && rejected > 500, "{ok} accepted, {rejected} rejected");
   // The `cases` index points at the rows.
   let cases = t["cases"].as_array().unwrap();
   assert_eq!(cases.len(), rows.len());
@@ -265,19 +294,28 @@ fn every_row_replays_from_the_json_alone() {
 fn every_sequence_replays_from_the_json_alone() {
   let t = load("transitions.json");
   let sequences = t["sequences"].as_array().unwrap();
-  assert!(sequences.len() >= 300, "{} sequences", sequences.len());
+  assert!(sequences.len() >= 600, "{} sequences", sequences.len());
   for seq in sequences {
     let chain = chain_of(&seq["chain"]);
     let mut state = SwapState::NONE;
     let mut maker = maker_of(&seq["initial_maker"]);
     let mut last = i64::MIN;
+    // The asset's open value is state of the replay, like the maker record: every step's env
+    // must carry the value the previous step left.
+    let mut open_value = 0u128;
     for (i, step) in seq["steps"].as_array().unwrap().iter().enumerate() {
       let ctx = format!("sequence {} ({}) step {i} {}", seq["name"], seq["chain"], step["call"]);
       let at = step["at"].as_i64().unwrap();
       assert!(at >= last, "{ctx}: time runs backwards");
       last = at;
+      assert_eq!(env_of(step).caps.open_value, open_value, "{ctx}: env.caps.open_value");
+      if i > 0 && seq["hostile_after_open"] == true {
+        let env = env_of(step);
+        assert!(env.caps.on && env.caps.max_swap == 0 && env.caps.max_open == 0 && env.maker_paused, "{ctx}: not hostile");
+      }
       if let Some(fx) = check_step(state, step, chain, &ctx) {
         state = fx.state;
+        open_value = fx.open_value_after;
         maker.record(&fx, chain.consts().max_amount);
         assert_maker(&maker, &step["expect"]["maker"], &ctx);
       }
@@ -285,6 +323,68 @@ fn every_sequence_replays_from_the_json_alone() {
     let ctx = format!("sequence {} ({}) final", seq["name"], seq["chain"]);
     assert_swap(&state, &seq["final"]["swap"], &ctx);
     assert_maker(&maker, &seq["final"]["maker"], &ctx);
+    assert_eq!(open_value, num::<u128>(&seq["final"]["open_value"]), "{ctx}: open_value");
+    // SPEC 11.1: the open value is exactly the counted value of the swap while it is open.
+    let counted = if state.has(swap_core::model::flag::COUNTED) { state.amount + if state.direction == Direction::B { state.deposit } else { 0 } } else { 0 };
+    assert_eq!(open_value, counted, "{ctx}: open value against the counted flag");
+    assert_eq!(state.has(swap_core::model::flag::COUNTED), state.state.is_open(), "{ctx}: counted flag against the state");
+  }
+}
+
+/// SPEC 11.1: the sequences over several swaps. The open value at every step is the sum of the
+/// counted values of the swaps still open.
+#[test]
+fn every_multi_sequence_replays_from_the_json_alone() {
+  let t = load("transitions.json");
+  let multi = t["multi_sequences"].as_array().unwrap();
+  assert_eq!(multi.len(), 4);
+  for seq in multi {
+    let chain = chain_of(&seq["chain"]);
+    let n = seq["swaps"].as_u64().unwrap() as usize;
+    let mut states = vec![SwapState::NONE; n];
+    let mut maker = maker_of(&seq["initial_maker"]);
+    let mut open_value = 0u128;
+    let mut last = i64::MIN;
+    let mut refused_opens = 0;
+    for (i, step) in seq["steps"].as_array().unwrap().iter().enumerate() {
+      let ctx = format!("multi-sequence {} ({}) step {i} {}", seq["name"], seq["chain"], step["call"]);
+      let k = step["swap"].as_u64().unwrap() as usize;
+      let at = step["at"].as_i64().unwrap();
+      assert!(at >= last, "{ctx}: time runs backwards");
+      last = at;
+      assert_eq!(env_of(step).caps.open_value, open_value, "{ctx}: env.caps.open_value");
+      match check_step(states[k], step, chain, &ctx) {
+        Some(fx) => {
+          states[k] = fx.state;
+          open_value = fx.open_value_after;
+          maker.record(&fx, chain.consts().max_amount);
+          assert_maker(&maker, &step["expect"]["maker"], &ctx);
+        }
+        None => {
+          // Only opens are ever refused here: no cap touches an existing swap.
+          assert!(matches!(step["call"].as_str(), Some("lock" | "take")), "{ctx}: a cap refused an exit");
+          assert_eq!(step["expect"]["error"], "OpenCapExceeded", "{ctx}");
+          refused_opens += 1;
+        }
+      }
+      let sum: u128 = states
+        .iter()
+        .filter(|s| s.state.is_open())
+        .map(|s| s.amount + if s.direction == Direction::B { s.deposit } else { 0 })
+        .sum();
+      assert_eq!(open_value, sum, "{ctx}: open value is the sum of the counted values of the open swaps");
+    }
+    assert_eq!(refused_opens, 4, "{}", seq["name"]);
+    for (k, s) in states.iter().enumerate() {
+      let want = &seq["final"]["swaps"][k];
+      if want.is_null() {
+        assert_eq!(s.state, State::None);
+      } else {
+        assert_swap(s, want, &format!("multi-sequence {} final swap {k}", seq["name"]));
+      }
+    }
+    assert_maker(&maker, &seq["final"]["maker"], "multi final");
+    assert_eq!(open_value, num::<u128>(&seq["final"]["open_value"]));
   }
 }
 
@@ -302,7 +402,7 @@ fn required_sequences_are_present() {
       }
     }
     // For each deadline, the last enabled second and the first disabled second of every call it gates.
-    for deadline in ["T_pend", "T_note", "T_cut", "T_co", "T_cd", "T_final", "T_exp", "T_hold", "T_split"] {
+    for deadline in ["T_pend", "T_note", "T_cut", "T_co", "T_cd", "T_final", "T_exp", "T_hold", "T_split", "T_ff"] {
       let gated: Vec<&&str> = names.iter().filter(|n| n.starts_with(&format!("boundary/{deadline}/"))).collect();
       assert!(gated.len() >= 2 && gated.len() % 2 == 0, "{chain}: {deadline} has {} boundary sequences", gated.len());
       for n in &gated {
@@ -322,6 +422,39 @@ fn required_sequences_are_present() {
       has(&format!("no-deposit/{id}"));
     }
     has("saturation/counters-at-u32-max");
+    // SPEC 11.7. Caps: each exit type, and the invariant-3 walk of each.
+    let exits = [
+      "A/reject", "A/cancel", "A/expire", "A/refund_unnoticed", "A/abort-before-notice", "A/abort-early-then-refund",
+      "A/abort-late-then-refund-then-release", "A/refund-active-then-release", "A/refund-noticed-then-withhold-then-split",
+      "A/refund-after-T_note", "A/refund-missed-claim", "A/refund-expired", "A/claim-ready", "A/claim-without-ready",
+      "A/claim-after-final", "A/claim-parked-then-withdraw", "A/freeze-then-ready-then-claim",
+      "A/freeze-then-refund-then-withhold-then-release", "A/freeze-then-claim-at-T_ff", "A/freeze-then-abort-then-refund-then-release",
+      "B/reject", "B/cancel", "B/expire", "B/lapse", "B/backout-before-notice", "B/refund-no-notice-then-release",
+      "B/backout-after-notice", "B/refund-late-notice-then-release", "B/refund-unconfirmed-then-withhold-then-split", "B/refund-missed-claim-then-release",
+      "B/abort-then-refund-then-release", "B/refund-expired", "B/expire_unnoticed-then-withdraw", "B/claim-ready",
+      "B/claim-without-ready", "B/claim-after-final", "B/claim-parked-then-withdraw", "B/freeze-then-ready-then-claim",
+      "B/freeze-then-refund-deposit-returned-at-once", "B/freeze-then-claim-at-T_ff", "B/freeze-then-abort-then-refund-then-release",
+    ];
+    for e in exits {
+      has(&format!("exit/{e}"));
+      has(&format!("invariant3/{e}"));
+    }
+    // Payout: each claim row, parked proceeds delivered both ways, and every non-claim exit.
+    for n in ["claim-ready", "claim-without-ready", "claim-after-final", "claim-after-freeze", "parked-then-delivered-by-a-stranger", "parked-then-withdrawn-by-the-payout-address"] {
+      has(&format!("payout/B/{n}"));
+    }
+    for e in exits.iter().filter(|e| e.starts_with("B/") && !e.contains("claim")) {
+      has(&format!("payout/B/not-a-claim/{}", &e[2..]));
+    }
+    // Freeze.
+    for dir in ["A", "B"] {
+      for n in ["by-the-locker", "claim-waits-for-T_ff", "watcher-has-no-other-power", "latest-T_cd"] {
+        has(&format!("freeze/{dir}/{n}"));
+      }
+    }
+    assert_eq!(names.contains(&"deposit/A/split-with-the-other-treasury-slot"), chain == "solana");
+    let multi: Vec<&str> = t["multi_sequences"].as_array().unwrap().iter().filter(|s| s["chain"] == chain).map(|s| s["name"].as_str().unwrap()).collect();
+    assert_eq!(multi, vec!["caps/A/lowered-below-the-open-value", "caps/B/lowered-below-the-open-value"]);
   }
   // The parked sequences really park and then withdraw; the saturation sequence really saturates.
   let seq = |name: &str, chain: &str| t["sequences"].as_array().unwrap().iter().find(|s| s["name"] == name && s["chain"] == chain).unwrap().clone();
@@ -409,6 +542,11 @@ fn constants_in_deadlines_json() {
   }
   assert_eq!(s["EXPLICIT_APPROVE"], false);
   assert_eq!(e["EXPLICIT_APPROVE"], true);
+  // SPEC 11.6: the freeze-window bounds are the same on both chains.
+  for c in [s, e] {
+    assert_eq!(c["MIN_FREEZE_SECS"], 3_600);
+    assert_eq!(c["MAX_FREEZE_SECS"], 259_200);
+  }
   // The Δ_cut and D_c rows of the table in SPEC 3.1.
   let case = |name: &str| d["cases"].as_array().unwrap().iter().find(|c| c["name"] == name).unwrap_or_else(|| panic!("{name}")).clone();
   for (chain, depth, delta_cut, min_dc) in [
@@ -482,4 +620,98 @@ fn zero_amount_and_chain_caller_rules() {
     assert_eq!(case(&format!("swap-b-zero-xmr-{chain}"))["error"], "AmountOutOfRange");
     assert_eq!(case(&format!("swap-b-smallest-take-that-does-not-{chain}"))["output"]["amount"], "1");
   }
+}
+
+/// SPEC 11.7 in the vectors: the cap boundaries, the payout address, the freeze rows.
+#[test]
+fn amendment_one_rows() {
+  let t = load("transitions.json");
+  let rows = t["rows"].as_array().unwrap();
+  for chain in ["solana", "ethereum"] {
+    let find = |id: &str, case: &str| {
+      rows.iter().find(|r| r["chain"] == chain && r["id"] == id && r["case"] == case).unwrap_or_else(|| panic!("{chain} {id} {case}"))["step"]["expect"].clone()
+    };
+    for id in ["A1", "B1"] {
+      assert_eq!(find(id, "caps: amount exactly max_swap")["ok"], true);
+      assert_eq!(find(id, "caps: amount one above max_swap")["error"], "SwapCapExceeded");
+      assert_eq!(find(id, "caps: counted value exactly max_open")["ok"], true);
+      assert_eq!(find(id, "caps: counted value one above max_open")["error"], "OpenCapExceeded");
+      assert_eq!(find(id, "caps: other swaps open, the sum exactly max_open")["ok"], true);
+      assert_eq!(find(id, "caps: other swaps open, the sum one above max_open")["error"], "OpenCapExceeded");
+      assert_eq!(find(id, "caps: a fresh deployment (switch on, every cap zero)")["error"], "SwapCapExceeded");
+      assert_eq!(find(id, "caps: switched off with every cap zero")["ok"], true);
+      assert_eq!(find(id, "maker paused")["error"], "Paused");
+      assert_eq!(find(id, "freeze window below its floor")["error"], "FreezeWindowOutOfRange");
+      assert_eq!(find(id, "freeze window over its cap")["error"], "FreezeWindowOutOfRange");
+      assert_eq!(find(id, "freeze window at its floor")["ok"], true);
+      assert_eq!(find(id, "freeze window at its cap")["ok"], true);
+      assert_eq!(find(id, "freeze window: final window one second short")["error"], "FinalWindowOutOfRange");
+      // The counted value: amount in A, amount + deposit in B, and the flag.
+      let open = find(id, "AUTO offer");
+      let swap = &open["swap"];
+      let amount: u128 = num(&swap["amount"]);
+      let deposit: u128 = num(&swap["deposit"]);
+      assert_eq!(num::<u128>(&open["open_value_after"]), if id == "A1" { amount } else { amount + deposit });
+      assert_eq!(swap["flags"], 32);
+    }
+    assert_eq!(find("A1", "watcher named against W_z = 0")["error"], "WatcherNotAllowed");
+    assert_eq!(find("B5 naming a watcher against W_z = 0", "operator at t_lock+1")["error"], "WatcherNotAllowed");
+    assert_eq!(find("B5 naming a watcher", "operator at t_lock+1")["swap"]["watcher"], true);
+    assert_eq!(find("B1", "payout to another address")["swap"]["payout"], "other");
+    assert_eq!(find("B1", "AUTO offer")["swap"]["payout"], "taker");
+    assert_eq!(find("A1", "AUTO offer")["swap"]["payout"], "none");
+    assert_eq!(find("B1", "invalid payout address")["error"], if chain == "solana" { "PayoutInvalid" } else { "BadValue" });
+    // fund is never refused by a cap.
+    assert_eq!(find("B5 with every cap at zero and the maker paused", "operator at t_lock+1")["state"], "ACTIVE");
+    // Z1 to Z5, one second either side of T_co and T_ff.
+    for dir in ["A", "B"] {
+      let z = |id: &str, case: &str| {
+        rows
+          .iter()
+          .find(|r| r["chain"] == chain && r["direction"] == dir && r["id"] == id && r["case"] == case)
+          .unwrap_or_else(|| panic!("{chain} {dir} {id} {case}"))["step"]["expect"]
+          .clone()
+      };
+      let (locker, claimer) = if dir == "A" { ("session", "operator") } else { ("operator", "session") };
+      assert_eq!(z("Z1", "watcher at T_co-1")["state"], "FROZEN");
+      assert_eq!(z("Z1", "watcher at T_co-1")["counter_name"], "freezes");
+      assert_eq!(z("Z1", "watcher at T_co+0")["error"], "TooLate");
+      assert_eq!(z("Z1", &format!("{locker} at T_co-1"))["state"], "FROZEN");
+      assert_eq!(z("Z1", "other caller: anyone at t_N+0")["error"], "Unauthorized");
+      assert_eq!(z("Z1 with no watcher named", &format!("{locker} at t_N+5"))["error"], "BadState");
+      assert_eq!(z("Z1 twice", "watcher at t_Z+1")["error"], "BadState");
+      assert_eq!(z("Z1 in READY", "watcher at t_R+1")["error"], "BadState");
+      // A freeze moves nothing and pays nobody.
+      let frozen = z("Z1", "watcher at t_N+0");
+      assert_eq!(frozen["payouts"].as_array().unwrap().len(), 0);
+      assert_eq!(frozen["escrow_in"], "0");
+      assert_eq!(z("Z2", &format!("{locker} at T_ff-1"))["state"], "READY");
+      assert_eq!(z("Z2", &format!("{locker} at T_ff+0"))["error"], "TooLate");
+      assert_eq!(z("Z2", "other caller: watcher at T_ready_min-1")["error"], "Unauthorized");
+      let refund = z("Z3/Z6", &format!("{locker} at T_ff-1"));
+      if dir == "A" {
+        assert_eq!(refund["state"], "HOLD");
+        assert_eq!(refund["counter_name"], "refunds_after_freeze");
+      } else {
+        // No maker bond: the take deposit returns at once and is never held.
+        assert_eq!(refund["state"], "DONE");
+        assert_eq!(refund["counter_name"], "backouts_after_freeze");
+        assert_eq!(refund["payouts"][1]["to"], "taker");
+      }
+      assert_eq!(z("Z3/Z6", &format!("{locker} at T_ff+0"))["error"], "TooLate");
+      assert_eq!(z("Z3/Z6", &format!("{locker} at T_exp+0"))["counter_name"], "expired_refunds");
+      assert_eq!(z("Z4/Z6", &format!("{claimer} at T_co+0"))["error"], "TooEarly");
+      assert_eq!(z("Z4/Z6", &format!("{claimer} at T_ff-1"))["error"], "TooEarly");
+      assert_eq!(z("Z4/Z6", &format!("{claimer} at T_ff+0"))["counter_name"], "claims_after_freeze");
+      assert_eq!(z("Z4/Z6", &format!("{claimer} at T_final+0"))["counter_name"], "claims_after_final");
+      assert_eq!(z("Z5", &format!("{claimer} at T_ff-1"))["state"], "ABORTED_HOLD");
+      assert_eq!(z("Z5", &format!("{claimer} at T_ff+0"))["state"], "ABORTED_HOLD");
+      assert_eq!(z("Z5", &format!("{claimer} at T_final-1"))["state"], "ABORTED_HOLD");
+      assert_eq!(z("Z5", &format!("{claimer} at T_final+0"))["error"], "TooLate");
+    }
+  }
+  // No vector anywhere pays a watcher: there is no such destination.
+  let text = std::fs::read_to_string(vectors_dir().join("transitions.json")).unwrap();
+  assert!(!text.contains("\"to\":\"watcher\""));
+  assert_eq!(t["counter_names"].as_array().unwrap().len(), 37);
 }

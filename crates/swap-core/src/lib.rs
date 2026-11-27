@@ -36,6 +36,8 @@ pub mod keys;
 pub mod merkle;
 pub mod model;
 pub mod model_json;
+#[cfg(kani)]
+mod model_proofs;
 pub mod passphrase;
 pub mod point;
 pub mod pok;
@@ -45,6 +47,7 @@ pub mod solana;
 pub mod sweep;
 pub mod twin;
 pub mod vectors;
+pub mod wallet_key;
 
 #[cfg(target_arch = "wasm32")]
 mod wasm;

@@ -5,18 +5,19 @@
 //! * swap record: the `swap` object of a vector step (`state`, `direction`, every `t_*`, amounts
 //!   as decimal strings); `null` means "no such swap" (the state a `lock` or `take` starts from);
 //! * call: its name (`"lock"`, `"refund"`, …) and an `args` object;
-//! * caller: `"taker"`, `"session"`, `"operator"`, `"owner"`, `"anyone"`;
-//! * env: which destinations can receive, and the maker's `open_pending`;
+//! * caller: `"taker"`, `"session"`, `"operator"`, `"owner"`, `"watcher"`, `"payout"`, `"anyone"`;
+//! * env: which destinations can receive, the maker's `open_pending` and pause, and the asset's
+//!   caps with its open value before the call;
 //! * result: `{ "ok": true, state, counter, payouts, …, swap }` or `{ "ok": false, "error" }`
 //!   with the chain's error name.
 
 use serde_json::{json, Value};
 
 use crate::{
-  amounts::{Chain, SwapParams},
+  amounts::{Caps, Chain, SwapParams},
   model::{
-    apply, counter, Call, Direction, Effects, Env, Evidence, MakerRecord, ModelError, OpenArgs, Party, RejectReason,
-    Role, State, SwapState,
+    apply, counter, Call, Direction, Effects, Env, Evidence, MakerRecord, ModelError, OpenArgs, Party, PayoutArg,
+    PayoutTo, RejectReason, Role, State, SwapState,
   },
 };
 
@@ -36,21 +37,25 @@ pub fn call_args(call: &Call) -> Value {
       "direction": dir_name(a.direction), "offer_mode": a.offer_mode, "approval": a.approval, "xmr": d(a.xmr),
       "amount": d(a.amount),
       "w_a": a.params.w_a, "w_n": a.params.w_n, "d_c": a.params.d_c, "w_c": a.params.w_c, "w_f": a.params.w_f,
-      "depth": a.params.depth, "dep_bps": a.params.dep_bps,
+      "depth": a.params.depth, "dep_bps": a.params.dep_bps, "w_z": a.params.w_z,
+      "payout": a.payout.name(), "watcher": a.watcher,
     }),
-    Call::Approve { open_ok } | Call::Fund { open_ok } => json!({ "open_ok": open_ok }),
+    Call::Approve { open_ok } => json!({ "open_ok": open_ok }),
+    Call::Fund { open_ok, watcher } => json!({ "open_ok": open_ok, "watcher": watcher }),
     Call::Reject { open_ok, reason } => json!({ "open_ok": open_ok, "reason": *reason as u8 }),
     Call::Refund { secret_ok } | Call::Claim { secret_ok } => json!({ "secret_ok": secret_ok }),
     Call::Withhold(e) => json!({ "evidence": match e { Evidence::Absent => "absent", Evidence::Opens => "opens", Evidence::Mismatch => "mismatch" } }),
     Call::PublishEvidence { opens } => json!({ "opens": opens }),
-    Call::WithdrawOwed(who) => json!({ "who": who.name() }),
+    Call::WithdrawOwed(who) | Call::PushOwed(who) => json!({ "who": who.name() }),
     _ => json!({}),
   }
 }
 pub fn env_json(e: &Env) -> Value {
   json!({
     "taker_can_receive": e.taker_can_receive, "maker_can_receive": e.maker_can_receive,
-    "treasury_can_receive": e.treasury_can_receive, "open_pending": e.open_pending,
+    "treasury_can_receive": e.treasury_can_receive, "payout_can_receive": e.payout_can_receive,
+    "open_pending": e.open_pending, "maker_paused": e.maker_paused,
+    "caps": { "on": e.caps.on, "max_swap": d(e.caps.max_swap), "max_open": d(e.caps.max_open), "open_value": d(e.caps.open_value) },
   })
 }
 pub fn swap_json(s: &SwapState) -> Value {
@@ -63,6 +68,7 @@ pub fn swap_json(s: &SwapState) -> Value {
     "t_ready": s.t_ready, "t_claim_deadline": s.t_claim_deadline, "t_final": s.t_final, "t_refund": s.t_refund,
     "t_settled": s.t_settled,
     "owed_taker": d(s.owed_taker), "owed_maker": d(s.owed_maker), "owed_treasury": d(s.owed_treasury),
+    "payout": s.payout.name(), "watcher": s.watcher, "w_z": s.w_z, "t_freeze": s.t_freeze,
   })
 }
 pub fn maker_json(m: &MakerRecord) -> Value {
@@ -88,6 +94,7 @@ pub fn expect_json(result: &Result<Effects, ModelError>, chain: Chain, maker: Op
         "withheld_volume": d(fx.withheld_volume),
         "open_pending": fx.open_pending,
         "closed": fx.closed,
+        "open_value_after": d(fx.open_value_after),
         "swap": swap_json(&fx.state),
       });
       if let Some(m) = maker {
@@ -124,6 +131,16 @@ fn direction(v: &Value) -> Parsed<Direction> {
   }
 }
 
+fn party(v: &Value) -> Parsed<Party> {
+  match text(v, "who")? {
+    "taker" => Ok(Party::Taker),
+    "maker" => Ok(Party::Maker),
+    "treasury" => Ok(Party::Treasury),
+    "payout" => Ok(Party::Payout),
+    other => Err(format!("who: {other}")),
+  }
+}
+
 pub fn chain_from_name(name: &str) -> Parsed<Chain> {
   match name {
     "solana" => Ok(Chain::Solana),
@@ -137,6 +154,8 @@ pub fn role_from_name(name: &str) -> Parsed<Role> {
     "session" => Ok(Role::Session),
     "operator" => Ok(Role::Operator),
     "owner" => Ok(Role::Owner),
+    "watcher" => Ok(Role::Watcher),
+    "payout" => Ok(Role::Payout),
     "anyone" => Ok(Role::Anyone),
     other => Err(format!("caller: {other}")),
   }
@@ -162,11 +181,26 @@ pub fn call_from_json(name: &str, a: &Value) -> Parsed<Call> {
           w_f: num(&a["w_f"], "w_f")?,
           depth: num(&a["depth"], "depth")?,
           dep_bps: num(&a["dep_bps"], "dep_bps")?,
+          w_z: if a["w_z"].is_null() { 0 } else { num(&a["w_z"], "w_z")? },
         },
+        payout: if a["payout"].is_null() {
+          PayoutArg::Taker
+        } else {
+          match text(&a["payout"], "payout")? {
+            "taker" => PayoutArg::Taker,
+            "other" => PayoutArg::Other,
+            "invalid" => PayoutArg::Invalid,
+            other => return Err(format!("payout: {other}")),
+          }
+        },
+        watcher: if a["watcher"].is_null() { false } else { flag(&a["watcher"], "watcher")? },
       })
     }
     "approve" => Call::Approve { open_ok: flag(&a["open_ok"], "open_ok")? },
-    "fund" => Call::Fund { open_ok: flag(&a["open_ok"], "open_ok")? },
+    "fund" => Call::Fund {
+      open_ok: flag(&a["open_ok"], "open_ok")?,
+      watcher: if a["watcher"].is_null() { false } else { flag(&a["watcher"], "watcher")? },
+    },
     "reject" => Call::Reject {
       open_ok: flag(&a["open_ok"], "open_ok")?,
       reason: match num::<u8>(&a["reason"], "reason")? {
@@ -180,6 +214,7 @@ pub fn call_from_json(name: &str, a: &Value) -> Parsed<Call> {
     "expire_pending" => Call::ExpirePending,
     "post_notice" => Call::PostNotice,
     "set_ready" => Call::SetReady,
+    "freeze" => Call::Freeze,
     "abort" => Call::Abort,
     "refund_unnoticed" => Call::RefundUnnoticed,
     "expire_unnoticed" => Call::ExpireUnnoticed,
@@ -194,16 +229,13 @@ pub fn call_from_json(name: &str, a: &Value) -> Parsed<Call> {
     }),
     "split_deposit" => Call::SplitDeposit,
     "publish_evidence" => Call::PublishEvidence { opens: flag(&a["opens"], "opens")? },
-    "withdraw_owed" => Call::WithdrawOwed(match text(&a["who"], "who")? {
-      "taker" => Party::Taker,
-      "maker" => Party::Maker,
-      "treasury" => Party::Treasury,
-      other => return Err(format!("who: {other}")),
-    }),
+    "withdraw_owed" => Call::WithdrawOwed(party(&a["who"])?),
+    "push_owed" => Call::PushOwed(party(&a["who"])?),
     other => return Err(format!("call: {other}")),
   })
 }
-/// An absent or `null` env is "everything can receive, no pending swaps".
+/// An absent or `null` env is [`Env::OK`]: everything can receive, no pending swaps, caps on and
+/// out of reach, not paused. An absent key takes its value from there.
 pub fn env_from_json(e: &Value) -> Parsed<Env> {
   if e.is_null() {
     return Ok(Env::OK);
@@ -213,7 +245,22 @@ pub fn env_from_json(e: &Value) -> Parsed<Env> {
     taker_can_receive: get("taker_can_receive")?,
     maker_can_receive: get("maker_can_receive")?,
     treasury_can_receive: get("treasury_can_receive")?,
+    payout_can_receive: get("payout_can_receive")?,
     open_pending: if e["open_pending"].is_null() { 0 } else { num(&e["open_pending"], "open_pending")? },
+    caps: {
+      let c = &e["caps"];
+      if c.is_null() {
+        Caps::UNLIMITED
+      } else {
+        Caps {
+          on: flag(&c["on"], "caps.on")?,
+          max_swap: num(&c["max_swap"], "caps.max_swap")?,
+          max_open: num(&c["max_open"], "caps.max_open")?,
+          open_value: num(&c["open_value"], "caps.open_value")?,
+        }
+      }
+    },
+    maker_paused: if e["maker_paused"].is_null() { false } else { flag(&e["maker_paused"], "maker_paused")? },
   })
 }
 /// `null` is "no such swap".
@@ -232,6 +279,7 @@ pub fn swap_from_json(j: &Value) -> Parsed<SwapState> {
     "HOLD" => State::Hold,
     "WITHHELD" => State::Withheld,
     "DONE" => State::Done,
+    "FROZEN" => State::Frozen,
     other => return Err(format!("state: {other}")),
   };
   if !j["state_code"].is_null() && num::<u8>(&j["state_code"], "state_code")? != state as u8 {
@@ -266,6 +314,15 @@ pub fn swap_from_json(j: &Value) -> Parsed<SwapState> {
     owed_taker: num(&j["owed_taker"], "owed_taker")?,
     owed_maker: num(&j["owed_maker"], "owed_maker")?,
     owed_treasury: num(&j["owed_treasury"], "owed_treasury")?,
+    payout: match text(&j["payout"], "payout")? {
+      "none" => PayoutTo::None,
+      "taker" => PayoutTo::Taker,
+      "other" => PayoutTo::Other,
+      other => return Err(format!("payout: {other}")),
+    },
+    watcher: flag(&j["watcher"], "watcher")?,
+    w_z: num(&j["w_z"], "w_z")?,
+    t_freeze: num(&j["t_freeze"], "t_freeze")?,
   })
 }
 
@@ -333,6 +390,7 @@ mod tests {
       "t_lock": 0, "t_pending_deadline": 0, "t_active": 0, "t_note_deadline": 600, "t_notice": 100, "t_cut": 1375, "t_claim_open": 3700,
       "t_ready": 1500, "t_claim_deadline": 3300, "t_final": 604800, "t_refund": 0, "t_settled": 0,
       "owed_taker": "0", "owed_maker": "0", "owed_treasury": "0",
+      "payout": "none", "watcher": false, "w_z": 0, "t_freeze": 0,
     });
     let claim = |chain: &str, caller: &str| {
       apply_json(&json!({ "chain": chain, "state": state, "call": "claim", "args": { "secret_ok": false }, "caller": caller, "at": 1600 })).unwrap()

@@ -135,6 +135,7 @@ pub fn generate() -> Vec<VectorFile> {
   files.push(signed::envelope());
   files.push(signed::sol_signed());
   files.push(signed::eip712());
+  files.push(signed::wallet_seed());
   files.push(machine::terms());
   files.push(machine::amounts());
   files.push(machine::deadlines());

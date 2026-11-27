@@ -21,12 +21,13 @@
         "w_a": 60,
         "w_c": 1800,
         "w_f": 604800,
-        "w_n": 600
+        "w_n": 600,
+        "w_z": 0
       },
       "name": "sol-a-auto",
       "output": {
-        "preimage": "000000640005003c00000058020000ac17000008070000803a09000000000000000000020010a5d4e80000000a00203d88792d000019",
-        "terms_hash": "4565eb4f16082f950898d36dc6b0fe8d256de9ec7a9b18b880f69e1edde3a0b4"
+        "preimage": "000000640005003c00000058020000ac17000008070000803a09000000000000000000020010a5d4e80000000a00203d88792d00001900000000",
+        "terms_hash": "a363f1c9e48405e2b81fca3a4dd0a4c8b557dd1d65053a0ff1fe5e67a4862df4"
       },
       "valid": true
     },
@@ -51,12 +52,13 @@
         "w_a": 60,
         "w_c": 1800,
         "w_f": 604800,
-        "w_n": 600
+        "w_n": 600,
+        "w_z": 0
       },
       "name": "usdc-a-window",
       "output": {
-        "preimage": "010001640005003c00000058020000ac17000008070000803a09000000000000000000020010a5d4e80000000a00203d88792d000019",
-        "terms_hash": "87f0a241cecc8eb11f23cee2e709146701bea45b97a4a0bbf5485a6e4ba18e41"
+        "preimage": "010001640005003c00000058020000ac17000008070000803a09000000000000000000020010a5d4e80000000a00203d88792d00001900000000",
+        "terms_hash": "1e56582b710ca7c06f69b64502720bd7530161ff7dc8c139f9b2ea7a60b71e1b"
       },
       "valid": true
     },
@@ -81,12 +83,13 @@
         "w_a": 60,
         "w_c": 1800,
         "w_f": 604800,
-        "w_n": 600
+        "w_n": 600,
+        "w_z": 0
       },
       "name": "sol-b-advance",
       "output": {
-        "preimage": "000102f40105003c00000058020000ac17000008070000803a09000000000000000000020010a5d4e80000000a00203d88792d000019",
-        "terms_hash": "9fb9614f9ddfe69c2ca36cd967bedaa4b822cd63e36bd4601fb51214a6b5aafa"
+        "preimage": "000102f40105003c00000058020000ac17000008070000803a09000000000000000000020010a5d4e80000000a00203d88792d00001900000000",
+        "terms_hash": "90c884372c51ace34fa4678c9abae782e2919787a6de6e7931567e8682a05a4b"
       },
       "valid": true
     },
@@ -111,12 +114,13 @@
         "w_a": 60,
         "w_c": 1800,
         "w_f": 604800,
-        "w_n": 600
+        "w_n": 600,
+        "w_z": 0
       },
       "name": "one-depth-tier",
       "output": {
-        "preimage": "000000640005003c000000580200001815000008070000803a090000000000000000000a000000000000000000000000000000000000",
-        "terms_hash": "cf31f225e29f700f128f261b7f95befc054967a7cf523dcbeeff4354a8010f06"
+        "preimage": "000000640005003c000000580200001815000008070000803a090000000000000000000a00000000000000000000000000000000000000000000",
+        "terms_hash": "2f6b66a417a3702e6cd0e22df9b36573df082346973770670908f164a42578dc"
       },
       "valid": true
     },
@@ -141,12 +145,13 @@
         "w_a": 60,
         "w_c": 1800,
         "w_f": 604800,
-        "w_n": 600
+        "w_n": 600,
+        "w_z": 0
       },
       "name": "no-deposit",
       "output": {
-        "preimage": "000000000005003c00000058020000ac17000008070000803a09000000000000000000020010a5d4e80000000a00203d88792d000019",
-        "terms_hash": "f52d0eb813f845a29b2d64b148c31852f405e474a21820e21c2e56e7c059319f"
+        "preimage": "000000000005003c00000058020000ac17000008070000803a09000000000000000000020010a5d4e80000000a00203d88792d00001900000000",
+        "terms_hash": "738c1c56d8e8e38c815b773ba14bdc57f2871fae7f75538ce6738e1b28a819a8"
       },
       "valid": true
     },
@@ -171,12 +176,106 @@
         "w_a": 60,
         "w_c": 1800,
         "w_f": 604800,
-        "w_n": 600
+        "w_n": 600,
+        "w_z": 0
       },
       "name": "claim-delay-one-second-longer",
       "output": {
-        "preimage": "000000640005003c00000058020000ad17000008070000803a09000000000000000000020010a5d4e80000000a00203d88792d000019",
-        "terms_hash": "1e45796a67e9a65772cd5c2196340ddb4e2c355fd62f27fb2af6f05be3bc3123"
+        "preimage": "000000640005003c00000058020000ad17000008070000803a09000000000000000000020010a5d4e80000000a00203d88792d00001900000000",
+        "terms_hash": "9a4a919895b25292c07d0c667db16be1a5220fff3b3b08a0d2e918caafa5f26e"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "asset": 0,
+        "d_c": 6060,
+        "dep_bps": 100,
+        "depth_above": [
+          "0",
+          "1000000000000",
+          "50000000000000"
+        ],
+        "depths": [
+          2,
+          10,
+          25
+        ],
+        "direction": 0,
+        "fee_bps": 5,
+        "mode": 0,
+        "w_a": 60,
+        "w_c": 1800,
+        "w_f": 604800,
+        "w_n": 600,
+        "w_z": 3600
+      },
+      "name": "freeze-window-one-hour",
+      "output": {
+        "preimage": "000000640005003c00000058020000ac17000008070000803a09000000000000000000020010a5d4e80000000a00203d88792d000019100e0000",
+        "terms_hash": "7aad14c5f515df8f1ae0cf0dd6d81c378e971e95ec07547ac4385a566182f2b1"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "asset": 0,
+        "d_c": 6060,
+        "dep_bps": 100,
+        "depth_above": [
+          "0",
+          "1000000000000",
+          "50000000000000"
+        ],
+        "depths": [
+          2,
+          10,
+          25
+        ],
+        "direction": 0,
+        "fee_bps": 5,
+        "mode": 0,
+        "w_a": 60,
+        "w_c": 1800,
+        "w_f": 604800,
+        "w_n": 600,
+        "w_z": 86400
+      },
+      "name": "freeze-window-one-day",
+      "output": {
+        "preimage": "000000640005003c00000058020000ac17000008070000803a09000000000000000000020010a5d4e80000000a00203d88792d00001980510100",
+        "terms_hash": "12ff794381e0bf17b35ba413ad6966e36a32885fb2372380f12ceb0551d20026"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "asset": 0,
+        "d_c": 6060,
+        "dep_bps": 100,
+        "depth_above": [
+          "0",
+          "1000000000000",
+          "50000000000000"
+        ],
+        "depths": [
+          2,
+          10,
+          25
+        ],
+        "direction": 1,
+        "fee_bps": 5,
+        "mode": 0,
+        "w_a": 60,
+        "w_c": 1800,
+        "w_f": 604800,
+        "w_n": 600,
+        "w_z": 259200
+      },
+      "name": "freeze-window-three-days-sell",
+      "output": {
+        "preimage": "000100640005003c00000058020000ac17000008070000803a09000000000000000000020010a5d4e80000000a00203d88792d00001980f40300",
+        "terms_hash": "9552974c666fa291e82573cf3d5c716d6c263fddbcb0d1667fc7fb425dd0721b"
       },
       "valid": true
     },
@@ -201,17 +300,18 @@
         "w_a": 4294967295,
         "w_c": 4294967295,
         "w_f": 4294967295,
-        "w_n": 4294967295
+        "w_n": 4294967295,
+        "w_z": 4294967295
       },
       "name": "extremes",
       "output": {
-        "preimage": "010102ffffffffffffffffffffffffffffffffffffffffffffffff0000000000000000fffefffffffffffffffefffffffffffffffffd",
-        "terms_hash": "31b3035686881d897835a0e5324d45c2fa1fc5dff9e2c410bc3a1155deec458f"
+        "preimage": "010102ffffffffffffffffffffffffffffffffffffffffffffffff0000000000000000fffefffffffffffffffefffffffffffffffffdffffffff",
+        "terms_hash": "82cbeda1d4f809904ff7dbfab4f697068f05d858540a50228ad7d2be4cf1171c"
       },
       "valid": true
     }
   ],
   "format": "xmrswap-vectors/1",
-  "layout": "SHA256(DS(\"terms\") || asset u8 || direction u8 || mode u8 || dep_bps u16 || fee_bps u16 || w_a || w_n || d_c || w_c || w_f (u32 each) || 3 x (depth_above u64 || depth u8)), little-endian",
+  "layout": "SHA256(DS(\"terms\") || asset u8 || direction u8 || mode u8 || dep_bps u16 || fee_bps u16 || w_a || w_n || d_c || w_c || w_f (u32 each) || 3 x (depth_above u64 || depth u8) || w_z u32), little-endian; 58 bytes after the tag",
   "suite": "terms"
 }

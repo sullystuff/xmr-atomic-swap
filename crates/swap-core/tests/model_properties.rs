@@ -6,22 +6,26 @@
 //! * **the exit invariant** (invariant 2): from every funded state each party with funds at
 //!   stake has a call that becomes enabled;
 //!
-//! plus two that follow from the same walk: escrow is conserved (nothing is created, nothing is
-//! stranded), and every counter the chain can reach is reached.
+//! plus what follows from the same walk: escrow is conserved (nothing is created, nothing is
+//! stranded), every counter the chain can reach is reached, and, for Amendment 1 (SPEC 11):
+//! the open value is exactly the swap's counted value while it is open and zero afterwards; no
+//! cap or pause changes the answer of any call on an existing swap (invariant 3); a watcher can
+//! do nothing a stranger cannot except freeze; claim proceeds of a swap with a payout address go
+//! to it and nowhere else.
 
 use rand_chacha::ChaCha20Rng;
 use rand_core::{RngCore, SeedableRng};
 use swap_core::amounts::{
-  check_bounds, min_claim_delay, min_claim_window, min_final_window, pending_window, ChainConsts, Pending, SwapParams,
-  ETHEREUM, SOLANA,
+  check_bounds, min_claim_delay, min_claim_window, min_final_window, pending_window, Caps, ChainConsts, Pending, SwapParams,
+  ETHEREUM, MAX_FREEZE_SECS, MIN_FREEZE_SECS, SOLANA,
 };
 use swap_core::model::{
-  apply, counter, enabled, mode, Call, Direction, Env, Evidence, ModelError, OpenArgs, Party, RejectReason, Role, State,
-  SwapState,
+  apply, counter, enabled, flag, mode, Call, Direction, Env, Evidence, ModelError, OpenArgs, Party, PayoutArg, PayoutTo,
+  RejectReason, Role, State, SwapState,
 };
 
 const T0: i64 = 1_800_000_000;
-const ROLES: [Role; 5] = [Role::TakerWallet, Role::Session, Role::Operator, Role::Owner, Role::Anyone];
+const ROLES: [Role; 7] = [Role::TakerWallet, Role::Session, Role::Operator, Role::Owner, Role::Watcher, Role::Payout, Role::Anyone];
 
 fn below(rng: &mut ChaCha20Rng, n: u64) -> u64 {
   if n == 0 {
@@ -73,6 +77,8 @@ fn random_open(rng: &mut ChaCha20Rng, c: &ChainConsts) -> (OpenArgs, Pending) {
     w_f: 0,
     depth,
     dep_bps: pick(rng, 0, c.max_deposit_bps as i64) as u16,
+    // Half the offers accept a watcher.
+    w_z: if below(rng, 2) == 0 { 0 } else { pick(rng, MIN_FREEZE_SECS as i64, MAX_FREEZE_SECS as i64) as u32 },
   };
   let dc_min = min_claim_delay(depth, c);
   p.d_c = pick(rng, dc_min, dc_min + 20_000) as u32;
@@ -81,12 +87,24 @@ fn random_open(rng: &mut ChaCha20Rng, c: &ChainConsts) -> (OpenArgs, Pending) {
   let wf_min = min_final_window(&p, pending_window(&p, pending));
   p.w_f = pick(rng, wf_min, c.max_final_secs as i64) as u32;
   assert_eq!(check_bounds(&p, pending, c), Ok(()), "generator stays inside the bounds");
+  // The largest amount the chain accepts for this swap: the counted value of SPEC 11.1
+  // (amount in A, amount + deposit in B) must fit the amount type. `u64` is the ceiling here
+  // because the walks run under caps of that size.
+  let limit = c.max_amount.min(u64::MAX as u128);
+  let counted_of = |a: u128| a + if direction == Direction::B { swap_core::amounts::deposit_of(a, p.dep_bps) } else { 0 };
+  let mut largest = limit * 10_000 / (10_000 + if direction == Direction::B { p.dep_bps as u128 } else { 0 });
+  while counted_of(largest + 1) <= limit {
+    largest += 1;
+  }
+  assert!(counted_of(largest) <= limit && counted_of(largest + 1) > limit);
   let amount = match below(rng, 5) {
     0 => 1,
-    1 => c.max_amount.min(u64::MAX as u128),
+    1 => largest,
     _ => 1 + below(rng, 1_000_000_000_000) as u128,
   };
-  (OpenArgs { direction, offer_mode, approval, xmr: 1 + below(rng, 1_000_000_000_000_000), amount, params: p }, pending)
+  let payout = if below(rng, 2) == 0 { PayoutArg::Taker } else { PayoutArg::Other };
+  let watcher = p.w_z > 0 && below(rng, 4) != 0;
+  (OpenArgs { direction, offer_mode, approval, xmr: 1 + below(rng, 1_000_000_000_000_000), amount, params: p, payout, watcher }, pending)
 }
 
 /// Every instant at which something can change, and its neighbours.
@@ -102,6 +120,9 @@ fn instants(s: &SwapState, c: &ChainConsts) -> Vec<i64> {
   }
   if s.t_refund != 0 {
     base.extend([s.t_refund, s.t_hold(c), s.t_split(c)]);
+  }
+  if s.t_freeze != 0 {
+    base.extend([s.t_freeze, s.t_ff()]);
   }
   let mut out = Vec::new();
   for t in base {
@@ -142,7 +163,7 @@ fn rule_1(s: &SwapState, now: i64, c: &ChainConsts, seed: u64) {
     for r in claimer {
       assert!(!enabled(s, SECRET_CALLS[0], *r, now, c), "seed {seed}: claimer can refund");
     }
-    for r in [Role::Anyone, Role::Owner] {
+    for r in [Role::Anyone, Role::Owner, Role::Watcher, Role::Payout] {
       for call in SECRET_CALLS {
         assert!(!enabled(s, call, r, now, c), "seed {seed}: a stranger can {}", call.name());
       }
@@ -164,7 +185,29 @@ fn exit_invariant(s: &SwapState, now: i64, c: &ChainConsts, seed: u64) {
   let refund = Call::Refund { secret_ok: true };
   let claim = Call::Claim { secret_ok: true };
   let ctx = format!("seed {seed}: {:?} {:?} at t_lock{:+}", s.direction, s.state, now - s.t_lock);
-  let post_notice = matches!(s.state, State::Noticed | State::Ready | State::AbortedFree | State::AbortedHold);
+  let post_notice = matches!(s.state, State::Noticed | State::Ready | State::AbortedFree | State::AbortedHold | State::Frozen);
+  if s.state == State::Frozen {
+    // SPEC 11.6: the locker's refund and set_ready are enabled until T_ff, whatever the watcher did.
+    let locker = if s.direction == Direction::A { Role::Session } else { Role::Operator };
+    let claimer = if s.direction == Direction::A { Role::Operator } else { Role::Session };
+    // T_ff, computed here and not by the model: the later of t_Z + W_z and T_co.
+    let t_ff = (s.t_freeze + s.w_z as i64).max(s.t_claim_open);
+    assert_eq!(s.t_ff(), t_ff, "{ctx}");
+    assert!(s.t_freeze < s.t_claim_open && t_ff < s.t_claim_open + s.w_z as i64, "{ctx}: t_Z < T_co, T_ff < T_co + W_z");
+    assert!(t_ff < s.t_final - s.w_c as i64 - 86_400, "{ctx}: T_ff < T_final − W_c − 86,400");
+    assert_eq!(enabled(s, refund, locker, now, c), now < t_ff || now >= s.t_exp(c), "{ctx}: locker refund until T_ff");
+    assert_eq!(enabled(s, Call::SetReady, locker, now, c), now >= s.t_ready_min(c) && now < t_ff, "{ctx}: set_ready until T_ff");
+    assert_eq!(enabled(s, claim, claimer, now, c), now >= t_ff && now < s.t_exp(c), "{ctx}: claim from T_ff");
+    // The freeze took nothing from the locker: wherever it could refund or set ready before
+    // (until T_co), it still can; and the claimer gained nothing.
+    if now < s.t_claim_open {
+      assert!(enabled(s, refund, locker, now, c), "{ctx}: the freeze closed the locker's refund early");
+      assert!(!enabled(s, claim, claimer, now, c), "{ctx}: the freeze opened the claim early");
+      assert_eq!(enabled(s, Call::SetReady, locker, now, c), now >= s.t_ready_min(c), "{ctx}: the freeze blocked set_ready");
+    }
+    // Unfreezing is always possible at some instant.
+    assert!(s.t_ready_min(c) < t_ff, "{ctx}: no instant at which the locker can set ready");
+  }
   match (s.state, s.direction) {
     (State::Pending, _) => {
       // Taker: cancel_pending at any time; anyone's expire_pending after T_pend.
@@ -213,9 +256,12 @@ fn exit_invariant(s: &SwapState, now: i64, c: &ChainConsts, seed: u64) {
 }
 
 fn random_call(rng: &mut ChaCha20Rng) -> Call {
-  match below(rng, 20) {
+  match below(rng, 24) {
     0 => Call::Approve { open_ok: true },
-    1 => Call::Fund { open_ok: true },
+    1 => Call::Fund { open_ok: true, watcher: below(rng, 2) == 0 },
+    20 | 21 => Call::Freeze,
+    22 => Call::WithdrawOwed(Party::Payout),
+    23 => Call::PushOwed([Party::Taker, Party::Maker, Party::Treasury, Party::Payout][below(rng, 4) as usize]),
     2 => Call::Reject {
       open_ok: true,
       reason: [RejectReason::MakerChoice, RejectReason::UnusableInput, RejectReason::LeafConsumed][below(rng, 3) as usize],
@@ -245,14 +291,35 @@ struct Coverage {
   states: std::collections::BTreeSet<(u8, State)>,
   transitions: u64,
   parked: u64,
+  /// Swaps opened with a payout address other than the taker's, and payouts made to one.
+  payout_other: u64,
+  payout_paid: u64,
+}
+
+/// The counted value of SPEC 11.1.
+fn counted(s: &SwapState) -> u128 {
+  s.amount + if s.direction == Direction::B { s.deposit } else { 0 }
 }
 
 fn walk(seed: u64, c: &ChainConsts, cov: &mut Coverage) {
   let mut rng = ChaCha20Rng::seed_from_u64(seed);
   let (args, _) = random_open(&mut rng, c);
   let mut now = T0 + below(&mut rng, 1_000_000) as i64;
-  let fx = apply(SwapState::NONE, Call::Open(args), Role::TakerWallet, now, &Env::OK, c).expect("in-bounds open");
+  // Other swaps of the same asset are open: the accounting must add to and subtract from that.
+  let room = c.max_amount.min(u64::MAX as u128) - (args.amount + if args.direction == Direction::B { swap_core::amounts::deposit_of(args.amount, args.params.dep_bps) } else { 0 });
+  let others = (below(&mut rng, 1_000_000_000) as u128).min(room);
+  // One unit more than fits is refused, and only at the open.
+  if room < 1_000 && c.max_amount <= u64::MAX as u128 {
+    let over = Env { caps: Caps { on: false, max_swap: 0, max_open: 0, open_value: room + 1 }, ..Env::OK };
+    assert_eq!(apply(SwapState::NONE, Call::Open(args), Role::TakerWallet, now, &over, c), Err(ModelError::MathOverflow), "seed {seed}");
+  }
+  let caps_off = Caps { on: false, max_swap: 0, max_open: 0, open_value: others };
+  let fx = apply(SwapState::NONE, Call::Open(args), Role::TakerWallet, now, &Env { caps: caps_off, ..Env::OK }, c).expect("in-bounds open");
   let mut s = fx.state;
+  let mut open_value = fx.open_value_after;
+  assert_eq!(open_value, others + counted(&s), "seed {seed}: the open adds the counted value");
+  assert!(s.has(flag::COUNTED));
+  cov.payout_other += (s.payout == PayoutTo::Other) as u64;
   // Escrow ledger: funds in minus funds actually transferred out.
   let mut escrow = fx.escrow_in;
   cov.counters[fx.counter.unwrap() as usize] += 1;
@@ -284,17 +351,29 @@ fn walk(seed: u64, c: &ChainConsts, cov: &mut Coverage) {
     };
     // Choose what to do: mostly something that is enabled then (preferring calls that keep the
     // swap open, or the walk would end at the first cancel), sometimes anything at all.
+    // The admin's and the maker's switches take a random position at every step: caps on or
+    // off, at zero or anywhere, the maker paused or not.
+    let caps = Caps {
+      on: below(&mut rng, 2) == 0,
+      max_swap: if below(&mut rng, 2) == 0 { 0 } else { below(&mut rng, u64::MAX) as u128 },
+      max_open: if below(&mut rng, 2) == 0 { 0 } else { below(&mut rng, u64::MAX) as u128 },
+      open_value,
+    };
     let env = Env {
       taker_can_receive: below(&mut rng, 8) != 0,
       maker_can_receive: below(&mut rng, 8) != 0,
       treasury_can_receive: c.open_secret_calls || below(&mut rng, 8) != 0,
-      open_pending: 0,
+      payout_can_receive: below(&mut rng, 4) != 0,
+      open_pending: below(&mut rng, 100) as u16,
+      caps,
+      maker_paused: below(&mut rng, 2) == 0,
     };
     let (call, caller) = if below(&mut rng, 5) != 0 {
       let mut options = Vec::new();
-      for _ in 0..60 {
+      // Seven roles and twenty-four calls: draw enough pairs to find what is enabled.
+      for _ in 0..160 {
         let call = random_call(&mut rng);
-        let caller = ROLES[below(&mut rng, 5) as usize];
+        let caller = ROLES[below(&mut rng, ROLES.len() as u64) as usize];
         if let Ok(fx) = apply(s, call, caller, at, &Env::OK, c) {
           options.push((call, caller, fx.state.state != State::Done));
         }
@@ -308,8 +387,16 @@ fn walk(seed: u64, c: &ChainConsts, cov: &mut Coverage) {
       let (call, caller, _) = pool[below(&mut rng, pool.len() as u64) as usize];
       (call, caller)
     } else {
-      (random_call(&mut rng), ROLES[below(&mut rng, 5) as usize])
+      (random_call(&mut rng), ROLES[below(&mut rng, ROLES.len() as u64) as usize])
     };
+
+    // Invariant 3: with the same destinations, the answer does not depend on any switch.
+    let calm = Env { open_pending: 0, caps: Caps { open_value, ..Caps::UNLIMITED }, maker_paused: false, ..env };
+    assert_eq!(apply(s, call, caller, at, &env, c), apply(s, call, caller, at, &calm, c), "seed {seed}: a switch changed {}", call.name());
+    // A watcher can do what a stranger can, and freeze.
+    if caller == Role::Watcher && call != Call::Freeze {
+      assert_eq!(apply(s, call, Role::Watcher, at, &env, c), apply(s, call, Role::Anyone, at, &env, c), "seed {seed}: watcher power in {}", call.name());
+    }
 
     match apply(s, call, caller, at, &env, c) {
       Err(_) => {
@@ -332,14 +419,36 @@ fn walk(seed: u64, c: &ChainConsts, cov: &mut Coverage) {
           }
         }
         let n = fx.state;
+        // SPEC 11.1: one subtraction, at the transition that leaves the open states.
+        let expect_value = if s.has(flag::COUNTED) && !n.state.is_open() { open_value - counted(&s) } else { open_value };
+        assert_eq!(fx.open_value_after, expect_value, "seed {seed}: open value after {}", call.name());
+        assert_eq!(n.has(flag::COUNTED), n.state.is_open(), "seed {seed}: counted flag in {:?}", n.state);
+        open_value = fx.open_value_after;
+        assert_eq!(open_value, others + if n.state.is_open() { counted(&n) } else { 0 }, "seed {seed}: open value is the sum of the open swaps");
+        // SPEC 11.6: a freeze moves nothing.
+        if call == Call::Freeze {
+          assert!(fx.payouts.is_empty() && fx.escrow_in == 0, "seed {seed}: a freeze moved funds");
+          assert_eq!(SwapState { state: s.state, t_freeze: 0, ..n }, s, "seed {seed}: a freeze changed more than the state and t_freeze");
+        }
+        // SPEC 11.2: only a direction-B claim pays the payout address, and then the taker gets nothing.
+        for p in &fx.payouts {
+          if p.to == Party::Payout {
+            assert!(n.direction == Direction::B && n.payout == PayoutTo::Other, "seed {seed}: payout paid in {}", call.name());
+            assert!(matches!(call, Call::Claim { .. } | Call::WithdrawOwed(Party::Payout) | Call::PushOwed(Party::Payout)), "seed {seed}: {} paid the payout address", call.name());
+            cov.payout_paid += 1;
+          }
+        }
+        if matches!(call, Call::Claim { .. }) && n.payout == PayoutTo::Other {
+          assert!(fx.payouts.iter().all(|p| p.to != Party::Taker), "seed {seed}: a claim paid the taking wallet");
+        }
         let owed = n.owed_taker + n.owed_maker + n.owed_treasury;
         // Conservation: what is still in escrow is exactly what the state says is there.
         let expected = owed
           + match (n.state, n.direction) {
             (State::Pending, Direction::A) => n.amount,
             (State::Pending, Direction::B) => n.deposit,
-            (State::Active | State::Noticed | State::Ready | State::AbortedFree | State::AbortedHold, Direction::A) => n.amount,
-            (State::Active | State::Noticed | State::Ready | State::AbortedFree | State::AbortedHold, Direction::B) => {
+            (State::Active | State::Noticed | State::Ready | State::AbortedFree | State::AbortedHold | State::Frozen, Direction::A) => n.amount,
+            (State::Active | State::Noticed | State::Ready | State::AbortedFree | State::AbortedHold | State::Frozen, Direction::B) => {
               n.amount + n.deposit
             }
             (State::Hold | State::Withheld, _) => n.deposit,
@@ -388,9 +497,20 @@ fn walk(seed: u64, c: &ChainConsts, cov: &mut Coverage) {
     assert!(moved, "seed {seed}: stuck in {:?} {:?}", s.direction, s.state);
   }
   assert_eq!(s.state, State::Done, "seed {seed}");
-  for (who, role) in [(Party::Taker, Role::TakerWallet), (Party::Maker, Role::Owner), (Party::Treasury, Role::Anyone)] {
+  assert!(!s.has(flag::COUNTED), "seed {seed}: a settled swap is still counted");
+  // Parked claim proceeds of a swap with a payout address belong to that address: the taking
+  // wallet cannot pull them.
+  let taker_side = if s.payout_owed() {
+    let refused = apply(s, Call::WithdrawOwed(Party::Taker), Role::TakerWallet, t, &Env::OK, c).unwrap_err();
+    assert_eq!(refused, if c.pull_own_owed { ModelError::NothingOwed } else { ModelError::Unauthorized }, "seed {seed}");
+    (Party::Payout, Role::Payout)
+  } else {
+    (Party::Taker, Role::TakerWallet)
+  };
+  for (who, role) in [taker_side, (Party::Maker, Role::Owner), (Party::Treasury, Role::Anyone)] {
     match apply(s, Call::WithdrawOwed(who), role, t, &Env::OK, c) {
       Ok(fx) => {
+        assert_eq!(fx.payouts[0].to, who, "seed {seed}");
         escrow -= fx.payouts[0].amount;
         s = fx.state;
       }
@@ -401,7 +521,7 @@ fn walk(seed: u64, c: &ChainConsts, cov: &mut Coverage) {
 }
 
 fn run_chain(c: &ChainConsts, seeds: std::ops::Range<u64>) -> Coverage {
-  let mut cov = Coverage { counters: [0; counter::COUNT], states: Default::default(), transitions: 0, parked: 0 };
+  let mut cov = Coverage { counters: [0; counter::COUNT], states: Default::default(), transitions: 0, parked: 0, payout_other: 0, payout_paid: 0 };
   for seed in seeds {
     walk(seed, c, &mut cov);
   }
@@ -415,16 +535,17 @@ fn rule_1_and_exit_invariant_solana() {
   // after the opening one so the walks cannot all have died at the first step.
   assert!(cov.transitions > 12_000, "{} transitions", cov.transitions);
   assert!(cov.parked > 100);
-  // Every assigned counter is reachable on Solana.
-  for id in 0..=counter::REJECTIONS_NO_FAULT {
+  // Every assigned counter is reachable on Solana, the four of SPEC 11.6 included.
+  for id in 0..=counter::CLAIMS_AFTER_FREEZE {
     assert!(cov.counters[id as usize] > 0, "counter {} ({}) never moved", id, counter::NAMES[id as usize]);
   }
-  for id in 33..counter::COUNT {
+  for id in 37..counter::COUNT {
     assert_eq!(cov.counters[id], 0, "reserved counter {id} moved");
   }
+  assert!(cov.payout_other > 1_000 && cov.payout_paid > 50, "{} swaps with a payout address, {} payouts to one", cov.payout_other, cov.payout_paid);
   // Every state in both directions, except ABORTED_FREE in B, which does not exist.
   for dir in [0u8, 1] {
-    for st in [State::Pending, State::Active, State::Noticed, State::Ready, State::AbortedFree, State::AbortedHold, State::Hold, State::Withheld, State::Done] {
+    for st in [State::Pending, State::Active, State::Noticed, State::Ready, State::AbortedFree, State::AbortedHold, State::Hold, State::Withheld, State::Done, State::Frozen] {
       assert_eq!(cov.states.contains(&(dir, st)), !(dir == 1 && st == State::AbortedFree), "direction {dir} {st:?}");
     }
   }
@@ -436,15 +557,17 @@ fn rule_1_and_exit_invariant_ethereum() {
   // A swap has at most a handful of transitions; require an average of two accepted calls
   // after the opening one so the walks cannot all have died at the first step.
   assert!(cov.transitions > 12_000, "{} transitions", cov.transitions);
-  for id in 0..=counter::REJECTIONS_NO_FAULT {
+  for id in 0..=counter::CLAIMS_AFTER_FREEZE {
     // Counter 13 (missed_funds) is reachable only where EXPLICIT_APPROVE is false.
     assert_eq!(cov.counters[id as usize] > 0, id != counter::MISSED_FUNDS, "counter {} ({})", id, counter::NAMES[id as usize]);
   }
   for dir in [0u8, 1] {
-    for st in [State::Pending, State::Active, State::Noticed, State::Ready, State::AbortedFree, State::AbortedHold, State::Hold, State::Withheld, State::Done] {
+    for st in [State::Pending, State::Active, State::Noticed, State::Ready, State::AbortedFree, State::AbortedHold, State::Hold, State::Withheld, State::Done, State::Frozen] {
       assert_eq!(cov.states.contains(&(dir, st)), !(dir == 1 && st == State::AbortedFree), "direction {dir} {st:?}");
     }
   }
+  // Fewer than on Solana: every swap starts PENDING here, so fewer walks reach a claim.
+  assert!(cov.payout_other > 1_000 && cov.payout_paid > 10, "{} swaps with a payout address, {} payouts to one", cov.payout_other, cov.payout_paid);
 }
 
 /// The derivation of SPEC 3.2 on random in-bounds swaps: the order
@@ -464,7 +587,7 @@ fn deadline_order_on_every_accepted_path() {
       };
       if pending != Pending::None {
         let at = if last { s.t_pending_deadline - 1 } else { between(&mut rng, T0, s.t_pending_deadline - 1) };
-        let call = if args.direction == Direction::A { Call::Approve { open_ok: true } } else { Call::Fund { open_ok: true } };
+        let call = if args.direction == Direction::A { Call::Approve { open_ok: true } } else { Call::Fund { open_ok: true, watcher: s.w_z > 0 } };
         s = apply(s, call, Role::Operator, at, &Env::OK, c).unwrap().state;
       }
       assert!(s.t_lock <= s.t_active);
@@ -478,9 +601,23 @@ fn deadline_order_on_every_accepted_path() {
       assert!(s.t_cut <= s.t_claim_open - 2 * c.margin_secs, "seed {seed}: T_cut <= T_co − 2M");
       assert!(s.t_claim_open < s.t_final - s.w_c as i64 - 86_400);
       assert!(s.t_ready_min(c) < s.t_claim_open, "seed {seed}: ready is possible before T_co");
-      let at = if last { s.t_claim_open - 1 } else { between(&mut rng, s.t_ready_min(c), s.t_claim_open - 1) };
-      s = apply(s, Call::SetReady, locker, at, &Env::OK, c).unwrap().state;
-      assert!(s.t_ready < s.t_claim_open);
+      // SPEC 11.6: with a watcher, half the walks freeze first (at the last second, or anywhere)
+      // and set ready out of FROZEN; the algebra must hold with W_z added.
+      let frozen = s.watcher && below(&mut rng, 2) == 0;
+      if frozen {
+        let at = if last { s.t_claim_open - 1 } else { between(&mut rng, s.t_notice, s.t_claim_open - 1) };
+        s = apply(s, Call::Freeze, Role::Watcher, at, &Env::OK, c).unwrap().state;
+        assert_eq!(s.state, State::Frozen);
+        assert!(s.t_ff() < s.t_claim_open + s.w_z as i64, "seed {seed}: T_ff < T_co + W_z");
+        assert!(s.t_claim_open + (s.w_z as i64) < s.t_final - s.w_c as i64 - 86_400, "seed {seed}: T_co + W_z < T_final − W_c − 86,400");
+        let at = if last { s.t_ff() - 1 } else { between(&mut rng, s.t_ready_min(c).max(s.t_freeze), s.t_ff() - 1) };
+        s = apply(s, Call::SetReady, locker, at, &Env::OK, c).unwrap_or_else(|e| panic!("seed {seed}: set_ready in FROZEN at {at}: {e:?} {s:?}")).state;
+        assert!(s.t_ready < s.t_ff());
+      } else {
+        let at = if last { s.t_claim_open - 1 } else { between(&mut rng, s.t_ready_min(c), s.t_claim_open - 1) };
+        s = apply(s, Call::SetReady, locker, at, &Env::OK, c).unwrap().state;
+        assert!(s.t_ready < s.t_claim_open);
+      }
       assert!(s.t_claim_deadline < s.t_final - 86_400, "seed {seed}: T_cd < T_final − 86,400");
       assert!(s.t_final < s.t_exp(c));
     }

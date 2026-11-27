@@ -294,6 +294,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "escrow-logic"
+version = "0.1.0"
+
+[[package]]
 name = "ff"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1367,6 +1371,7 @@ dependencies = [
  "curve25519-dalek",
  "curve25519-dalek-ng",
  "ed25519-dalek",
+ "escrow-logic",
  "getrandom",
  "hex",
  "hkdf",
