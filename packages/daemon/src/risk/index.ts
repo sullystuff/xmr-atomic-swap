@@ -8,7 +8,7 @@ import type { Config, ResolvedOffer } from '../config/load.js';
 import type { Store, SwapRow } from '../store/db.js';
 
 /** States in which the maker has value committed (its XMR in A, its escrow in B). */
-const IN_FLIGHT: number[] = [SWAP_STATE.ACTIVE, SWAP_STATE.NOTICED, SWAP_STATE.READY, SWAP_STATE.ABORTED_FREE, SWAP_STATE.ABORTED_HOLD];
+const IN_FLIGHT: number[] = [SWAP_STATE.ACTIVE, SWAP_STATE.NOTICED, SWAP_STATE.READY, SWAP_STATE.FROZEN, SWAP_STATE.ABORTED_FREE, SWAP_STATE.ABORTED_HOLD];
 
 export class Risk {
   /** Set by the Monero monitor while nodes report a reorganisation. */

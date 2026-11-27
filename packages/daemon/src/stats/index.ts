@@ -62,13 +62,14 @@ export function statsView(store: Store, chains: ChainCounters[], since = 0): Sta
  * Fee estimate, 24-hour actual and runway: how many days of offer updates the fee wallet
  * covers at the current rate (DESIGN "Offer updates and daily cost").
  */
-export function feesView(store: Store, o: { estimate: UpdateCostEstimate | null; balances: FeesResponse['operator_balances']; usd: (asset: 'sol' | 'eth') => number | null; runwayAlertDays: number }): FeesResponse {
+export function feesView(store: Store, o: { estimate: UpdateCostEstimate | null; balances: FeesResponse['operator_balances']; usd: (asset: 'sol' | 'eth') => number | null; runwayAlertDays: number; dailySwapLamports?: bigint }): FeesResponse {
   const spent = new Map<string, bigint>();
   for (const f of store.feesSince(store.now() - 86_400)) spent.set(f.asset, (spent.get(f.asset) ?? 0n) + BigInt(f.amount));
   const decimals = { sol: 9, eth: 18 } as const;
   const sol = o.balances.find((b) => b.chain === 'solana' && b.asset === 'sol');
   // The runway uses the larger of the estimate and what was actually spent: a maker that refreshes more than planned runs dry sooner.
-  const daily = [o.estimate ? BigInt(o.estimate.daily_lamports) : 0n, spent.get('sol') ?? 0n].reduce((a, b) => (a > b ? a : b));
+  // Offer updates plus the operator's swap transactions at the last day's rate (both with the post-Amendment-1 compute units).
+  const daily = [(o.estimate ? BigInt(o.estimate.daily_lamports) : 0n) + (o.dailySwapLamports ?? 0n), spent.get('sol') ?? 0n].reduce((a, b) => (a > b ? a : b));
   return {
     estimate: o.estimate,
     spent_24h: [...spent].map(([asset, amount]) => {

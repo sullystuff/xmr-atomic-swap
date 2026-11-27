@@ -16,7 +16,8 @@ import { PublicKey, Transaction } from '@solana/web3.js';
 import { type DerivedKeys, scalarMatches } from '@xmrswap/core-wasm';
 import { ACCOUNT_SIZE, COUNTER_NONE, SWAP_FLAG, SWAP_STATE, DEV_PROGRAM_ID, ERROR_NAMES, type Maker, type Offer, type ProgramErrorName, type Swap, base58Encode, decodeAccount, decodeInstructionData, encodeAccount, errorCode, instructionAccounts } from '@xmrswap/protocol';
 import type { MoneroNodeStatus } from '@xmrswap/protocol/daemon-api';
-import { type Call, type LockState, ModelError, type ModelSwap, NO_SWAP, type Role, type SwapView, type VerifyLockResult, XmrSwapProgram, apply, buildNotice, evidenceOpens, seedSigner, solanaOpenKeys, swapJointAddress, takerSwapKeys } from '@xmrswap/sdk';
+import type { AssetCaps, Config as ChainConfig } from '@xmrswap/protocol';
+import { type Call, type Env, type LockState, ModelError, type ModelSwap, NO_SWAP, type Role, type SwapView, type VerifyLockResult, WATCH_ROUTES, XmrSwapProgram, apply, buildNotice, evidenceOpens, type HttpFetch, openNoticeWithKey, openWatchRequest, seedSigner, signWatchAck, solanaOpenKeys, swapJointAddress, takerSwapKeys, viewFromSolana } from '@xmrswap/sdk';
 import { FakeSolana } from '@xmrswap/sdk/testing';
 import type { SweepOutcome } from '@xmrswap/core-wasm';
 import type { MoneroView, SweepRequest } from '../src/monero/nodes.js';
@@ -45,7 +46,15 @@ export interface OpenParams {
   makerSpendPub?: Uint8Array;
   seed?: Uint8Array;
   nonce?: Uint8Array;
+  /** The freeze window of the offer the swap was opened against (`W_z`); 0 = no watcher accepted. */
+  wZ?: number;
+  /** Direction A: the watcher the taker names (base58). */
+  watcher?: string;
+  /** Direction B: the payout address (default: the taker's own). */
+  payout?: string;
 }
+const DEFAULT_KEY = '11111111111111111111111111111111';
+const ENV: Env = { takerCanReceive: true, makerCanReceive: true, treasuryCanReceive: true, openPending: 0 };
 export interface OpenedSwap {
   pda: string;
   keys: DerivedKeys;
@@ -80,7 +89,8 @@ export class SimSolana {
       registeredSlot: 1n, registeredAt: T0, ethLink: new Uint8Array(20), ethLinkNext: new Uint8Array(20), ethLinkNextAt: 0n, counters: new Array(40).fill(0), responseSecsSum: 0n, volume: [0n, 0n], withheldVolume: [0n, 0n], bump: 255, onion: '', contacts: [],
     };
     this.putMaker(maker);
-    this.fake.setAccount(this.program.config.toBase58(), this.programId, encodeAccount('Config', { admin: seedSigner(fill(1)).publicKey, treasuryAuthority: seedSigner(fill(1)).publicKey, clusterTag: fill(7), usdcMint: this.usdcMint, splitMode: 0, bump: 255, treasuryBump: 255, reserved: new Uint8Array(117) }, ACCOUNT_SIZE.Config));
+    // As the test harnesses deploy it: the caps switched off (a fresh deployment is `setCaps(true, [0n, 0n], [0n, 0n])`).
+    this.putConfig({ admin: seedSigner(fill(1)).publicKey, treasuryAuthority: seedSigner(fill(1)).publicKey, clusterTag: fill(7), usdcMint: this.usdcMint, splitMode: 0, bump: 255, treasuryBump: 255, capsOn: 0, maxSwap: [0n, 0n], maxOpen: [0n, 0n], openValue: [0n, 0n], reserved: new Uint8Array(68) });
     this.fake.setAccount(operator, '11111111111111111111111111111111', new Uint8Array(0), 50_000_000_000n);
     this.fake.onSimulate = (wire) => {
       try {
@@ -111,6 +121,24 @@ export class SimSolana {
   }
 
   // ---------------------------------------------------------------- accounts
+  config(): ChainConfig {
+    return decodeAccount('Config', this.fake.accounts.get(this.program.config.toBase58())!.data);
+  }
+  putConfig(c: ChainConfig): void {
+    this.fake.setAccount(this.program.config.toBase58(), this.programId, encodeAccount('Config', c, ACCOUNT_SIZE.Config));
+  }
+  /** The admin's `set_caps` (SPEC 11.1): the global switch and the per-asset caps (0 SOL, 1 USDC). The open value is untouched. */
+  setCaps(on: boolean, maxSwap: [bigint, bigint], maxOpen: [bigint, bigint]): void {
+    this.putConfig({ ...this.config(), capsOn: on ? 1 : 0, maxSwap, maxOpen });
+  }
+  caps(asset: number): AssetCaps {
+    const c = this.config();
+    return { on: c.capsOn !== 0, maxSwap: c.maxSwap[asset]!, maxOpen: c.maxOpen[asset]!, openValue: c.openValue[asset]! };
+  }
+  /** `freeze_config`: the admin key is gone; caps that are on stay as they are. */
+  freezeConfig(): void {
+    this.putConfig({ ...this.config(), admin: DEFAULT_KEY });
+  }
   maker(): Maker {
     return decodeAccount('Maker', this.fake.accounts.get(this.makerPda)!.data);
   }
@@ -153,9 +181,14 @@ export class SimSolana {
   }
 
   // ---------------------------------------------------------------- the model applied to an account
-  private model(s: Swap, call: Call, caller: Role): ReturnType<typeof apply> {
+  /** The account in the model's shape: addresses reduced to what a transition depends on. */
+  private toModel(s: Swap): ModelSwap {
+    if (s === (NO_SWAP as unknown as Swap)) return NO_SWAP;
+    return { ...(s as unknown as ModelSwap), payout: s.direction === 0 || s.payout === DEFAULT_KEY ? 'none' : s.payout === s.taker ? 'taker' : 'other', watcher: s.watcher !== DEFAULT_KEY };
+  }
+  private model(s: Swap, call: Call, caller: Role, asset: number = s.asset ?? 0, env: Partial<Env> = {}): ReturnType<typeof apply> {
     try {
-      return apply('solana', s as unknown as ModelSwap, call, caller, this.now);
+      return apply('solana', this.toModel(s), call, caller, this.now, { ...ENV, caps: this.caps(asset), ...env });
     } catch (e) {
       if (e instanceof ModelError) throw new SimError(e.chainName("solana"));
       throw e;
@@ -163,8 +196,13 @@ export class SimSolana {
   }
   private commit(pda: string, s: Swap, fx: ReturnType<typeof apply>, extra: Partial<Swap>, name: string, args: Record<string, unknown>): void {
     const stateBefore = s.state;
+    // The model keeps no addresses: the payout and the watcher stay as the account (or this call) has them.
     if (fx.closed) this.fake.deleteAccount(pda);
-    else this.putSwap(pda, { ...s, ...(fx.swap as unknown as Partial<Swap>), ...extra });
+    else this.putSwap(pda, { ...s, ...(fx.swap as unknown as Partial<Swap>), payout: s.payout, watcher: s.watcher, ...extra });
+    // The open value of the asset (SPEC 11.1): added by the open, subtracted once by the exit.
+    const c = this.config();
+    c.openValue[s.asset] = fx.openValueAfter;
+    this.putConfig(c);
     const m = this.maker();
     if (fx.counter !== null) m.counters[fx.counter] = (m.counters[fx.counter] ?? 0) + 1;
     m.openPending += fx.openPending;
@@ -183,23 +221,34 @@ export class SimSolana {
     const price = p.price ?? 150_000_000n;
     const amount = (p.xmr * price) / XMR;
     const depBps = p.depBps ?? 100;
-    const fx = this.model(NO_SWAP as unknown as Swap, { name: p.direction === 0 ? 'lock' : 'take', args: { offerMode: p.mode ?? 0, approval: false, amount, wA: p.wA ?? 60, wN: p.wN ?? 600, dC: p.dC ?? 3600, wC: p.wC ?? 1800, wF: p.wF ?? 604_800, depth: p.depth ?? 2, depBps } }, 'taker');
+    const payout = p.direction === 1 ? (p.payout ?? this.taker) : DEFAULT_KEY;
+    const fx = this.model(
+      NO_SWAP as unknown as Swap,
+      { name: p.direction === 0 ? 'lock' : 'take', args: { offerMode: p.mode ?? 0, approval: false, amount, xmr: p.xmr, wA: p.wA ?? 60, wN: p.wN ?? 600, dC: p.dC ?? 3600, wC: p.wC ?? 1800, wF: p.wF ?? 604_800, depth: p.depth ?? 2, depBps, wZ: p.wZ ?? 0, ...(p.direction === 0 ? { watcher: p.watcher !== undefined } : { payout: payout === this.taker ? ('taker' as const) : ('other' as const) }) } },
+      'taker',
+      p.asset ?? 0,
+    );
     const m = this.maker();
     const base: Swap = {
       ...(fx.swap as unknown as Swap),
       taker: this.taker, maker: this.makerPda, asset: p.asset ?? 0, bump: 255, vaultBump: 255, swapNonce: nonce, sessionKey: open.sessionKey, takerEncKey: open.takerEncKey, makerEncVersion: m.encKeyVersion, makerEncKey: m.encKey,
       xmr: p.xmr, price, depBps, takerSpendPub: open.takerSpendPub, makerSpendPub: p.direction === 0 && (p.mode ?? 0) === 0 ? (p.makerSpendPub ?? new Uint8Array(32)) : new Uint8Array(32),
-      lockerView: p.direction === 0 ? open.takerView : new Uint8Array(32), noticeCommitment: new Uint8Array(32), noticeCt: new Uint8Array(104), evidenceTxid: new Uint8Array(32), evidenceView: new Uint8Array(32), revealed: new Uint8Array(32), reserved: new Uint8Array(42),
+      lockerView: p.direction === 0 ? open.takerView : new Uint8Array(32), noticeCommitment: new Uint8Array(32), noticeCt: new Uint8Array(104), evidenceTxid: new Uint8Array(32), evidenceView: new Uint8Array(32), revealed: new Uint8Array(32), reserved: new Uint8Array(30),
+      payout, watcher: p.direction === 0 ? (p.watcher ?? DEFAULT_KEY) : DEFAULT_KEY,
     } as Swap;
     this.commit(pda, base, { ...fx, swap: base as unknown as ModelSwap, closed: false }, {}, p.direction === 0 ? 'lock' : 'take', {});
     return { pda, keys, nonce };
   }
 
   /** A call by the taker side (wallet or session key), applied directly: the tests play the taker. */
-  takerCall(pda: string, call: Call, extra: Partial<Swap> = {}, caller: Role = 'session'): void {
+  takerCall(pda: string, call: Call, extra: Partial<Swap> = {}, caller: Role = 'session', env: Partial<Env> = {}): void {
     const s = this.swap(pda);
     if (!s) throw new Error('no such swap');
-    this.commit(pda, s, this.model(s, call, caller), extra, call.name, {});
+    this.commit(pda, s, this.model(s, call, caller, s.asset, env), extra, call.name, {});
+  }
+  /** `freeze` by the watcher the swap names (Z1): the watcher holds no share and moves nothing. */
+  watcherFreeze(pda: string): void {
+    this.takerCall(pda, { name: 'freeze' }, {}, 'watcher');
   }
 
   // ---------------------------------------------------------------- transactions from the daemon
@@ -218,9 +267,9 @@ export class SimSolana {
         return i >= 0 && ix.keys[i] ? ix.keys[i]!.pubkey.toBase58() : null;
       };
       const signer = ix.keys.find((k) => k.isSigner)?.pubkey.toBase58();
-      const role: Role = signer === operator ? 'operator' : signer === this.owner ? 'owner' : 'anyone';
       const pda = account('swap');
       const s = pda ? this.swap(pda) : null;
+      const role: Role = signer === operator ? 'operator' : signer === this.owner ? 'owner' : s && signer === s.watcher ? 'watcher' : 'anyone';
       if (pda && metas.some((m) => m.name === 'swap')) {
         if (!s) throw new SimError('BadState');
         this.swapCall(pda, s, name, args, role, land);
@@ -228,19 +277,27 @@ export class SimSolana {
     }
   }
 
-  private swapCall(pda: string, s: Swap, name: string, args: Record<string, any>, role: Role, land: boolean): void {
+  private swapCall(pda: string, s: Swap, name: string, args: Record<string, any>, callerRole: Role, land: boolean): void {
+    let role = callerRole;
     let call: Call;
     const extra: Partial<Swap> = {};
-    const view = () => ({ ...(s as unknown as SwapView), chain: 'solana' as const, swapRef: new PublicKey(pda).toBytes(), noticeCt: s.noticeCt });
+    const view = () => ({ ...viewFromSolana(pda, s), noticeCt: s.noticeCt });
     switch (name) {
       case 'approve':
         call = { name: 'approve', openOk: true };
         extra.makerSpendPub = args.makerSpendPub;
         break;
       case 'fund':
-        call = { name: 'fund', openOk: true };
+        // The maker's watcher is named here (SPEC 11.6); the model refuses one against `w_z` = 0 (`WatcherNotAllowed`).
+        call = { name: 'fund', openOk: true, watcher: args.watcher !== null && args.watcher !== undefined };
         extra.makerSpendPub = args.makerSpendPub;
         extra.lockerView = args.makerView;
+        if (args.watcher) extra.watcher = args.watcher;
+        break;
+      case 'withdraw_owed':
+        // Claim proceeds parked for a payout address sit in the taker's slot and belong to that address (anyone may deliver them).
+        call = { name: 'withdraw_owed', who: args.who === 0 ? (s.direction === 1 && s.payout !== s.taker ? 'payout' : 'taker') : args.who === 1 ? 'maker' : 'treasury' };
+        if (call.who === 'payout' && role === 'operator') role = 'anyone';
         break;
       case 'reject':
         call = { name: 'reject', openOk: true, reason: args.reason };
@@ -295,7 +352,7 @@ export class SimSolana {
         this.putOffer({
           maker: this.makerPda, asset: args.asset, direction: args.direction, enabled: prev?.enabled ?? 0, mode: t.mode, bump: 255, seq: (prev?.seq ?? 0n) + 1n, updatedAt: prev?.updatedAt ?? 0n, validSecs: t.validSecs, minXmr: t.minXmr, maxXmr: t.maxXmr, capacityXmr: prev?.capacityXmr ?? 0n,
           priceAbove: t.priceAbove, prices: prev?.prices ?? [0n, 0n, 0n], depthAbove: t.depthAbove, depths: t.depths, depBps: t.depBps, wA: t.wA, wN: t.wN, dC: t.dC, wC: t.wC, wF: t.wF, termsHash: new Uint8Array(32),
-          poolFilled: prev?.poolFilled ?? 0, poolUsed: prev?.poolUsed ?? 0, pool: prev?.pool ?? Array.from({ length: 16 }, () => new Uint8Array(32)), reserved: new Uint8Array(34),
+          poolFilled: prev?.poolFilled ?? 0, poolUsed: prev?.poolUsed ?? 0, pool: prev?.pool ?? Array.from({ length: 16 }, () => new Uint8Array(32)), wZ: t.wZ, reserved: new Uint8Array(30),
         });
         break;
       }
@@ -543,9 +600,76 @@ export class FakeMonero implements InventoryWallet, MoneroBroadcaster, MoneroVie
   }
 }
 
+// ---------------------------------------------------------------------------------------------- the maker's watcher
+
+/**
+ * A watcher service (SPEC 11.6) behind an `HttpFetch`: the three routes, the real sealing and
+ * acknowledgement signatures of the SDK, and the one thing a watcher does (`act`): pause a
+ * swap whose notice does not open or whose lock is not confirmed at the cutoff. It holds one
+ * key and the notice keys it was given; nothing else.
+ */
+export class FakeWatcher {
+  readonly seed: Uint8Array;
+  readonly solana: string;
+  readonly ethereum = `0x${'c5'.repeat(20)}`;
+  /** Refuse connections, as a machine that is down. */
+  down = false;
+  /** Sign acknowledgements with another key (an impersonated service). */
+  wrongKey = false;
+  /** What the acknowledgement promises; default: an hour past the request. */
+  watchingUntil: ((now: bigint) => bigint) | null = null;
+  readonly requests: { method: string; path: string }[] = [];
+  /** Notice keys by swap reference (hex). */
+  readonly keys = new Map<string, Uint8Array>();
+  readonly froze: string[] = [];
+
+  constructor(private readonly sim: SimSolana, seedByte = 0x77) {
+    this.seed = fill(seedByte);
+    this.solana = seedSigner(this.seed).publicKey;
+  }
+
+  readonly fetch: HttpFetch = async (url, init) => {
+    if (this.down) throw new Error('connect ECONNREFUSED');
+    const path = new URL(url).pathname;
+    this.requests.push({ method: init.method, path });
+    const json = (status: number, body: unknown) => ({ status, arrayBuffer: async () => new TextEncoder().encode(JSON.stringify(body)).buffer as ArrayBuffer });
+    if (init.method === 'GET' && path === WATCH_ROUTES.info) return json(200, { solana: this.solana, ethereum: this.ethereum, max_swaps: 100, monero_nodes: 2 });
+    if (init.method === 'POST' && path === WATCH_ROUTES.swaps) {
+      const req = openWatchRequest(JSON.parse(String(init.body)), this.seed);
+      const pda = new PublicKey(req.swapRef).toBase58();
+      const swap = this.sim.swap(pda);
+      // Accepted only if the swap exists, names this watcher and is not settled.
+      if (!swap || swap.watcher !== this.solana || swap.state === SWAP_STATE.DONE) return json(409, { error: 'not_watchable' });
+      this.keys.set(pda, req.noticeKey);
+      const until = this.watchingUntil ? this.watchingUntil(this.sim.now) : this.sim.now + 3_600n + BigInt(swap.dC);
+      return json(200, signWatchAck({ chain: 'solana', swapRef: req.swapRef, watchingUntil: until, watcherSeed: this.wrongKey ? fill(0x66) : this.seed }));
+    }
+    return json(404, { error: 'not_found' });
+  };
+
+  /** One pass of the watcher: freeze every watched swap whose notice is false, or whose lock is not confirmed at the cutoff. Never after `T_co − M`. */
+  async act(xmr: FakeMonero): Promise<string[]> {
+    const out: string[] = [];
+    for (const [pda, key] of this.keys) {
+      const s = this.sim.swap(pda);
+      if (!s || s.state !== SWAP_STATE.NOTICED) continue;
+      const view = viewFromSolana(pda, s);
+      const now = this.sim.now;
+      if (now > s.tClaimOpen - 60n) continue;
+      const opened = openNoticeWithKey(view, key);
+      let bad = opened === null;
+      if (opened && now >= s.tCut) bad = (await xmr.verify({ txid: Buffer.from(opened.txid).toString('hex'), minAmount: s.xmr, minConf: s.depth })).state !== 'confirmed';
+      if (!bad) continue;
+      this.sim.watcherFreeze(pda);
+      this.froze.push(pda);
+      out.push(pda);
+    }
+    return out;
+  }
+}
+
 /** The swap view of a sim account, for building notices and joint addresses as the taker. */
 export function viewOf(sim: SimSolana, pda: string): SwapView {
-  const s = sim.swap(pda)!;
-  return { ...(s as unknown as SwapView), chain: 'solana', swapRef: new PublicKey(pda).toBytes(), asset: String(s.asset), direction: s.direction === 0 ? 0 : 1, noticeCt: (s.flags & SWAP_FLAG.NOTICE) !== 0 ? s.noticeCt : new Uint8Array(0) };
+  return viewFromSolana(pda, sim.swap(pda)!);
 }
 export { buildNotice, swapJointAddress, COUNTER_NONE };

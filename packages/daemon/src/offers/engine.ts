@@ -9,13 +9,14 @@
  * separate, occasional transactions. A stopped daemon's offers lapse through `valid_secs`.
  */
 import { randomBytes } from 'node:crypto';
-import { dleqProve, keyLeaf, merkleRoot, payAmount, receiveAmount, twinCommitments } from '@xmrswap/core-wasm';
+import { depositOf, dleqProve, keyLeaf, merkleRoot, payAmount, receiveAmount, twinCommitments } from '@xmrswap/core-wasm';
 import type { EthQuote } from '@xmrswap/core-wasm';
-import { CHAIN_CONSTS, type EthQuoteRefresh, type Market, type OfferRefresh, type OfferTerms, POOL_SLOTS, type QuoteRequest, type QuoteResponse, base58Decode } from '@xmrswap/protocol';
+import { CHAIN_CONSTS, type EthQuoteRefresh, type Market, type OfferRefresh, type OfferTerms, POOL_SLOTS, type QuoteRequest, type QuoteResponse, base58Decode, capsRefusal } from '@xmrswap/protocol';
 import type { OfferView } from '@xmrswap/protocol/daemon-api';
 import { type EthDeployment, ProgramError, bytesEqual, encodeSignedQuote, hex0x, signEthQuote, solanaMakerShare, toBase64 } from '@xmrswap/sdk';
 import { encodeEthQuoteCompact } from '@xmrswap/core-wasm';
 import type { Alerts } from '../alerts/index.js';
+import { Caps } from '../caps/index.js';
 import type { EthereumChain } from '../chains/ethereum.js';
 import type { SolanaChain } from '../chains/solana.js';
 import { type Config, REFRESH_CU, type ResolvedOffer, effectiveTerms, minClaimDelay, modeCode } from '../config/load.js';
@@ -38,6 +39,10 @@ export interface ComputedOffer {
   reason: string | null;
   capacityXmr: bigint;
   depthTiers: { aboveXmr: bigint; depth: number }[];
+  /** What bounds the capacity right now. */
+  limit: 'inventory' | 'max_swap' | 'max_open' | 'config';
+  /** The deployment's cap that stops this offer (not even its smallest swap fits), or `null`. Never set by a limit of the maker's own. */
+  capReached: 'SwapCapExceeded' | 'OpenCapExceeded' | null;
 }
 
 export interface OfferEngineOptions {
@@ -48,6 +53,8 @@ export interface OfferEngineOptions {
   shares: Shares;
   prices: PriceEngine;
   risk: Risk;
+  /** The deployment's caps and open value, read from the chains (SPEC 11.1). */
+  caps: Caps;
   config: () => Config;
   /** Unlocked-output capacity of the inventory. */
   capacity: () => { total: bigint; largest: bigint };
@@ -102,6 +109,7 @@ export class OfferEngine {
     const band = g.price_band_usd || null;
     const targetXmr = cfg.raw.liquidity.targets.xmr ?? cfg.rebalance.levels.xmr?.target ?? null;
     const cap = this.o.capacity();
+    await this.o.caps.refresh();
     const out: ComputedOffer[] = [];
     for (const offer of cfg.offers) {
       const ref = this.o.prices.reference(offer);
@@ -110,24 +118,46 @@ export class OfferEngine {
       if (!reason && this.o.risk.paused) reason = `paused${this.o.risk.pauseReason ? `: ${this.o.risk.pauseReason}` : ''}`;
       if (!reason && priced.blocked) reason = priced.blocked;
       let capacityXmr = 0n;
+      let limit: ComputedOffer['limit'] = 'config';
+      let capReached: ComputedOffer['capReached'] = null;
       if (!reason) {
-        const limits: bigint[] = [];
+        // The maker's own limits first: each is remembered with what kind of limit it is.
+        const limits: { xmr: bigint; kind: 'inventory' | 'config' }[] = [];
         const remaining = this.o.risk.remaining(offer);
-        if (remaining !== null) limits.push(remaining);
+        if (remaining !== null) limits.push({ xmr: remaining, kind: 'config' });
         if (offer.direction === 'sell_xmr') {
           // One output funds one lock: no single swap may be larger than the largest unlocked output.
-          limits.push(cap.total, cap.largest);
+          limits.push({ xmr: cap.total, kind: 'inventory' }, { xmr: cap.largest, kind: 'inventory' });
           const alloc = cfg.raw.liquidity.allocation;
-          if (alloc !== 'shared' && alloc[offer.market] !== undefined) limits.push(BigInt(Math.round(alloc[offer.market]! * 1e6)) * 1_000_000n);
+          if (alloc !== 'shared' && alloc[offer.market] !== undefined) limits.push({ xmr: BigInt(Math.round(alloc[offer.market]! * 1e6)) * 1_000_000n, kind: 'config' });
         } else {
           const available = await this.o.payingAvailable(offer.market).catch(() => null);
-          if (available !== null) limits.push(xmrForUnits(available, priced.tierPrice[0]));
+          if (available !== null) limits.push({ xmr: xmrForUnits(available, priced.tierPrice[0]), kind: 'inventory' });
         }
-        capacityXmr = limits.length ? minBig(...limits) : offer.maxXmr;
-        if (capacityXmr > offer.maxXmr && offer.maxXmr > 0n) capacityXmr = offer.maxXmr;
+        if (offer.maxXmr > 0n || limits.length === 0) limits.push({ xmr: offer.maxXmr, kind: 'config' });
+        const own = limits.reduce((a, b) => (b.xmr < a.xmr ? b : a));
+        capacityXmr = own.xmr;
+        limit = own.kind;
         if (capacityXmr < offer.minXmr) reason = offer.direction === 'sell_xmr' ? 'no capacity: not enough unlocked XMR outputs, or a limit is reached' : 'no capacity: the paying balance, its cap or a limit is reached';
       }
-      out.push({ offer, ref, priced, enabled: reason === null, reason, capacityXmr: reason === null ? capacityXmr : 0n, depthTiers: this.o.risk.depthTiers(offer) });
+      if (!reason) {
+        // Then the deployment's caps (SPEC 11.1): never publish a size the chain would refuse. Direction B counts amount + deposit.
+        const reading = this.o.caps.of(offer.market);
+        if (!reading && this.o.caps.connected(offer.market)) reason = `the on-chain caps could not be read${this.o.caps.errorOf(offer.chain) ? ` (${this.o.caps.errorOf(offer.chain)})` : ''}: nothing is published until they can`;
+        else if (reading) {
+          const fit = this.o.caps.fit(reading.caps, offer, (xmr) => tierPriceAt(priced, xmr), offer.minXmr, capacityXmr);
+          if (fit.xmr === null) {
+            capReached = fit.limit ?? 'OpenCapExceeded';
+            reason = Caps.reason(capReached, reading.caps, reading.frozen);
+            limit = capReached === 'SwapCapExceeded' ? 'max_swap' : 'max_open';
+          } else if (fit.xmr < capacityXmr) {
+            capacityXmr = fit.xmr;
+            limit = fit.limit === 'SwapCapExceeded' ? 'max_swap' : 'max_open';
+          }
+        }
+      }
+      if (capReached && offer.configured) this.o.alerts.raise('warning', 'cap_reached', `${offer.market} ${offer.direction} is not published: ${reason}`, null, 3_600);
+      out.push({ offer, ref, priced, enabled: reason === null, reason, capacityXmr: reason === null ? capacityXmr : 0n, depthTiers: this.o.risk.depthTiers(offer), limit, capReached });
     }
     return out;
   }
@@ -195,7 +225,7 @@ export class OfferEngine {
     });
     const priceAbove = [0n, 0n, 0n];
     o.sizeTiers.forEach((t, i) => (priceAbove[i + 1] = t.aboveXmr));
-    return { mode: modeCode(o.mode), minXmr: o.minXmr, maxXmr: o.maxXmr, validSecs: o.validSecs, priceAbove, depthAbove, depths, depBps: o.depositBps, wA: o.approvalWindowSecs, wN: o.noticeSecs, dC: o.claimDelaySecs, wC: o.claimWindowSecs, wF: o.finalSecs };
+    return { mode: modeCode(o.mode), minXmr: o.minXmr, maxXmr: o.maxXmr, validSecs: o.validSecs, priceAbove, depthAbove, depths, depBps: o.depositBps, wA: o.approvalWindowSecs, wN: o.noticeSecs, dC: o.claimDelaySecs, wC: o.claimWindowSecs, wF: o.finalSecs, wZ: o.freezeWindowSecs };
   }
 
   /** Publish to the Solana board: occasional transactions first (terms, key refills, quote slots), then the one refresh. */
@@ -211,7 +241,7 @@ export class OfferEngine {
       const dir = c.offer.directionCode;
       const want = this.terms(c);
       let chainOffer = await sol.client.getOffer(sol.makerPda, asset, dir);
-      const same = chainOffer !== null && chainOffer.mode === want.mode && chainOffer.minXmr === want.minXmr && chainOffer.maxXmr === want.maxXmr && chainOffer.validSecs === want.validSecs && chainOffer.depBps === want.depBps && chainOffer.wA === want.wA && chainOffer.wN === want.wN && chainOffer.dC === want.dC && chainOffer.wC === want.wC && chainOffer.wF === want.wF && want.priceAbove.every((v, i) => chainOffer!.priceAbove[i] === v) && want.depthAbove.every((v, i) => chainOffer!.depthAbove[i] === v) && bytesEqual(chainOffer.depths, want.depths);
+      const same = chainOffer !== null && chainOffer.mode === want.mode && chainOffer.minXmr === want.minXmr && chainOffer.maxXmr === want.maxXmr && chainOffer.validSecs === want.validSecs && chainOffer.depBps === want.depBps && chainOffer.wA === want.wA && chainOffer.wN === want.wN && chainOffer.dC === want.dC && chainOffer.wC === want.wC && chainOffer.wF === want.wF && chainOffer.wZ === want.wZ && want.priceAbove.every((v, i) => chainOffer!.priceAbove[i] === v) && want.depthAbove.every((v, i) => chainOffer!.depthAbove[i] === v) && bytesEqual(chainOffer.depths, want.depths);
       if (!same) {
         if (!c.enabled && chainOffer === null) continue; // never published and not publishable: nothing to do
         await this.send(sol, 'set_offer', [program.setOffer(op, sol.makerPda, asset, dir, want)], { market: c.offer.market, direction: c.offer.direction });
@@ -354,6 +384,7 @@ export class OfferEngine {
       validUntil: ctx.now + BigInt(o.validSecs), epoch: ctx.quoteEpoch,
       keyRoot,
       quoteId: randomBytes(8).readBigUInt64LE(),
+      freezeWindow: o.freezeWindowSecs,
     };
   }
 
@@ -416,6 +447,18 @@ export class OfferEngine {
       if (i > 0 && c.priced.tierPrice[i] !== 0n && xmr >= above) price = c.priced.tierPrice[i]!;
     });
     const depth = Risk.depthFor(c.depthTiers, xmr);
+    // The deployment's caps: a size the chain would refuse is never quoted, and the taker is told it is a cap, not this maker's limit.
+    await this.o.caps.refresh();
+    const reading = this.o.caps.of(c.offer.market);
+    if (!reading && this.o.caps.connected(c.offer.market)) return refuse('the on-chain caps could not be read; ask again in a moment');
+    if (reading) {
+      const amount = direction === 'sell_xmr' ? payAmount(xmr, price, req.chain) : receiveAmount(xmr, price, req.chain);
+      const refusal = capsRefusal(reading.caps, c.offer.directionCode, amount, depositOf(amount, c.offer.depositBps));
+      if (refusal) {
+        this.o.caps.refusedQuotes++;
+        return { ...refuse(refusal === 'SwapCapExceeded' ? `cap reached: one swap may be at most ${reading.caps.maxSwap} base units during the beta` : `cap reached: ${reading.caps.maxOpen > reading.caps.openValue ? reading.caps.maxOpen - reading.caps.openValue : 0n} base units of open value are left during the beta`), ...({ code: refusal } as object) };
+      }
+    }
     if (direction === 'buy_xmr') {
       const available = await this.o.payingAvailable(c.offer.market).catch(() => null);
       if (available !== null && available < receiveAmount(xmr, price, req.chain)) return refuse('the paying balance does not cover this size');
@@ -430,7 +473,7 @@ export class OfferEngine {
         const expiresAt = now + 110n;
         const amount = direction === 'sell_xmr' ? payAmount(xmr, price, 'solana') : receiveAmount(xmr, price, 'solana');
         const dC = Math.max(c.offer.claimDelaySecs, minClaimDelay('solana', depth));
-        const terms = { quoteId, taker: req.taker, asset: solAsset(req.market), direction: c.offer.directionCode, depth, xmr, amount, depBps: c.offer.depositBps, wN: c.offer.noticeSecs, dC, wC: c.offer.claimWindowSecs, wF: Math.max(c.offer.finalSecs, c.offer.noticeSecs * 2 + dC + c.offer.claimWindowSecs + 86_400), makerSpendPub: share?.share ?? new Uint8Array(32), makerPok: share?.pok ?? new Uint8Array(64), expiresAt };
+        const terms = { quoteId, taker: req.taker, asset: solAsset(req.market), direction: c.offer.directionCode, depth, xmr, amount, depBps: c.offer.depositBps, wN: c.offer.noticeSecs, dC, wC: c.offer.claimWindowSecs, wF: Math.max(c.offer.finalSecs, c.offer.noticeSecs * 2 + dC + c.offer.freezeWindowSecs + c.offer.claimWindowSecs + 86_400), wZ: c.offer.freezeWindowSecs, makerSpendPub: share?.share ?? new Uint8Array(32), makerPok: share?.pok ?? new Uint8Array(64), expiresAt };
         this.o.store.putQuote(`sol:${quoteId}`, 'solana', 'bound', { taker: req.taker, xmr, amount, market: req.market, direction }, Number(expiresAt));
         await this.send(sol, 'post_quote', [sol.client.program.postQuote(sol.operator, sol.makerPda, terms)], { market: req.market, xmr: req.xmr });
         return { t: 'quote_response', ok: true, chain: 'solana', quote_id: quoteId.toString(), expires_at: expiresAt.toString() };
@@ -460,7 +503,9 @@ export class OfferEngine {
       return {
         market: c.offer.market, direction: c.offer.direction, live: live && c.enabled && (on !== undefined || eth !== undefined), enabled: c.enabled, ...(c.reason ? { disabled_reason: c.reason } : {}),
         reference_price: c.ref.xmrUsd === null || c.ref.assetUsd === null ? null : BigInt(Math.round((c.ref.xmrUsd / c.ref.assetUsd) * 10 ** c.offer.decimals)).toString(),
-        price_tiers: tiers, deviation_pct: c.priced.deviationPct, min_xmr: c.offer.minXmr.toString(), max_xmr: c.offer.maxXmr.toString(), capacity_xmr: c.capacityXmr.toString(), terms: effectiveTerms(c.offer), key_pool: pool,
+        price_tiers: tiers, deviation_pct: c.priced.deviationPct, min_xmr: c.offer.minXmr.toString(), max_xmr: c.offer.maxXmr.toString(), capacity_xmr: c.capacityXmr.toString(), capacity_limit: c.limit, terms: effectiveTerms(c.offer), key_pool: pool,
+        // Additions (Amendment 1): which cap stops the offer, if one does, and the freeze window beside the terms.
+        ...({ cap_reached: c.capReached, freeze_window_secs: c.offer.freezeWindowSecs } as object),
         // Additions to the frozen shape: the price sources as the file names them (what runs), and the one pricing it right now.
         ...({ source: c.offer.source, fallbacks: c.offer.fallbacks, cross_check: c.offer.crossCheck, priced_by: c.ref.source, price_unit: c.ref.unit } as object),
         seq_or_quote_id: on ? on.seq.toString() : eth ? eth.quoteId.toString() : null, updated_at: on?.updatedAt ?? null, valid_until: on ? on.updatedAt + on.validSecs : (eth?.validUntil ?? null),
@@ -478,6 +523,15 @@ export class OfferEngine {
   describe(): string {
     return this.computed.map((c) => `${key(c.offer)} ${c.enabled ? `on cap ${picoToXmr(c.capacityXmr)}` : `off (${c.reason})`}`).join('; ');
   }
+}
+
+/** The price of the highest used tier that applies to a size. */
+export function tierPriceAt(p: PricedOffer, xmr: bigint): bigint {
+  let price = p.tierPrice[0];
+  p.tierAbove.forEach((above, i) => {
+    if (i > 0 && p.tierPrice[i] !== 0n && xmr >= above) price = p.tierPrice[i]!;
+  });
+  return price;
 }
 
 const popcount = (n: number): number => {

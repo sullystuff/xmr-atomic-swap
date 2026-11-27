@@ -430,7 +430,7 @@ describe('console requests (apps/console DEVIATIONS "Requests to the daemon")', 
 
   it('6, 8, 9. one documented list of refusal reasons; validate carries the SOL price; a parked payout has an unsigned-transaction action', async () => {
     const { REFUSALS } = await import('../src/api/server.js');
-    expect(Object.keys(REFUSALS).sort()).toEqual(['abort-window-closed', 'already-settled', 'cannot-exit-after-funding', 'dry-run', 'hold-ended', 'no-deposit-held', 'not-available-in-state', 'ready-already-set', 'refund-window-closed', 'reject-not-available']);
+    expect(Object.keys(REFUSALS).sort()).toEqual(['abort-window-closed', 'already-frozen', 'already-settled', 'cannot-exit-after-funding', 'dry-run', 'freeze-not-available', 'freeze-window-closed', 'hold-ended', 'no-deposit-held', 'not-available-in-state', 'ready-already-set', 'refund-window-closed', 'reject-not-available']);
     const v = await client.call('configValidate', { body: { toml: d.load.toml } });
     expect(v).toMatchObject({ ok: true, sol_usd: 100, compute_units_per_update: 24_120 });
     // Nothing is parked on any swap here: the action exists and says so.
@@ -453,5 +453,160 @@ describe('console requests (apps/console DEVIATIONS "Requests to the daemon")', 
     const { default: bs58 } = { default: { decode: (x: string) => (require('@xmrswap/protocol') as typeof import('@xmrswap/protocol')).base58Decode(x) } };
     expect(decodeInstructionData(bs58.decode(msg.instructions[0]!.data))).toMatchObject({ name: 'withdrawOwed' });
     w.sim.fake.deleteAccount(parked.pda);
+  });
+});
+
+// ------------------------------------------------------------------------------------------------ Amendment 1 (DEVIATIONS "Console contract" A18 to A26)
+
+describe('Amendment 1: caps, freeze, the maker watcher and the payout address in the API', () => {
+  let aw: World;
+  let ad: Daemon;
+  let aapi: ApiServer;
+  let ac: DaemonClient;
+  let wt: import('./sim.js').FakeWatcher;
+  let frozenRef: string;
+  let pendingRef: string;
+  let buyRef: string;
+  const takerWatcher = seedSigner(new Uint8Array(32).fill(0x55)).publicKey;
+  const payout = seedSigner(new Uint8Array(32).fill(0x61)).publicKey;
+  const get = async (p: string) => (await fetch(`${aapi.url}${p}`, { headers: { Authorization: `Bearer ${ad.token}` } })).json() as Promise<any>;
+
+  beforeAll(async () => {
+    const { FakeWatcher } = await import('./sim.js');
+    aw = await makeWorld();
+    wt = new FakeWatcher(aw.sim);
+    const toml = `${BASE_TOML.replace('[markets.sol.sell_xmr]\nenabled = true', '[markets.sol.sell_xmr]\nenabled = true\napproval_mode = "window"\ndeposit_pct = 2\nfreeze_window_hours = 24').replace('[markets.usdc_sol.buy_xmr]\nenabled = true', '[markets.usdc_sol.buy_xmr]\nenabled = true\ndeposit_pct = 1\nfreeze_window_hours = 24')}
+[approvals]
+auto_max_xmr = 2
+deny_watchers = ["${seedSigner(new Uint8Array(32).fill(0x56)).publicKey}"]
+
+[watcher]
+url = "http://watcher.test"
+solana_key = "${wt.solana}"
+`;
+    writeFileSync(aw.configPath, toml.replaceAll('__OWNER__', aw.sim.owner));
+    const data = new Uint8Array(165);
+    new DataView(data.buffer).setBigUint64(64, 10_000_000_000n, true);
+    aw.sim.fake.setAccount(ata(aw.keystore.solana.publicKey, aw.sim.usdcMint).toBase58(), 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', data);
+    // Caps on: SOL far away, USDC with 1,000 USDC of open value in all and 900 per swap.
+    aw.sim.setCaps(true, [1n << 60n, 900_000_000n], [1n << 60n, 1_000_000_000n]);
+    ad = await aw.boot({ watcherFetch: wt.fetch });
+    await ad.start();
+    aapi = await startApi(ad, { bind: '127.0.0.1:0' });
+    ac = new DaemonClient({ baseUrl: aapi.url, token: ad.token });
+    // A sell-XMR swap the rules approve, then paused by the watcher its taker named.
+    const a = aw.sim.open({ direction: 0, mode: 1, xmr: 2n * XMR, depBps: 200, wZ: 86_400, watcher: takerWatcher });
+    await ad.executor.tick();
+    aw.xmr.mine(2);
+    aw.sim.warp(120);
+    aw.sim.watcherFreeze(a.pda);
+    frozenRef = a.pda;
+    // A buy-XMR swap paid to a fresh payout address: funded with the maker's watcher named, then acknowledged.
+    const b = aw.sim.open({ direction: 1, asset: 1, xmr: 2n * XMR, wZ: 86_400, payout });
+    await ad.executor.tick();
+    await ad.executor.tick();
+    buyRef = b.pda;
+    // A lock above the automatic size limit that names a watcher: left to the maker.
+    const p = aw.sim.open({ direction: 0, mode: 1, xmr: 3n * XMR, depBps: 200, wZ: 86_400, watcher: takerWatcher });
+    await ad.executor.tick();
+    pendingRef = p.pda;
+    await ad.offers.tick(true);
+  });
+  afterAll(async () => {
+    await aapi?.close();
+    ad?.store.close();
+  });
+
+  it('A18. status: caps and headroom per market, the program build, the watcher', async () => {
+    const s = await call(ac, 'status');
+    const usdcOpen = BigInt(aw.sim.caps(1).openValue);
+    expect(s.caps).toEqual([
+      { market: 'sol', caps: { on: true, max_swap: String(1n << 60n), max_open: String(1n << 60n), open_value: aw.sim.caps(0).openValue.toString(), headroom: ((1n << 60n) - aw.sim.caps(0).openValue).toString(), frozen: false } },
+      { market: 'usdc_sol', caps: { on: true, max_swap: '900000000', max_open: '1000000000', open_value: usdcOpen.toString(), headroom: (1_000_000_000n - usdcOpen).toString(), frozen: false } },
+    ]);
+    // Direction B counts amount + deposit: 2 XMR at 150 USDC with a 1% take deposit.
+    expect(usdcOpen).toBe(300_000_000n + 3_000_000n);
+    expect(s.program_build).toEqual({ program_id: aw.sim.programId, expected_hash: null, on_chain_hash: null, matches: null });
+    expect(s.watcher).toMatchObject({ url: 'http://watcher.test', solana: wt.solana, ethereum: null, watching: 1 });
+    expect(typeof s.watcher.reachable === 'boolean' || s.watcher.reachable === null).toBe(true);
+    expect(s).toMatchObject({ cap_reached: [], freezes: 1 });
+  });
+
+  it('A19. offers: capacity_limit, cap_reached, the freeze window in the terms, swap_cost and the caps', async () => {
+    const o = await call(ac, 'offers');
+    const buy = o.offers.find((x: { market: string; direction: string }) => x.market === 'usdc_sol' && x.direction === 'buy_xmr')!;
+    const sell = o.offers.find((x: { market: string; direction: string }) => x.market === 'sol' && x.direction === 'sell_xmr')!;
+    expect(sell).toMatchObject({ capacity_limit: expect.stringMatching(/^(inventory|config)$/), cap_reached: null, freeze_window_secs: 86_400, terms: { freeze_window_secs: 86_400 } });
+    // 697 USDC of open value are left and one swap may be 900: the open value binds.
+    expect(buy).toMatchObject({ enabled: true, capacity_limit: 'max_open', cap_reached: null, terms: { freeze_window_secs: 86_400 } });
+    expect(BigInt(buy.capacity_xmr) < 20n * XMR).toBe(true);
+    expect(o.swap_cost).toMatchObject({ taker_open_compute_units: { lock_or_take: 80_000, usdc_with_approval: 100_000 }, solana: { sol: { sell_xmr: { compute_units: 61_000 } }, usdc_sol: { buy_xmr: { compute_units: 70_000 } } }, ethereum: { freeze_gas: '78600' } });
+    expect(o.caps).toHaveLength(2);
+    // The open value is used up: the offer stops with the chain's own reason, distinct from the maker's limits.
+    aw.sim.setCaps(true, [1n << 60n, 900_000_000n], [1n << 60n, aw.sim.caps(1).openValue + 1_000n]);
+    await ad.caps.refresh(true);
+    await ad.offers.tick(true);
+    const stopped = (await call(ac, 'offers')).offers.find((x: { market: string; direction: string }) => x.market === 'usdc_sol' && x.direction === 'buy_xmr')!;
+    expect(stopped).toMatchObject({ enabled: false, capacity_xmr: '0', capacity_limit: 'max_open', cap_reached: 'OpenCapExceeded', disabled_reason: expect.stringMatching(/^cap reached: 1000 of \d+ base units of open value are left/) });
+    const caps = await get('/api/caps');
+    expect(caps).toMatchObject({ refused_quotes: 0, offers: expect.arrayContaining([{ market: 'usdc_sol', direction: 'buy_xmr', enabled: false, capacity_xmr: '0', capacity_limit: 'max_open', cap_reached: 'OpenCapExceeded', reason: stopped.disabled_reason }]) });
+    expect(caps.caps.map((c: { market: string }) => c.market)).toEqual(['sol', 'usdc_sol']);
+    expect((await call(ac, 'status')).cap_reached).toEqual([{ market: 'usdc_sol', direction: 'buy_xmr', code: 'OpenCapExceeded', reason: stopped.disabled_reason }]);
+    expect((await call(ac, 'status')).alerts.some((a: { kind: string }) => a.kind === 'cap_reached')).toBe(true);
+  });
+
+  it('A20, A21. swaps: extras (payout, watcher, freeze window, watching_until), FROZEN with t_freeze / t_ff and who froze, the acknowledgement', async () => {
+    const list = (await call(ac, 'swaps')).swaps as any[];
+    const frozen = list.find((x) => x.ref === frozenRef);
+    const tFreeze = Number(aw.sim.swap(frozenRef)!.tFreeze);
+    expect(frozen).toMatchObject({ state: 'FROZEN', phase: 'frozen', direction: 'A', extras: { payout: null, watcher: takerWatcher, freeze_window_secs: 86_400, watching_until: null }, frozen: { t_freeze: tFreeze, t_ff: tFreeze + 86_400, frozen_by: 'taker_side' }, next_deadline: { at: tFreeze + 86_400 } });
+    expect(frozen.actions).toContain('abort');
+    const ack = ad.store.watchAck(buyRef)!;
+    const bought = list.find((x) => x.ref === buyRef);
+    // The taker stays the taker; the payout address is beside it, never instead of it.
+    expect(bought).toMatchObject({ direction: 'B', taker: aw.sim.taker, extras: { payout, watcher: wt.solana, freeze_window_secs: 86_400, watching_until: ack.watching_until }, frozen: null });
+    const detail = await call(ac, 'swap', { params: { ref: frozenRef } });
+    expect(detail.deadlines).toMatchObject({ t_freeze: tFreeze, t_ff: tFreeze + 86_400 });
+    expect(detail).toMatchObject({ freeze: { swap_ref: frozenRef, frozen_by: 'taker_side', taker: aw.sim.taker, watcher: takerWatcher, t_freeze: tFreeze, t_ff: tFreeze + 86_400 }, watcher_ack: null });
+    const bd = await call(ac, 'swap', { params: { ref: buyRef } });
+    expect(bd.deadlines).toMatchObject({ t_freeze: null, t_ff: null });
+    expect(bd).toMatchObject({ freeze: null, watcher_ack: { watcher: wt.solana, watching_until: ack.watching_until, sig: ack.sig } });
+    expect(bd.intents.map((i: { kind: string }) => i.kind)).toEqual(['sol_tx:fund', 'watch_register:watch_register']);
+  });
+
+  it('A22. approvals: a pending lock shows the payout, the watcher it names, whether that watcher is denied, and the taker\'s freeze count', async () => {
+    const a = await call(ac, 'approvals');
+    const p = a.pending.find((x: { ref: string }) => x.ref === pendingRef);
+    expect(p).toMatchObject({ direction: 'A', payout: null, watcher: takerWatcher, watcher_denied: false, freeze_window_secs: 86_400, taker_freezes: 1, recommendation: 'approve' });
+  });
+
+  it('A23, A24. freezes and counters; the watcher with its acknowledgements', async () => {
+    const f = await get('/api/freezes');
+    const tFreeze = Number(aw.sim.swap(frozenRef)!.tFreeze);
+    expect(f).toEqual({
+      freezes: [{ ref: frozenRef, chain: 'solana', direction: 'A', taker: aw.sim.taker, watcher: takerWatcher, frozen_by: 'taker_side', t_freeze: tFreeze, t_ff: tFreeze + 86_400, state: 'FROZEN' }],
+      by_taker: [{ taker: aw.sim.taker, count: 1 }],
+      counters: [{ chain: 'solana', freezes: 1, refunds_after_freeze: 0, backouts_after_freeze: 0, claims_after_freeze: 0 }],
+      settings: { refuse_watchers: false, deny_watchers: [seedSigner(new Uint8Array(32).fill(0x56)).publicKey], max_taker_freezes: null },
+    });
+    const wv = await get('/api/watcher');
+    const ack = ad.store.watchAck(buyRef)!;
+    expect(wv).toEqual({
+      status: { url: 'http://watcher.test', reachable: true, solana: wt.solana, ethereum: null, watching: 1, reported: { solana: wt.solana, ethereum: wt.ethereum } },
+      acks: [{ ref: buyRef, chain: 'solana', watcher: wt.solana, watching_until: ack.watching_until, sig: ack.sig, at: ack.at, open: true }],
+    });
+  });
+
+  it('A25, A26. fee figures and parked-payout delivery', async () => {
+    const fees = await call(ac, 'fees');
+    expect(fees).toMatchObject({ swap_cost: { taker_open_compute_units: { lock_or_take: 80_000 } }, daily_swap_lamports: '0', eth_runway_swaps: null });
+    const v = await call(ac, 'configValidate', { body: { toml: ad.load.toml } });
+    expect(v.swap_cost.solana.sol.sell_xmr_window.compute_units).toBe(85_000);
+    expect(v.warnings.some((x: { path: string; message: string }) => x.path === 'markets.sol.sell_xmr.freeze_window_hours' && /25\.5 h/.test(x.message))).toBe(true);
+    expect(v.effective.every((e: { freeze_window_secs: number }) => e.freeze_window_secs === 86_400)).toBe(true);
+    // Nothing is parked on this swap: the delivery route exists and says so.
+    const res = await fetch(`${aapi.url}/api/swaps/${buyRef}/deliver-owed`, { method: 'POST', headers: { Authorization: `Bearer ${ad.token}`, 'Content-Type': 'application/json' }, body: '{}' });
+    expect([res.status, (await res.json()).error]).toEqual([409, 'nothing_owed']);
+    expect((await fetch(`${aapi.url}/api/swaps/nope/deliver-owed`, { method: 'POST', headers: { Authorization: `Bearer ${ad.token}` } })).status).toBe(404);
   });
 });

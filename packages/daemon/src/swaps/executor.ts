@@ -30,9 +30,11 @@ import type { Inventory } from '../inventory/index.js';
 import type { MoneroView } from '../monero/nodes.js';
 import type { MoneroBroadcaster } from '../monero/wallet.js';
 import type { EncKeys } from '../rotation/index.js';
-import type { Instruction, InstructionAction, IntentRow, Store, SwapFacts, SwapRow } from '../store/db.js';
+import type { FrozenBy, Instruction, InstructionAction, IntentRow, Store, SwapFacts, SwapRow } from '../store/db.js';
 import { CrashError, type Journal } from '../store/journal.js';
 import { type Bytes, Emitter, KeyedMutex, errMsg, hex, toJson, unhex } from '../util.js';
+import type { MakerWatcher } from '../watcher/index.js';
+import { solanaCallFee } from '../stats/costs.js';
 import type { Shares } from './shares.js';
 
 export interface ExecutorOptions {
@@ -46,6 +48,8 @@ export interface ExecutorOptions {
   shares: Shares;
   encKeys: EncKeys;
   approvals: Approvals;
+  /** The maker's own watcher for buy-XMR swaps (SPEC 11.6); absent = none is ever named. */
+  watcher?: MakerWatcher;
   config: () => Config;
   /** The operator's pause switch: while it is on, no stored automatic approval is acted on. */
   paused?: () => boolean;
@@ -86,6 +90,8 @@ export function commitmentHash(s: SwapView): string {
 }
 
 const snapshotOf = (s: SwapView): string => toJson(s);
+/** Direction B after the taker's notice (frozen or not): the maker's refund window is running. */
+const urgent = (r: Pick<SwapRow, 'direction' | 'state'>): number => Number(r.direction === 1 && (r.state === SWAP_STATE.NOTICED || r.state === SWAP_STATE.FROZEN));
 const txidBytes = (txid: string): Bytes => unhex(txid);
 
 export class Executor {
@@ -145,7 +151,7 @@ export class Executor {
   /** Step every open swap once: the ones with the hardest deadline first (direction B after the taker's notice). */
   async tick(): Promise<Map<string, StepOutcome>> {
     await this.scan().catch((e) => this.o.alerts.raise('warning', 'scan_failed', errMsg(e)));
-    const open = this.store.swaps({ open: true }).sort((a, b) => Number(b.direction === 1 && b.state === SWAP_STATE.NOTICED) - Number(a.direction === 1 && a.state === SWAP_STATE.NOTICED));
+    const open = this.store.swaps({ open: true }).sort((a, b) => urgent(b) - urgent(a));
     const out = new Map<string, StepOutcome>();
     for (const row of open) out.set(row.ref, await this.step(row.ref));
     return out;
@@ -201,8 +207,11 @@ export class Executor {
     const ins = row.facts.instruction;
     if (ins && ins.status === 'pending' && !ins.seen) row.facts = this.store.patchFacts(ref, { instruction: { ...ins, stateAt: view.state, seen: true } });
 
+    this.noteFreeze(row, view);
+    await this.watch(row, view);
+
     // 3. Facts, decision, action.
-    const facts: MakerFacts = { swap: view, now, ...(await this.baseFacts(row, view)) };
+    const facts: MakerFacts = { swap: view, now, ...(await this.baseFacts(row, view, now)) };
     this.setPhase(row, view, facts);
     for (let i = 0; i < 8; i++) {
       const d = makerStep(facts);
@@ -232,7 +241,10 @@ export class Executor {
       const secret = intent.payload['secret'] === true;
       if (status.state === 'confirmed') {
         this.o.journal.resolve(intent, 'confirmed');
-        if (status.fee !== undefined) this.store.recordFee(row.chain, String(intent.payload['call'] ?? 'swap'), row.chain === 'solana' ? 'sol' : 'eth', status.fee, intent.tx);
+        // Solana: the base fee plus the priority fee on the call's measured compute units (the endpoint reports no fee).
+        const call = String(intent.payload['call'] ?? 'swap');
+        const fee = row.chain === 'solana' ? solanaCallFee(this.o.config().raw, call, row.market === 'usdc_sol') : status.fee;
+        if (fee !== undefined) this.store.recordFee(row.chain, call, row.chain === 'solana' ? 'sol' : 'eth', fee, intent.tx);
         if (row.needs_review) this.store.updateSwap(row.ref, { needs_review: this.store.intents({ swapRef: row.ref, status: ['needs_review'] }).length > 0 ? 1 : 0 });
       } else if (status.state === 'failed' || status.state === 'dead') {
         this.o.journal.resolve(intent, 'failed', status.state === 'failed' ? 'the transaction failed on-chain' : 'the transaction can no longer land');
@@ -255,7 +267,39 @@ export class Executor {
 
   // ---------------------------------------------------------------- facts
 
-  private async baseFacts(row: SwapRow, view: SwapView): Promise<Partial<MakerFacts>> {
+  /**
+   * A swap seen frozen for the first time (or settled after a freeze) is recorded once, with who froze it as far as the
+   * chain tells: the swap stores the time, not the caller. Direction A: the taker's side (the taker, its session key or
+   * the watcher it named). Direction B: this daemon if a `freeze` of its own landed, else the maker's watcher.
+   */
+  private noteFreeze(row: SwapRow, view: SwapView): void {
+    if (view.tFreeze === 0n || this.store.freeze(row.ref)) return;
+    const own = this.store.intents({ swapRef: row.ref, status: ['confirmed'] }).some((i) => i.payload['call'] === 'freeze');
+    const by: FrozenBy = view.direction === 0 ? 'taker_side' : own ? 'maker' : 'maker_watcher';
+    const tFf = deadlinesOf(view.chain, view).tFf ?? view.tFreeze;
+    this.store.recordFreeze({ swap_ref: row.ref, chain: row.chain, direction: view.direction, taker: view.taker, watcher: view.watcherAddress, frozen_by: by, t_freeze: Number(view.tFreeze), t_ff: Number(tFf) });
+    if (view.direction === 0) this.o.alerts.raise('warning', 'swap_frozen', `the taker's side paused this swap: the claim without ready opens at ${tFf} (chain time) instead of ${view.tClaimOpen}; the XMR stays locked until then unless the taker sets ready or refunds. A refund or abort after a pause leaves the deposit withholdable.`, row.ref, 0);
+    else this.o.alerts.raise(by === 'maker' ? 'info' : 'warning', 'swap_frozen', by === 'maker' ? `this daemon paused the swap: the taker's XMR lock was not confirmed in time; the escrow is safe until ${tFf} (chain time)` : `the maker's watcher paused this swap while the daemon did not act: the taker's claim without ready waits until ${tFf} (chain time); the daemon now sets ready or refunds`, row.ref, 0);
+  }
+
+  /** Direction B: hand a funded swap that names the maker's watcher to it, and keep the signed acknowledgement. Never blocks or fails the step. */
+  private async watch(row: SwapRow, view: SwapView): Promise<void> {
+    const w = this.o.watcher;
+    if (!w || view.direction !== 1 || (view.state !== SWAP_STATE.ACTIVE && view.state !== SWAP_STATE.NOTICED) || !w.names(view)) return;
+    if (this.o.config().raw.daemon.mode !== 'live') return;
+    let secret: Bytes;
+    try {
+      secret = this.encSecret(view);
+    } catch {
+      return;
+    }
+    const ack = await w.register(row.ref, view, secret);
+    // The acknowledgement is the watcher's promise, not a chain fact: once a notice exists, it must reach the swap's own claim-open time.
+    if (ack && view.state === SWAP_STATE.NOTICED && BigInt(ack.watching_until) < view.tClaimOpen)
+      this.o.alerts.raise('warning', 'watcher_stops_early', `the watcher acknowledged this swap only until ${ack.watching_until}, before its claim-open time ${view.tClaimOpen}: it may not pause it in time`, row.ref, 3_600);
+  }
+
+  private async baseFacts(row: SwapRow, view: SwapView, now: bigint): Promise<Partial<MakerFacts>> {
     const f: Partial<MakerFacts> = {};
     const S = SWAP_STATE;
     const offer = this.offerFor(row);
@@ -274,7 +318,7 @@ export class Executor {
       if (row.facts.lockFailed || row.facts.manual?.abort) f.lockFailed = true;
       if (offer?.withoutReady) f.withoutReady = offer.withoutReady;
       // Keep watching the relayed lock until the swap is settled: rebroadcast if it dropped out, abort if it can no longer confirm.
-      if (lock && lock.relayed_at !== null && (view.state === S.NOTICED || view.state === S.READY)) {
+      if (lock && lock.relayed_at !== null && (view.state === S.NOTICED || view.state === S.READY || view.state === S.FROZEN)) {
         const report = await this.ownLockReport(row, view);
         f.lock = report;
         if (report.state === 'not-found' && !f.lockFailed && (await this.o.inventory.inputsSpentElsewhere(row.ref).catch(() => false))) {
@@ -282,7 +326,10 @@ export class Executor {
           f.lockFailed = true;
         }
       }
-    } else if (row.facts.manual?.abort) f.backOut = true;
+    } else {
+      if (row.facts.manual?.abort) f.backOut = true;
+      await this.ownFreeze(row, view, now, f);
+    }
     if (view.state === S.HOLD || view.state === S.WITHHELD) {
       f.withhold = view.state === S.HOLD && withholdDecision(offer, row.facts, this.o.xmrUsd());
       f.release = releaseDecision(row.facts);
@@ -293,6 +340,24 @@ export class Executor {
     if (pending === 'release' && view.state !== S.HOLD && view.state !== S.WITHHELD) f.release = true;
     f.swept = row.swept === 1;
     return f;
+  }
+
+  /**
+   * Direction B, the daemon is the locker and the swap names a watcher: ask the flow for a pause (Z1) when the taker's
+   * lock is real but still short of its depth one margin before `T_cut`, the point where the flow would otherwise give
+   * the escrow back. The pause buys the freeze window for the confirmations; the flow then sets ready (Z2) or refunds
+   * (Z3). A lock that is provably bad (the notice does not open, the transaction is invalid) is NOT paused: it is
+   * refunded at once, which is what the flow does with it after a pause anyway. Whether a freeze is possible at all is
+   * the flow's decision (`freezeRefusal`), not this function's.
+   */
+  private async ownFreeze(row: SwapRow, view: SwapView, now: bigint, f: Partial<MakerFacts>): Promise<void> {
+    if (view.direction !== 1 || view.state !== SWAP_STATE.NOTICED || !view.watcher || view.wZ === 0 || view.tFreeze !== 0n || f.backOut) return;
+    const d = deadlinesOf(view.chain, view);
+    if (d.tCut === null || d.tCo === null || now < d.tCut - d.margin || now >= d.tCo) return;
+    f.noticeOpens = this.takerNotice(view) !== null;
+    if (!f.noticeOpens) return;
+    f.lock = await this.takerLockReport(row, view, now);
+    if (f.lock.state === 'pending' || f.lock.state === 'confirming') f.freeze = true;
   }
 
   /** Compute the fact the flow asked for. Returns an outcome only when the step cannot continue. */
@@ -464,7 +529,7 @@ export class Executor {
         // The XMR leaves only when the notice that is final on-chain is OUR notice for THIS transaction.
         const share = this.makerShare(row, view);
         const ours = hasFlag(view, SWAP_FLAG.NOTICE) && hex(noticeCommitment(view.swapRef, txidBytes(lock.txid), share.keys.view)) === hex(view.noticeCommitment);
-        if (view.state !== SWAP_STATE.NOTICED && view.state !== SWAP_STATE.READY) return { kind: 'error', error: 'refusing to relay XMR: the swap is not in NOTICED' };
+        if (view.state !== SWAP_STATE.NOTICED && view.state !== SWAP_STATE.READY && view.state !== SWAP_STATE.FROZEN) return { kind: 'error', error: 'refusing to relay XMR: the swap is not in NOTICED' };
         if (!ours) return { kind: 'error', error: 'refusing to relay XMR: the notice on record does not commit to the stored lock transaction' };
         const rebroadcast = action === 'rebroadcast-xmr';
         if (rebroadcast && lock.last_rebroadcast !== null && this.store.now() - lock.last_rebroadcast < 60) return { kind: 'waiting', on: 'rebroadcast', until: null };
@@ -554,14 +619,17 @@ export class Executor {
       }
       case 'fund': {
         const share = this.o.shares.forSwap(row.ref) ?? this.o.shares.create(view.chain, 'fund', row.ref, 'bound');
+        // The maker's watcher is named here, at `fund`, and only on a swap whose terms carry a freeze window.
+        const named = this.o.watcher?.nameFor(view) ?? null;
+        const watcher = named ? { watcher: named } : {};
         if (view.chain === 'solana') {
           const s = solanaMakerShare(share.keys, this.makerCtx(chain));
-          return { makerShare: { spendPub: s.share, pok: s.pok, view: share.keys.view } };
+          return { makerShare: { spendPub: s.share, pok: s.pok, view: share.keys.view }, ...watcher };
         }
         // Ethereum: the maker's own proof for the share it is about to use MUST already be served (SPEC 6.4).
         if (!this.store.blob(share.row.spend_pub)) this.store.putBlob(share.row.spend_pub, dleqProve(share.keys.spend), true, row.ref);
         const twin = twinCommitments(share.keys.spend);
-        return { makerShare: { spendPub: share.keys.spendPub, key: hex0x(twin.keyAddr), key2: hex0x(twin.keyAddr2), view: share.keys.view } };
+        return { makerShare: { spendPub: share.keys.spendPub, key: hex0x(twin.keyAddr), key2: hex0x(twin.keyAddr2), view: share.keys.view }, ...watcher };
       }
       case 'post_notice': {
         const lock = this.store.lockTx(row.ref);
@@ -760,7 +828,7 @@ export class Executor {
     if (ins.action === 'abort') {
       if (state === S.READY) return 'ready-already-set';
       if (state === S.HOLD || state === S.WITHHELD) return 'already-settled';
-      if (state === S.ABORTED_FREE || state === S.ABORTED_HOLD || state === S.NOTICED) return 'abort-window-closed';
+      if (state === S.ABORTED_FREE || state === S.ABORTED_HOLD || state === S.NOTICED || state === S.FROZEN) return 'abort-window-closed';
     }
     if ((ins.action === 'withhold' || ins.action === 'release') && state !== S.HOLD && state !== S.WITHHELD) return 'no-deposit-held';
     return 'not-available-in-state';

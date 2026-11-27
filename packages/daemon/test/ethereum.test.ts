@@ -47,6 +47,8 @@ async function boot(): Promise<{ w: World; d: Daemon; eth: FakeEthereum; swaps: 
   const none = { state: 0 } as EthSwapStruct;
   eth.views['getMaker'] = () => ({ operator: w.keystore.ethereum.address, payout: '0x00000000000000000000000000000000000000bb', quoteEpoch: 3, approvalEpoch: 2, paused: false, registeredAt: 5n, solanaOwner: zero32, solanaOwnerNext: zero32, solanaOwnerNextAt: 0n, openPending: 0, responseSecsSum: 0n, counters: new Array(40).fill(0) });
   eth.views['usdc'] = () => USDC;
+    // The contract as the anvil harness deploys it: caps switched off.
+    eth.views['capsOf'] = () => [false, 0n, 0n, 0n];
   eth.views['owedOf'] = () => 0n;
   eth.views['getSwap'] = ([id], ctx) => {
     const s = swaps.get(String(id).toLowerCase());
@@ -116,6 +118,8 @@ describe('key pool generation stays off the hot path', () => {
     const eth = new FakeEthereum(CONTRACT);
     eth.views['getMaker'] = () => ({ operator: w.keystore.ethereum.address, payout: '0x00000000000000000000000000000000000000bb', quoteEpoch: 3, approvalEpoch: 2, paused: false, registeredAt: 5n, solanaOwner: zero32, solanaOwnerNext: zero32, solanaOwnerNextAt: 0n, openPending: 0, responseSecsSum: 0n, counters: new Array(40).fill(0) });
     eth.views['usdc'] = () => USDC;
+    // The contract as the anvil harness deploys it: caps switched off.
+    eth.views['capsOf'] = () => [false, 0n, 0n, 0n];
     let d = await w.boot({ ethTransport: eth });
     const t0 = Date.now();
     await d.start(); // returns without waiting for 32 proofs
@@ -230,7 +234,7 @@ describe('finality on Ethereum', () => {
     return { id: id.toLowerCase(), keys, pending, model: fx.swap };
   }
   function structOf(m: ModelSwap, rest: Record<string, unknown>): EthSwapStruct {
-    return { ...rest, state: m.state, direction: m.direction, mode: m.mode, outcome: m.outcome, depositState: m.depositState, depth: m.depth, flags: m.flags, amount: m.amount, deposit: m.deposit, noticeWindow: m.wN, claimDelay: m.dC, claimWindow: m.wC, tLock: m.tLock, tPendingDeadline: m.tPendingDeadline, tActive: m.tActive, tNoteDeadline: m.tNoteDeadline, tNotice: m.tNotice, tCut: m.tCut, tClaimOpen: m.tClaimOpen, tReady: m.tReady, tClaimDeadline: m.tClaimDeadline, tFinal: m.tFinal, tRefund: m.tRefund, tSettled: m.tSettled } as unknown as EthSwapStruct;
+    return { ...rest, state: m.state, direction: m.direction, mode: m.mode, outcome: m.outcome, depositState: m.depositState, depth: m.depth, flags: m.flags, amount: m.amount, deposit: m.deposit, noticeWindow: m.wN, claimDelay: m.dC, claimWindow: m.wC, tLock: m.tLock, tPendingDeadline: m.tPendingDeadline, tActive: m.tActive, tNoteDeadline: m.tNoteDeadline, tNotice: m.tNotice, tCut: m.tCut, tClaimOpen: m.tClaimOpen, tReady: m.tReady, tClaimDeadline: m.tClaimDeadline, tFinal: m.tFinal, tRefund: m.tRefund, tSettled: m.tSettled, payout: `0x${'00'.repeat(20)}`, watcher: `0x${'00'.repeat(20)}`, freezeSecs: m.wZ, tFreeze: m.tFreeze } as unknown as EthSwapStruct;
   }
   const emitLocked = (eth: FakeEthereum, id: string, block: bigint) => {
     const ev = (IXmrSwapAbi as unknown as { type: string; name?: string; inputs: { name: string; type: string; components?: { name: string; type: string }[] }[] }[]).find((e) => e.type === 'event' && e.name === 'Locked')!;

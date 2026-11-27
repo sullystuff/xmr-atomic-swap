@@ -59,10 +59,12 @@ CREATE TABLE IF NOT EXISTS fills (swap_ref TEXT PRIMARY KEY, at INTEGER NOT NULL
 CREATE TABLE IF NOT EXISTS config_log (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, revision TEXT NOT NULL, source TEXT NOT NULL, changes TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS alerts (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, level TEXT NOT NULL, kind TEXT NOT NULL, message TEXT NOT NULL, swap_ref TEXT, acknowledged INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS uptime (day INTEGER PRIMARY KEY, beats INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS watch_acks (swap_ref TEXT PRIMARY KEY, chain TEXT NOT NULL, watcher TEXT NOT NULL, watching_until INTEGER NOT NULL, sig TEXT NOT NULL, at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS freezes (swap_ref TEXT PRIMARY KEY, chain TEXT NOT NULL, direction INTEGER NOT NULL, taker TEXT NOT NULL, watcher TEXT, frozen_by TEXT NOT NULL, t_freeze INTEGER NOT NULL, t_ff INTEGER NOT NULL, at INTEGER NOT NULL);
 `;
 
 export type IntentStatus = 'planned' | 'sent' | 'confirmed' | 'failed' | 'needs_review';
-export type IntentKind = 'sol_tx' | 'eth_tx' | 'xmr_prepare' | 'xmr_relay' | 'xmr_sweep' | 'xmr_split' | 'xmr_send' | 'venue_transfer';
+export type IntentKind = 'sol_tx' | 'eth_tx' | 'xmr_prepare' | 'xmr_relay' | 'xmr_sweep' | 'xmr_split' | 'xmr_send' | 'venue_transfer' | 'watch_register';
 export interface IntentRow {
   id: number;
   swap_ref: string | null;
@@ -146,6 +148,29 @@ export interface SwapRow {
   needs_review: number;
   last_error: string | null;
   updated_at: number;
+}
+export interface WatchAckRow {
+  swap_ref: string;
+  chain: 'solana' | 'ethereum';
+  /** The watcher's Solana key that signed the acknowledgement. */
+  watcher: string;
+  watching_until: number;
+  sig: string;
+  at: number;
+}
+/** `taker_side`: the taker, its session key or the watcher it named (direction A). `maker`: this daemon. `maker_watcher`: the maker's watcher (direction B). */
+export type FrozenBy = 'taker_side' | 'maker' | 'maker_watcher';
+export interface FreezeRow {
+  swap_ref: string;
+  chain: 'solana' | 'ethereum';
+  direction: 0 | 1;
+  taker: string;
+  /** The key the swap names as watcher, or `null`. */
+  watcher: string | null;
+  frozen_by: FrozenBy;
+  t_freeze: number;
+  t_ff: number;
+  at: number;
 }
 export interface LockTxRow {
   swap_ref: string;
@@ -504,6 +529,30 @@ export class Store {
   }
   alerts(limit = 100): AlertRow[] {
     return this.db.prepare('SELECT * FROM alerts ORDER BY id DESC LIMIT ?').all(limit) as AlertRow[];
+  }
+  // ---------------------------------------------------------------- Amendment 1: watcher acknowledgements and freezes
+  putWatchAck(r: Omit<WatchAckRow, 'at'>): void {
+    this.db.prepare('INSERT OR REPLACE INTO watch_acks (swap_ref, chain, watcher, watching_until, sig, at) VALUES (?, ?, ?, ?, ?, ?)').run(r.swap_ref, r.chain, r.watcher, r.watching_until, r.sig, this.now());
+  }
+  watchAck(swapRef: string): WatchAckRow | undefined {
+    return this.db.prepare('SELECT * FROM watch_acks WHERE swap_ref = ?').get(swapRef) as WatchAckRow | undefined;
+  }
+  watchAcks(): WatchAckRow[] {
+    return this.db.prepare('SELECT * FROM watch_acks ORDER BY at DESC').all() as WatchAckRow[];
+  }
+  /** Recorded once, the first time a swap is seen frozen (or settled after a freeze). */
+  recordFreeze(r: Omit<FreezeRow, 'at'>): boolean {
+    return this.db.prepare('INSERT OR IGNORE INTO freezes (swap_ref, chain, direction, taker, watcher, frozen_by, t_freeze, t_ff, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(r.swap_ref, r.chain, r.direction, r.taker, r.watcher, r.frozen_by, r.t_freeze, r.t_ff, this.now()).changes > 0;
+  }
+  freeze(swapRef: string): FreezeRow | undefined {
+    return this.db.prepare('SELECT * FROM freezes WHERE swap_ref = ?').get(swapRef) as FreezeRow | undefined;
+  }
+  freezes(): FreezeRow[] {
+    return this.db.prepare('SELECT * FROM freezes ORDER BY t_freeze DESC').all() as FreezeRow[];
+  }
+  /** How many of a taker's swaps with this maker were frozen by the taker's side (direction A). Keyed on the taker, never on a payout address. */
+  takerFreezes(taker: string): number {
+    return (this.db.prepare('SELECT COUNT(*) AS n FROM freezes WHERE direction = 0 AND LOWER(taker) = LOWER(?)').get(taker) as { n: number }).n;
   }
   beat(): void {
     const day = Math.floor(this.now() / 86_400);

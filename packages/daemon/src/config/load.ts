@@ -48,6 +48,8 @@ export interface ResolvedOffer {
   withholdMovePct: number;
   volatilityWiden: { perPctMove: number; maxPct: number } | null;
   withoutReady: 'claim' | 'abort' | null;
+  /** `W_z` in seconds; 0 = no watcher accepted (SPEC 11.6). */
+  freezeWindowSecs: number;
 }
 
 export interface Config {
@@ -93,7 +95,7 @@ export function pendingWindow(chain: ChainName, direction: 0 | 1, mode: number, 
 }
 
 /** The first violated bound of SPEC 3.1 for one depth, or `null`. Same names as the core's `deadlines().boundError` family. */
-export function boundProblem(p: { chain: ChainName; direction: 0 | 1; mode: number; wA: number; wN: number; dC: number; wC: number; wF: number; depth: number; depBps: number }): string | null {
+export function boundProblem(p: { chain: ChainName; direction: 0 | 1; mode: number; wA: number; wN: number; dC: number; wC: number; wF: number; depth: number; depBps: number; wZ?: number }): string | null {
   const c = CHAIN_CONSTS[p.chain];
   if (p.depth < 1 || p.depth > 255) return `depth ${p.depth} is outside 1..255`;
   if (p.depBps > c.maxDepositBps) return `deposit ${p.depBps} bps is over the cap of ${c.maxDepositBps}`;
@@ -106,8 +108,10 @@ export function boundProblem(p: { chain: ChainName; direction: 0 | 1; mode: numb
   if (p.wC < minWc) return `claim window ${p.wC} s is under ${minWc} s`;
   // The longest pending window any swap of this offer can use.
   const wP = Math.max(pendingWindow(p.chain, p.direction, p.mode, false, p.wA, p.wN), pendingWindow(p.chain, p.direction, p.mode, true, p.wA, p.wN));
-  const minWf = wP + p.wN + p.dC + p.wC + 86_400;
-  if (p.wF < minWf) return `final window ${p.wF} s is under ${minWf} s`;
+  const wZ = p.wZ ?? 0;
+  if (wZ !== 0 && (wZ < c.minFreezeSecs || wZ > c.maxFreezeSecs)) return `freeze window ${wZ} s is neither 0 nor inside ${c.minFreezeSecs}..${c.maxFreezeSecs}`;
+  const minWf = wP + p.wN + p.dC + wZ + p.wC + 86_400;
+  if (p.wF < minWf) return `final window ${p.wF} s is under ${minWf} s${wZ ? ' (the freeze window counts)' : ''}`;
   if (p.wF > c.maxFinalSecs) return `final window ${p.wF} s is over ${c.maxFinalSecs} s`;
   return null;
 }
@@ -239,10 +243,13 @@ function resolveOffer(raw: RawConfig, market: MarketName, direction: DirectionNa
   const claimDelaySecs = o.claim_delay_minutes === 'auto' ? Math.ceil(Math.max(d.autoClaimDelayMin * 60, minDc) / 60) * 60 : Math.round(o.claim_delay_minutes * 60);
   const depositBps = Math.round(o.deposit_pct * 100);
   const directionCode = direction === 'sell_xmr' ? 0 : 1;
+  const freezeWindowSecs = Math.round(o.freeze_window_hours * 3_600);
+  // An offer with a freeze window prices the longer option with the deposit: `price_moved` unless the file says otherwise.
+  const withholdPolicy = o.withhold_policy ?? (freezeWindowSecs > 0 && direction === 'sell_xmr' ? 'price_moved' : 'never');
 
   if (o.enabled) {
     for (const t of inUse) {
-      const problem = boundProblem({ chain, direction: directionCode, mode: MODE_CODE[o.approval_mode], wA: approvalWindowSecs, wN: noticeSecs, dC: claimDelaySecs, wC: claimWindowSecs, wF: finalSecs, depth: t.depth, depBps: depositBps });
+      const problem = boundProblem({ chain, direction: directionCode, mode: MODE_CODE[o.approval_mode], wA: approvalWindowSecs, wN: noticeSecs, dC: claimDelaySecs, wC: claimWindowSecs, wF: finalSecs, depth: t.depth, depBps: depositBps, wZ: freezeWindowSecs });
       if (problem) {
         err('', `${problem} (SPEC 3.1, ${chain})`);
         break;
@@ -256,20 +263,42 @@ function resolveOffer(raw: RawConfig, market: MarketName, direction: DirectionNa
     }
     if (chain === 'solana' && direction === 'sell_xmr' && o.approval_mode === 'auto' && raw.liquidity.max_per_taker_xmr !== undefined)
       warn('approval_mode', 'max_per_taker_xmr cannot be enforced before the fact on a Solana auto-accept offer; the only remedy is abort');
-    if (o.withhold_policy !== 'never' && depositBps === 0) warn('withhold_policy', 'a withhold policy without a deposit has no effect');
+    if (o.withhold_policy !== undefined && o.withhold_policy !== 'never' && depositBps === 0) warn('withhold_policy', 'a withhold policy without a deposit has no effect');
+    if (freezeWindowSecs > 0) warn('freeze_window_hours', freezeWarning(direction, claimDelaySecs, freezeWindowSecs, depositBps));
+    const a = raw.approvals;
+    if ((a.deny_watchers.length > 0 || a.refuse_watchers || a.max_taker_freezes !== undefined) && chain === 'solana' && direction === 'sell_xmr' && o.approval_mode === 'auto' && freezeWindowSecs > 0)
+      warn('approval_mode', 'deny_watchers, refuse_watchers and max_taker_freezes cannot be enforced before the fact on a Solana auto-accept offer: the lock is accepted by the chain; use window mode, or a freeze window of 0');
+    if (direction === 'buy_xmr' && freezeWindowSecs > 0 && !watcherConfigured(raw, chain)) warn('freeze_window_hours', `this offer allows a pause but no maker watcher is set for ${chain} ([watcher] url and ${chain === 'solana' ? 'solana_key' : 'ethereum_key'}): nothing will pause a swap while the daemon is down`);
   }
 
   return {
     market, direction, chain, directionCode, decimals: MARKET_DECIMALS[market], configured: o.enabled, enabled: o.enabled && disabledReason === null, disabledReason,
     source, fallbacks, crossCheck, deviationPct: o.deviation_pct, sizeTiers, skewMaxPct: o.inventory_skew_max_pct, minXmr, maxXmr, validSecs, depthTiers, noticeSecs, finalSecs, depositBps,
     dailyCapXmr: o.daily_cap_xmr !== undefined ? xmrToPico(o.daily_cap_xmr) : null, mode: o.approval_mode, approvalWindowSecs, claimDelaySecs, claimWindowSecs, minClaimDelaySecs: minDc,
-    withholdPolicy: o.withhold_policy, withholdMovePct: o.withhold_move_pct, volatilityWiden: o.volatility_widen ? { perPctMove: o.volatility_widen.per_pct_move, maxPct: o.volatility_widen.max_pct } : null, withoutReady: o.without_ready ?? null,
+    withholdPolicy, freezeWindowSecs, withholdMovePct: o.withhold_move_pct, volatilityWiden: o.volatility_widen ? { perPctMove: o.volatility_widen.per_pct_move, maxPct: o.volatility_widen.max_pct } : null, withoutReady: o.without_ready ?? null,
   };
+}
+
+const hours = (secs: number): string => `${Math.round((secs / 3_600) * 10) / 10} h`;
+/**
+ * The plain statement of what a non-zero freeze window costs (SPEC 11.6 "Griefing, quantified").
+ * Sell-XMR: the taker's free option on the maker's XMR grows from `D_c` to `D_c + W_z`.
+ * Buy-XMR: the maker's own watcher may pause; the cost is the taker's and the offer says so.
+ */
+export function freezeWarning(direction: DirectionName, claimDelaySecs: number, wZ: number, depositBps: number): string {
+  if (direction === 'sell_xmr')
+    return `a freeze window of ${hours(wZ)} lets a taker (or a watcher it names) pause a swap once: your XMR can then stay locked, with the taker free to walk away, for up to ${hours(claimDelaySecs + wZ)} after your notice instead of ${hours(claimDelaySecs)} (${Math.round((claimDelaySecs + wZ) / claimDelaySecs)} times longer). At the end of the window you claim. A refund or abort after a pause always leaves the deposit withholdable${depositBps === 0 ? '; this offer takes no deposit, so nothing prices that option' : ''}`;
+  return `a freeze window of ${hours(wZ)} lets your watcher (or this daemon) pause a swap whose XMR lock does not check out: the taker's XMR can stay locked up to ${hours(wZ)} longer, takers are warned before they take, and a refund after a pause returns the take deposit at once (it can never be held)`;
+}
+/** A maker watcher can be named on a chain once its URL and that chain's key are set (and are not placeholders). */
+export function watcherConfigured(raw: RawConfig, chain: ChainName): boolean {
+  const w = raw.watcher;
+  return usable(w.url) && usable(w.solana_key) && (chain === 'solana' || usable(w.ethereum_key));
 }
 
 export const effectiveTerms = (o: ResolvedOffer): EffectiveOfferTerms => ({
   market: o.market, direction: o.direction, enabled: o.enabled, approval_mode: o.mode, approval_window_secs: o.approvalWindowSecs, notice_secs: o.noticeSecs, claim_delay_secs: o.claimDelaySecs,
-  claim_window_secs: o.claimWindowSecs, final_secs: o.finalSecs, deposit_bps: o.depositBps, depth_tiers: o.depthTiers.map((t) => ({ above_xmr: t.aboveXmr.toString(), depth: t.depth })), min_claim_delay_secs: o.minClaimDelaySecs,
+  claim_window_secs: o.claimWindowSecs, final_secs: o.finalSecs, deposit_bps: o.depositBps, depth_tiers: o.depthTiers.map((t) => ({ above_xmr: t.aboveXmr.toString(), depth: t.depth })), min_claim_delay_secs: o.minClaimDelaySecs, freeze_window_secs: o.freezeWindowSecs,
 });
 
 /** Compute-unit limit of one `refresh_offers` (20,100 measured × 1.2, SPEC 4.9), for pricing the priority fee. */
@@ -346,6 +375,10 @@ export function loadConfig(toml: string): LoadResult {
   }
   if (raw.offers.min_refresh_interval_seconds !== undefined && raw.offers.price_move_trigger_pct === undefined) warnings.push({ path: 'offers.min_refresh_interval_seconds', message: 'has no effect without price_move_trigger_pct' });
   for (const o of live) if (raw.offers.update_interval_seconds > o.validSecs) warnings.push({ path: `markets.${o.market}.${o.direction}.offer_valid_seconds`, message: 'the update interval is longer than the offer validity: the offer lapses between refreshes' });
+  const w = raw.watcher;
+  if (usable(w.url) && !usable(w.solana_key)) errors.push({ path: 'watcher.solana_key', message: 'a watcher needs its Solana key: notice keys are sealed to it and its acknowledgements are checked against it, whichever chain the swap is on' });
+  if (usable(w.url) && !usable(w.ethereum_key) && live.some((o) => o.chain === 'ethereum' && o.direction === 'buy_xmr' && o.freezeWindowSecs > 0)) warnings.push({ path: 'watcher.ethereum_key', message: 'no Ethereum watcher address is set: Ethereum buy-XMR swaps are funded without a watcher' });
+  if (usable(w.url) && !live.some((o) => o.direction === 'buy_xmr' && o.freezeWindowSecs > 0)) warnings.push({ path: 'watcher.url', message: 'a watcher is set but no buy-XMR offer has a freeze window: no swap will name it' });
   if (raw.rotation.interval_hours > 0 && raw.rotation.interval_hours < raw.rotation.grace_hours) warnings.push({ path: 'rotation.interval_hours', message: 'rotating more often than the grace period keeps only one previous key valid on-chain; older messages get stale_key' });
 
   const validation: ConfigValidation = { ok: errors.length === 0, errors, warnings, effective: live.map(effectiveTerms), update_cost: live.some((o) => o.chain === 'solana' || o.chain === 'ethereum') ? updateCost(raw, offers) : null };

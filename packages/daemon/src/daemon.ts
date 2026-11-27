@@ -10,12 +10,13 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unwatchFile, watchFile
 import path from 'node:path';
 import { Connection } from '@solana/web3.js';
 import { coreVersion, init } from '@xmrswap/core-wasm';
-import { CLOCK_SKEW_WARN_SECS, type ChainName, type Contact, DEV_PROGRAM_ID, ETH_NATIVE, type Market, SWAP_STATE, base58Decode } from '@xmrswap/protocol';
-import type { ChainConnection, ConfigLogEntry, StatusResponse } from '@xmrswap/protocol/daemon-api';
+import { CLOCK_SKEW_WARN_SECS, type ChainName, type Contact, DEV_PROGRAM_ID, ETH_NATIVE, type Market, PROGRAM_HASH, SWAP_STATE, base58Decode } from '@xmrswap/protocol';
+import type { ChainConnection, ConfigLogEntry, ProgramBuildStatus, StatusResponse, TxResult } from '@xmrswap/protocol/daemon-api';
 import { type HttpClient, fetchHttpClient } from '@xmrswap/rebalancer';
-import { ContractError, type EthDeployment, type EthTransport, EthereumClient, type MoneroNode, ProgramError, SdkError, SolanaClient, type SolanaTransport, ata, connectionTransport, unhex } from '@xmrswap/sdk';
+import { ContractError, type EthDeployment, type EthTransport, EthereumClient, type HttpFetch, type MoneroNode, ProgramError, SdkError, SolanaClient, type SolanaTransport, type SwapView, ata, connectionTransport, endedInClaim, solanaInstruction, unhex } from '@xmrswap/sdk';
 import { Alerts } from './alerts/index.js';
 import { Approvals } from './approvals/index.js';
+import { Caps } from './caps/index.js';
 import { EthereumChain } from './chains/ethereum.js';
 import { SolanaChain } from './chains/solana.js';
 import { failover } from './chains/types.js';
@@ -38,6 +39,8 @@ import { Store } from './store/db.js';
 import { type CrashHook, Journal } from './store/journal.js';
 import { Executor } from './swaps/executor.js';
 import { Shares } from './swaps/shares.js';
+import { ETH_SWAP_GAS_MAX, swapCosts } from './stats/costs.js';
+import { MakerWatcher } from './watcher/index.js';
 import { readOnionHostname } from './tor/index.js';
 import { Emitter, decimalToUnits, errMsg, picoToXmr } from './util.js';
 
@@ -78,6 +81,8 @@ export interface DaemonOptions {
   initialEncSecret?: Uint8Array;
   /** Sweep fee cap override (piconero). */
   sweepMaxFee?: bigint;
+  /** HTTP to the maker's watcher (`[watcher] url`); tests inject a fake service. */
+  watcherFetch?: HttpFetch;
 }
 
 /** A configuration the daemon refused. `issues` places every error on its key. */
@@ -113,6 +118,8 @@ export class Daemon {
   inbox!: Inbox;
   registration!: Registration;
   rebalance!: Rebalance;
+  caps!: Caps;
+  watcher!: MakerWatcher;
   monero!: MoneroView;
   wallet!: InventoryWallet;
   sol: SolanaChain | null = null;
@@ -231,13 +238,15 @@ export class Daemon {
         return { deployment: this.eth.deployment, maker: unhex(this.eth.makerAddress), usdc: unhex(usdc), approvalEpoch: maker.approvalEpoch, now };
       },
     });
+    this.caps = new Caps({ solana: () => this.sol, ethereum: () => this.eth, ethereumFrozen: () => this.upgrade.get('ethereum')?.status === 'immutable' });
+    this.watcher = new MakerWatcher({ store: this.store, journal: this.journal, alerts: this.alerts, config: () => this.config, ...(this.o.watcherFetch ? { fetch: this.o.watcherFetch } : {}) });
     this.executor = new Executor({
       store: this.store, journal: this.journal, alerts: this.alerts, chains: { ...(this.sol ? { solana: this.sol } : {}), ...(this.eth ? { ethereum: this.eth } : {}) }, inventory: this.inventory, monero: this.monero, broadcaster,
-      shares: this.shares, encKeys: this.encKeys, approvals: this.approvals, config: () => this.config, paused: () => this.risk.paused, xmrUsd: () => this.prices.usd('xmr'),
+      shares: this.shares, encKeys: this.encKeys, approvals: this.approvals, watcher: this.watcher, config: () => this.config, paused: () => this.risk.paused, xmrUsd: () => this.prices.usd('xmr'),
       sweepMaxFee: () => this.o.sweepMaxFee ?? (this.config.raw.monero.sweep_max_fee !== undefined ? BigInt(this.config.raw.monero.sweep_max_fee) : undefined),
     });
     this.offers = new OfferEngine({
-      store: this.store, journal: this.journal, alerts: this.alerts, keystore: this.keystore, shares: this.shares, prices: this.prices, risk: this.risk, config: () => this.config,
+      store: this.store, journal: this.journal, alerts: this.alerts, keystore: this.keystore, shares: this.shares, prices: this.prices, risk: this.risk, caps: this.caps, config: () => this.config,
       capacity: () => this.inventory.capacity(), inventoryXmr: () => picoToXmr(this.inventory.capacity().total), payingAvailable: (market) => this.payingAvailable(market), solana: () => this.sol, ethereum: () => this.eth,
     });
     this.rotation = new Rotation({ store: this.store, keys: this.encKeys, journal: this.journal, solana: () => this.sol, intervalHours: () => this.config.raw.rotation.interval_hours, graceHours: () => this.config.raw.rotation.grace_hours, dryRun: () => !this.live });
@@ -400,7 +409,7 @@ export class Daemon {
   /** What open direction-B swaps of a market hold in escrow. */
   escrowed(market: Market, exclude?: string): bigint {
     // Funded swaps, and pending takes already approved (their funding may be in flight): both hold a share of the cap.
-    const holds = (s: { state: number }) => ([SWAP_STATE.ACTIVE, SWAP_STATE.NOTICED, SWAP_STATE.READY, SWAP_STATE.ABORTED_FREE, SWAP_STATE.ABORTED_HOLD] as number[]).includes(s.state);
+    const holds = (s: { state: number }) => ([SWAP_STATE.ACTIVE, SWAP_STATE.NOTICED, SWAP_STATE.READY, SWAP_STATE.FROZEN, SWAP_STATE.ABORTED_FREE, SWAP_STATE.ABORTED_HOLD] as number[]).includes(s.state);
     return this.store.swaps({ open: true }).filter((s) => s.market === market && s.direction === 1 && s.ref !== exclude && (holds(s) || (s.state === SWAP_STATE.PENDING && Risk.approved(s)))).reduce((a, s) => a + BigInt(s.amount), 0n);
   }
   payingCap(market: Market): bigint | null {
@@ -584,14 +593,78 @@ export class Daemon {
     await this.rotation.tick().catch((e) => this.alerts.raise('warning', 'rotation_failed', errMsg(e)));
     await this.registration.syncPublished().catch((e) => this.alerts.raise('warning', 'registry_sync_failed', errMsg(e)));
     await this.rebalance.tick().catch((e) => this.alerts.raise('warning', 'rebalance_failed', errMsg(e)));
-    // Fee-wallet runway: days of offer updates the operator balance covers at the current rate.
+    await this.watcher.probe().catch(() => undefined);
+    // Fee-wallet runway: days of offer updates AND of swaps at the last day's rate the operator balance covers, with the
+    // compute units and gas measured after Amendment 1.
     const est = this.load.validation.update_cost;
     if (this.sol && est && this.live) {
       const balance = (await this.sol.client.transport.getAccount(this.sol.operator))?.lamports ?? 0n;
-      const days = Number(balance) / Math.max(1, Number(est.daily_lamports));
-      if (days < this.config.raw.alerts.fee_runway_days) this.alerts.raise('warning', 'fee_runway', `the Solana fee wallet covers ${days.toFixed(1)} days of offer updates, under the ${this.config.raw.alerts.fee_runway_days}-day threshold`, null, 21_600);
+      const days = Number(balance) / Math.max(1, Number(est.daily_lamports) + Number(this.dailySwapLamports()));
+      if (days < this.config.raw.alerts.fee_runway_days) this.alerts.raise('warning', 'fee_runway', `the Solana fee wallet covers ${days.toFixed(1)} days of offer updates and swaps, under the ${this.config.raw.alerts.fee_runway_days}-day threshold`, null, 21_600);
+    }
+    if (this.eth && this.live && this.config.offers.some((o) => o.chain === 'ethereum' && o.enabled)) {
+      const swaps = await this.ethRunwaySwaps().catch(() => null);
+      if (swaps !== null && swaps < 5) this.alerts.raise('warning', 'fee_runway_eth', `the Ethereum operator balance covers the gas of about ${Math.floor(swaps)} swap${Math.floor(swaps) === 1 ? '' : 's'} at the current gas price`, null, 21_600);
     }
     this.events.emit('status', null);
+  }
+
+  /** Lamports per day the operator's swap transactions cost at the last 24 hours' rate of swaps. */
+  dailySwapLamports(): bigint {
+    const costs = swapCosts(this.config.raw).solana;
+    let sum = 0n;
+    for (const f of this.store.fills(this.store.now() - 86_400)) {
+      if (f.market !== 'sol' && f.market !== 'usdc_sol') continue;
+      const c = costs[f.market];
+      sum += BigInt(f.direction === 0 ? c.sell_xmr_window.lamports : c.buy_xmr.lamports);
+    }
+    return sum;
+  }
+  /** How many ordinary swaps the Ethereum operator's ETH pays the gas of, at the node's current gas price. */
+  async ethRunwaySwaps(): Promise<number | null> {
+    if (!this.eth) return null;
+    const [balance, price] = await Promise.all([this.eth.balanceOf(ETH_NATIVE as `0x${string}`, this.eth.operator as `0x${string}`), this.eth.client.transport.request({ method: 'eth_gasPrice', params: [] }).then((v) => BigInt(v as string))]);
+    return price > 0n ? Number(balance) / Number(price * ETH_SWAP_GAS_MAX) : null;
+  }
+
+  /**
+   * Deliver what is parked for a swap's parties without the key it is owed to (SPEC 11.2). Nothing here can redirect a
+   * payout: Ethereum's `pushOwed` pays the account itself, and on Solana the program pins the destination to the swap's
+   * payout address. The operator only pays the fee.
+   */
+  async deliverOwed(view: SwapView, ref: string): Promise<TxResult[]> {
+    const txs: TxResult[] = [];
+    if (view.chain === 'solana') {
+      const sol = this.sol;
+      if (!sol) throw new Error('Solana is not configured');
+      // Only claim proceeds parked for a payout address can be delivered by a third party; a parked maker payout needs the owner key (`withdraw-owed-tx`).
+      if (!(view.direction === 1 && view.payout === 'other' && endedInClaim(view) && view.owedTaker > 0n)) return txs;
+      const m = await sol.maker(true);
+      const ix = solanaInstruction(sol.client.program, view, { operator: m.operator, payout: m.payout }, sol.operator, { name: 'withdraw_owed', who: 'payout' });
+      const { tx } = await this.journal.broadcast('sol_tx', null, { call: 'deliver_owed', swap: ref, account: view.payoutAddress }, (onSigned) => sol.sendInstructions([ix], onSigned));
+      txs.push({ chain: 'solana', id: tx!, status: 'sent' });
+      return txs;
+    }
+    const eth = this.eth;
+    if (!eth) throw new Error('Ethereum is not configured');
+    const token = view.asset as `0x${string}`;
+    const owed = await eth.client.owedFor(token, view.taker as `0x${string}`, view.maker as `0x${string}`, eth.tag);
+    const accounts = new Set<string>();
+    if (owed.accounts) for (const k of ['payout', 'operator', 'owner'] as const) if (owed[k] > 0n) accounts.add(owed.accounts[k].toLowerCase());
+    // The taker's side: claim proceeds of a direction-B swap are parked under the PAYOUT address, everything else under the taker's own.
+    if (view.owedTaker > 0n) accounts.add((view.direction === 1 && view.payout === 'other' && endedInClaim(view) && view.payoutAddress ? view.payoutAddress : view.taker).toLowerCase());
+    for (const account of accounts) {
+      const { tx } = await this.journal.broadcast('eth_tx', null, { call: 'push_owed', swap: ref, account }, (onSigned) => eth.sendCall(eth.client.contract.pushOwed(token, account as `0x${string}`), onSigned));
+      txs.push({ chain: 'ethereum', id: tx!, status: 'sent' });
+    }
+    return txs;
+  }
+
+  /** The Solana program build this daemon expects and the one deployed (SPEC 11.5). */
+  async programBuild(): Promise<ProgramBuildStatus> {
+    const programId = this.sol?.client.programId ?? this.config.raw.solana.program_id ?? DEV_PROGRAM_ID;
+    const onChain = this.sol ? await this.sol.client.programBuild('finalized').then((b) => b.hash, () => null) : null;
+    return { program_id: programId, expected_hash: PROGRAM_HASH, on_chain_hash: onChain, matches: PROGRAM_HASH === null || onChain === null ? null : PROGRAM_HASH === onChain };
   }
 
   async stop(): Promise<void> {
@@ -654,6 +727,7 @@ export class Daemon {
     const onion = this.desiredPublished().onion;
     // Published = the registry's onion address is the one this daemon wants listed.
     const listed = this.sol ? ((await this.sol.client.getMaker(this.sol.makerPda, 'finalized').catch(() => null))?.onion ?? '') : '';
+    await this.caps.refresh().catch(() => undefined);
     return {
       version: DAEMON_VERSION, core_version: coreVersion(), mode: this.config.raw.daemon.mode, started_at: this.startedAt, uptime_secs: this.now() - this.startedAt,
       maker: { solana: this.sol?.makerPda ?? null, ethereum: this.eth?.makerAddress ?? null }, chains,
@@ -662,6 +736,9 @@ export class Daemon {
       // `chains` is an addition to the frozen shape: the owner's pause is per chain.
       paused: { owner: ownerPaused, operator: this.risk.paused, guardrails, ...({ chains: perChain } as object) },
       needs_review: this.store.needsReviewCount(), alerts: this.alerts.list(20),
+      caps: this.caps.view(), program_build: await this.programBuild(), watcher: this.watcher.status(this.now()),
+      // Additions (Amendment 1): which offers a cap stops, and how many swaps were ever paused.
+      ...({ cap_reached: this.offers.latest().filter((c) => c.capReached).map((c) => ({ market: c.offer.market, direction: c.offer.direction, code: c.capReached, reason: c.reason })), freezes: this.store.freezes().length } as object),
     };
   }
 

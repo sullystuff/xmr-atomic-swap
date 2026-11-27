@@ -85,6 +85,16 @@ export class Approvals {
     if (a.deny.some((d) => same(d, row.taker))) return reject(REJECT_REASON.MAKER_CHOICE, 'the taker is on the deny list');
     if (!offer || !offer.configured) return reject(REJECT_REASON.MAKER_CHOICE, 'this market and direction is switched off');
     const reasons: string[] = [];
+    // A watcher the taker named (SPEC 11.6): refused by key, or altogether, when the maker says so. Per-taker rules are keyed on the
+    // TAKER (the wallet that opened the swap), never on a payout address: that address may be fresh for every swap.
+    if (view.direction === 0 && view.watcherAddress !== null) {
+      if (a.refuse_watchers) reasons.push('the lock names a watcher and this maker refuses watchers');
+      else if (a.deny_watchers.some((w) => same(w, view.watcherAddress!))) reasons.push('the watcher the lock names is on the deny list');
+    }
+    if (view.direction === 0 && view.wZ > 0 && a.max_taker_freezes !== undefined) {
+      const n = this.o.store.takerFreezes(row.taker);
+      if (n >= a.max_taker_freezes) reasons.push(`this taker's swaps were paused ${n} time${n === 1 ? '' : 's'} (the limit is ${a.max_taker_freezes})`);
+    }
     if (a.allow.length > 0 && !a.allow.some((d) => same(d, row.taker))) reasons.push('the taker is not on the allow list');
     if (view.xmr < offer.minXmr || (offer.maxXmr > 0n && view.xmr > offer.maxXmr)) reasons.push('the size is outside the offer limits');
     reasons.push(...this.o.risk.check({ ref: row.ref, taker: row.taker, xmr: view.xmr }, offer).reasons);

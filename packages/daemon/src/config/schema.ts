@@ -81,11 +81,17 @@ const offer = z.strictObject({
   approval_window_seconds: z.number().int().positive().optional(),
   claim_delay_minutes: z.union([z.literal('auto'), z.number().positive()]).default('auto'),
   claim_window_minutes: z.number().positive().optional(),
-  withhold_policy: z.enum(['never', 'always', 'price_moved']).default('never'),
+  /** Absent: `never`, or `price_moved` for an offer with a freeze window (SPEC 11.6, mitigation 3). */
+  withhold_policy: z.enum(['never', 'always', 'price_moved']).optional(),
   withhold_move_pct: pct.nonnegative().default(1.0),
   volatility_widen: z.strictObject({ per_pct_move: pct.nonnegative(), max_pct: pct.nonnegative() }).optional(),
   /** Direction A without the taker's ready: claim at T_co when the own lock is confirmed (default), or always abort. */
   without_ready: z.enum(['claim', 'abort']).optional(),
+  /**
+   * The freeze window `W_z` in hours (SPEC 11.6). 0 = no watcher is accepted on this offer (the default); otherwise 1 to 72.
+   * Sell-XMR: the taker, or a watcher it names, may pause the swap once. Buy-XMR: the maker's own watcher may.
+   */
+  freeze_window_hours: z.number().finite().nonnegative().default(0),
 });
 const marketPair = z.strictObject({ sell_xmr: offer.default(() => offer.parse({})), buy_xmr: offer.default(() => offer.parse({})) });
 const markets = z.strictObject({
@@ -180,6 +186,25 @@ const approvals = z.strictObject({
   deny: z.array(z.string()).default([]),
   auto_max_xmr: xmrAmount.optional(),
   advance: z.array(z.strictObject({ taker: z.string(), max_xmr: xmrAmount, days: z.number().positive() })).default([]),
+  /** Watcher keys whose locks are refused (SPEC 11.6): in window mode and on Ethereum, before the fact. */
+  deny_watchers: z.array(z.string()).default([]),
+  /** Refuse every lock that names a watcher, whatever the key. */
+  refuse_watchers: z.boolean().default(false),
+  /** Refuse a taker whose swaps with this maker were frozen this many times or more. Absent = no limit. */
+  max_taker_freezes: z.number().int().positive().optional(),
+});
+/**
+ * The maker's own watcher for buy-XMR swaps (SPEC 11.6, "Sell direction"): a second machine that pauses a swap when the
+ * taker's XMR lock does not check out while this daemon is down. Off unless `url` is set.
+ */
+const watcher = z.strictObject({
+  url: z.string().optional(),
+  /** The watcher's Solana key (base58): named at `fund` on Solana; notice keys are sealed to it and its acknowledgements are checked against it. */
+  solana_key: z.string().optional(),
+  /** The watcher's Ethereum address: named at `fund` on Ethereum. */
+  ethereum_key: z.string().optional(),
+  /** Seconds between attempts to hand a swap to a watcher that did not answer. */
+  retry_seconds: z.number().positive().default(30),
 });
 const inbox = z.strictObject({ policy: z.enum(['open', 'swap_only']).default('open') });
 const alerts = z.strictObject({ webhook_url_env: z.string().optional(), fee_runway_days: z.number().positive().default(7) });
@@ -205,6 +230,7 @@ export const configSchema = z.strictObject({
   inbox: inbox.default(() => inbox.parse({})),
   alerts: alerts.default(() => alerts.parse({})),
   registration: registration.default(() => registration.parse({})),
+  watcher: watcher.default(() => watcher.parse({})),
 });
 
 export type RawConfig = z.infer<typeof configSchema>;

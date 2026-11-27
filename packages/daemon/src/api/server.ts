@@ -18,6 +18,7 @@ import { WebSocketServer } from 'ws';
 import { REFRESH_CU, loadConfig, updateCost } from '../config/load.js';
 import { ConfigRejected, type Daemon } from '../daemon.js';
 import { depositViews } from '../deposits/index.js';
+import { swapCosts } from '../stats/costs.js';
 import { type ChainCounters, feesView, statsView } from '../stats/index.js';
 import { pendingApproval, snapshotOf, swapDetail, swapSummary } from '../swaps/views.js';
 import { splitBind } from '../tor/index.js';
@@ -53,7 +54,12 @@ export const REFUSALS: Record<string, string> = {
   'cannot-exit-after-funding': 'after funding, the taker has no call that ends the swap',
   'not-available-in-state': 'the swap is not in a state that accepts it',
   'dry-run': 'the daemon is in dry run and sends no transaction',
+  'freeze-not-available': 'this swap names no watcher (or its offer has no freeze window): only such a swap can be paused',
+  'freeze-window-closed': 'a pause is accepted only after the notice and before the claim opens',
+  'already-frozen': 'the swap is, or was, paused: a swap can be paused once',
 };
+/** The chain's two cap refusals (SPEC 11.1): expected outcomes with their own code, never the maker's limit and never an internal error. */
+export const CAP_CODES = ['SwapCapExceeded', 'OpenCapExceeded'] as const;
 
 export interface ApiServer {
   server: Server;
@@ -136,7 +142,7 @@ export async function startApi(d: Daemon, opts: { bind?: string } = {}): Promise
     const toml = body(req)['toml'];
     if (typeof toml !== 'string') return fail(400, 'bad_request', 'toml is required.');
     const r = loadConfig(toml);
-    return { ...(r.config ? withCost(r.validation, r.config) : r.validation), ...({ sol_usd: solUsd(), compute_units_per_update: REFRESH_CU } as object) };
+    return { ...(r.config ? withCost(r.validation, r.config) : r.validation), ...({ sol_usd: solUsd(), compute_units_per_update: REFRESH_CU, ...(r.config ? { swap_cost: swapCosts(r.config.raw) } : {}) } as object) };
   });
   route('get', '/api/config/log', () => ({ entries: d.store.configLog().map((e) => ({ at: e.at, revision: e.revision, changes: e.changes, source: e.source })) }));
   route('get', '/api/config/export', () => ({ toml: d.load.toml, exported_at: d.store.now() }));
@@ -212,7 +218,7 @@ export async function startApi(d: Daemon, opts: { bind?: string } = {}): Promise
     const count = (kinds: string[]) => fees.filter((f) => kinds.includes(f.kind)).length;
     const est = validation.update_cost ? updateCost(cfg.raw, cfg.offers, solUsd()) : null;
     const balance = lastSolBalance;
-    const daily = [est ? BigInt(est.daily_lamports) : 0n, sum(['refresh_offers'], 'sol')].reduce((a, b) => (a > b ? a : b));
+    const daily = [est ? BigInt(est.daily_lamports) : 0n, sum(['refresh_offers'], 'sol')].reduce((a, b) => (a > b ? a : b)) + d.dailySwapLamports();
     return {
       offers: views, update_cost: est, spent_24h_lamports: sum(['refresh_offers'], 'sol').toString(), runway_days: balance !== null && daily > 0n ? Number(balance) / Number(daily) : null,
       occasional: [
@@ -222,7 +228,7 @@ export async function startApi(d: Daemon, opts: { bind?: string } = {}): Promise
         { kind: 'eth_registry', count_24h: count(['eth_registry']), cost: sum(['eth_registry'], 'eth').toString(), asset: 'eth' },
       ],
       // Additions to the frozen shape, for the console's instant estimate.
-      ...({ sol_usd: solUsd(), compute_units_per_update: REFRESH_CU } as object),
+      ...({ sol_usd: solUsd(), compute_units_per_update: REFRESH_CU, swap_cost: swapCosts(cfg.raw), caps: d.caps.view() } as object),
     };
   };
   let lastSolBalance: bigint | null = null;
@@ -253,14 +259,14 @@ export async function startApi(d: Daemon, opts: { bind?: string } = {}): Promise
       .swaps({ ...(q['open'] !== undefined ? { open: q['open'] === 'true' } : {}), ...(q['chain'] ? { chain: q['chain'] } : {}) })
       .filter((r) => (!q['state'] || SWAP_STATE_NAMES[r.state] === q['state']) && (before === null || r.opened_at < before));
     const page = rows.slice(0, limit);
-    return { swaps: page.map((r) => swapSummary(r, d.store.now())), next_before: rows.length > limit ? page[page.length - 1]!.opened_at : null };
+    return { swaps: page.map((r) => swapSummary(r, d.store.now(), d.store)), next_before: rows.length > limit ? page[page.length - 1]!.opened_at : null };
   });
   route('get', '/api/swaps/:ref', (req) => swapDetail(d.store, swapRow(req.params['ref']!), d.store.now(), d.executor.lockReports.get(req.params['ref']!)));
   const swapAction = (action: SwapAction, patch: (req: Request) => Parameters<Daemon['executor']['manual']>[1]): void => {
     route('post', `/api/swaps/:ref/${action}`, async (req): Promise<SwapActionResponse> => {
       const ref = req.params['ref']!;
       const row = swapRow(ref);
-      const summary = swapSummary(row, d.store.now());
+      const summary = swapSummary(row, d.store.now(), d.store);
       if (!summary.actions.includes(action)) fail(409, 'action_unavailable', `"${action}" is not available for this swap in state ${summary.state}.`);
       needLive(`the ${action} transaction`);
       const out = await d.executor.manual(ref, patch(req));
@@ -298,6 +304,56 @@ export async function startApi(d: Daemon, opts: { bind?: string } = {}): Promise
     } catch (e) {
       return fail(409, 'nothing_owed', errMsg(e));
     }
+  });
+
+  /**
+   * Deliver a parked payout without the key it is owed to (SPEC 11.2; not in the frozen API). Ethereum: the permissionless
+   * `pushOwed(token, account)` retries the push to the account itself, for each account of this swap's parties that has a
+   * parked balance. Solana: claim proceeds parked for a payout address are paid to that address and no other
+   * (`withdraw_owed(0)`, destination pinned by the program). The operator pays the fee; nothing can be redirected.
+   */
+  route('post', '/api/swaps/:ref/deliver-owed', async (req) => {
+    const row = swapRow(req.params['ref']!);
+    const chain = row.chain === 'solana' ? d.sol : d.eth;
+    const view = chain ? await chain.getSwap(row.ref) : null;
+    if (!view) return fail(409, 'action_unavailable', 'The swap cannot be read on its chain right now.');
+    needLive('the delivery');
+    try {
+      const txs = await d.deliverOwed(view, row.ref);
+      if (txs.length === 0) return fail(409, 'nothing_owed', 'Nothing is parked that this daemon can deliver for this swap.');
+      return { txs };
+    } catch (e) {
+      if (e instanceof ApiHttpError) throw e;
+      return fail(409, 'delivery_refused', errMsg(e));
+    }
+  });
+
+  // ---------------------------------------------------------------- Amendment 1: caps, freezes, the maker's watcher (not in the frozen API)
+  route('get', '/api/caps', async () => {
+    await d.caps.refresh(true).catch(() => undefined);
+    const computed = d.offers.latest().length ? d.offers.latest() : await d.offers.compute();
+    return {
+      caps: d.caps.view(),
+      offers: computed.filter((c) => c.offer.configured).map((c) => ({ market: c.offer.market, direction: c.offer.direction, enabled: c.enabled, capacity_xmr: c.capacityXmr.toString(), capacity_limit: c.limit, cap_reached: c.capReached, reason: c.reason })),
+      refused_quotes: d.caps.refusedQuotes,
+    };
+  });
+  route('get', '/api/freezes', async () => {
+    const freezes = d.store.freezes();
+    const byTaker = new Map<string, number>();
+    for (const f of freezes) if (f.direction === 0) byTaker.set(f.taker, (byTaker.get(f.taker) ?? 0) + 1);
+    const a = d.config.raw.approvals;
+    const names = ['freezes', 'refunds_after_freeze', 'backouts_after_freeze', 'claims_after_freeze'] as const;
+    return {
+      freezes: freezes.map((f) => ({ ref: f.swap_ref, chain: f.chain, direction: f.direction === 0 ? 'A' : 'B', taker: f.taker, watcher: f.watcher, frozen_by: f.frozen_by, t_freeze: f.t_freeze, t_ff: f.t_ff, state: SWAP_STATE_NAMES[d.store.swap(f.swap_ref)?.state ?? 0] ?? 'NONE' })),
+      by_taker: [...byTaker].map(([taker, count]) => ({ taker, count })).sort((x, y) => y.count - x.count),
+      counters: (await chainCounters()).map((c) => ({ chain: c.chain, ...Object.fromEntries(names.map((n) => [n, c.counters[COUNTER_NAMES.indexOf(n)] ?? 0])) })),
+      settings: { refuse_watchers: a.refuse_watchers, deny_watchers: a.deny_watchers, max_taker_freezes: a.max_taker_freezes ?? null },
+    };
+  });
+  route('get', '/api/watcher', async () => {
+    await d.watcher.probe().catch(() => undefined);
+    return { status: d.watcher.status(d.store.now()), acks: d.store.watchAcks().map((a) => ({ ref: a.swap_ref, chain: a.chain, watcher: a.watcher, watching_until: a.watching_until, sig: a.sig, at: a.at, open: d.store.swap(a.swap_ref)?.terminal === 0 })) };
   });
 
   // ---------------------------------------------------------------- inventory
@@ -338,7 +394,7 @@ export async function startApi(d: Daemon, opts: { bind?: string } = {}): Promise
       const v = snapshotOf(row);
       if (!v) continue;
       const decision = await d.approvals.decide(v, row, d.config.offers.find((o) => o.market === row.market && o.directionCode === row.direction));
-      const p = pendingApproval(row, decision);
+      const p = pendingApproval(row, decision, d.config.raw.approvals.deny_watchers, d.store.takerFreezes(row.taker));
       if (p) pending.push(p);
     }
     return { pending, advance: d.approvals.records(Object.fromEntries(e.map((x) => [x.chain, x.approval_epoch])), {}), epochs: e };
@@ -471,7 +527,10 @@ export async function startApi(d: Daemon, opts: { bind?: string } = {}): Promise
       if (b !== null) balances.push({ chain, asset: market, balance: b.toString() });
     }
     const est = d.load.validation.update_cost ? updateCost(d.config.raw, d.config.offers, solUsd()) : null;
-    return { ...feesView(d.store, { estimate: est, balances, usd: (a) => d.prices.usd(a), runwayAlertDays: d.config.raw.alerts.fee_runway_days }), ...({ sol_usd: solUsd(), compute_units_per_update: REFRESH_CU } as object) };
+    return {
+      ...feesView(d.store, { estimate: est, balances, usd: (a) => d.prices.usd(a), runwayAlertDays: d.config.raw.alerts.fee_runway_days, dailySwapLamports: d.dailySwapLamports() }),
+      ...({ sol_usd: solUsd(), compute_units_per_update: REFRESH_CU, swap_cost: swapCosts(d.config.raw), daily_swap_lamports: d.dailySwapLamports().toString(), eth_runway_swaps: await d.ethRunwaySwaps().catch(() => null) } as object),
+    };
   });
 
   // ---------------------------------------------------------------- pause switch
@@ -530,7 +589,7 @@ export async function startApi(d: Daemon, opts: { bind?: string } = {}): Promise
       case 'status':
         return d.status();
       case 'swaps':
-        return d.store.swaps().slice(0, 200).map((r) => swapSummary(r, d.store.now()));
+        return d.store.swaps().slice(0, 200).map((r) => swapSummary(r, d.store.now(), d.store));
       case 'offers':
         return d.offers.views();
       case 'inbox':
@@ -554,7 +613,7 @@ export async function startApi(d: Daemon, opts: { bind?: string } = {}): Promise
   const offs = [
     d.executor.events.on('swap', (ref) => {
       const row = d.store.swap(ref);
-      if (row) push('swaps', [swapSummary(row, d.store.now())]);
+      if (row) push('swaps', [swapSummary(row, d.store.now(), d.store)]);
     }),
     d.offers.events.on('offers', () => push('offers')),
     d.inbox.events.on('message', (m) => push('inbox', [m])),
