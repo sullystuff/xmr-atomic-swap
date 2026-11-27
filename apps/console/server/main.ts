@@ -2,6 +2,7 @@
 import { MOCK_TOKEN, startMockServer } from './mock-server.js';
 
 const port = Number(process.env.MOCK_DAEMON_PORT ?? 7171);
-const server = await startMockServer({ port });
+// The dev mock also shows a frozen swap.
+const server = await startMockServer({ port, frozen: true });
 console.log(`mock daemon listening on ${server.url}`);
 console.log(`bearer token: ${MOCK_TOKEN}`);

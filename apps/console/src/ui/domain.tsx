@@ -18,6 +18,7 @@ const STATE_TEXT: Record<SwapStateName, { label: string; tone: Tone }> = {
   ACTIVE: { label: 'Active', tone: 'info' },
   NOTICED: { label: 'XMR lock noticed', tone: 'info' },
   READY: { label: 'Ready', tone: 'ok' },
+  FROZEN: { label: 'Frozen', tone: 'warn' },
   ABORTED_FREE: { label: 'Aborted', tone: 'warn' },
   ABORTED_HOLD: { label: 'Aborted, deposit at stake', tone: 'warn' },
   HOLD: { label: 'Deposit held', tone: 'warn' },

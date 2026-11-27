@@ -4,7 +4,7 @@
  * other host, and it holds no key: the bearer token only authorises this loopback API.
  */
 import { ROUTES, WS_CHANNELS, routePath, type Alert, type ApiError, type ApiRoutes, type ConfigIssue, type RegistrationTxResponse, type RouteName, type WsChannel, type WsClientMessage, type WsPayloads, type WsServerMessage } from '@xmrswap/protocol/daemon-api';
-import type { ErrorExtras, ExtendedResponses, LinkEntry, PublishedRequest, PublishedResponse, RefillChoice, RefillViewX } from './extensions.js';
+import type { ErrorExtras, ExtendedResponses, LinkEntry, PublishedRequest, PublishedResponse, RefillChoice, RefillViewX, ReleaseRecord } from './extensions.js';
 
 export interface ResponseLike {
   ok: boolean;
@@ -122,6 +122,22 @@ export class DaemonClient {
    */
   withdrawOwedTx(ref: string): Promise<RegistrationTxResponse> {
     return this.request('POST', `/api/swaps/${encodeURIComponent(ref)}/withdraw-owed-tx`, {});
+  }
+
+  /**
+   * The record of which build the serving bundle is, from `/release.json` beside the page (not a
+   * daemon route, no token). `null` when the server has none or sends something else.
+   */
+  async releaseRecord(): Promise<ReleaseRecord | null> {
+    try {
+      const res = await this.fetchImpl(`${this.baseUrl}/release.json`, { method: 'GET', headers: { Accept: 'application/json' } });
+      if (!res.ok) return null;
+      const json = JSON.parse(await res.text()) as Partial<ReleaseRecord> | null;
+      if (!json || typeof json !== 'object' || typeof json.ui?.tree_hash !== 'string') return null;
+      return { format: json.format ?? '', ui: json.ui as ReleaseRecord['ui'], recorded: json.recorded === true, release: json.release ?? null };
+    } catch {
+      return null;
+    }
   }
 
   private async request<T>(method: string, path: string, body: unknown): Promise<T> {

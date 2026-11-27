@@ -65,6 +65,37 @@ refused. The daemon's `test/api-contract.test.ts` passes against this client.
 The mock's seams for outcomes (`chainSays`, `holdTransaction`, `landTransaction`) are test
 devices; the real refusals come from the SDK flows.
 
+## Amendment 1 (work package A7, SPEC 11)
+
+Built to SPEC 11 and the frozen `@xmrswap/protocol` daemon-API types (`caps`, `program_build`,
+`watcher` in status; `capacity_limit`; `extras`; `t_freeze`, `t_ff`; `freeze_window_secs`), and to
+the configuration keys in the daemon's working tree at the time (`freeze_window_hours` per offer;
+`[watcher] url`, `solana_key`, `ethereum_key`, `retry_seconds`; `[approvals] deny_watchers`,
+`refuse_watchers`, `max_taker_freezes`). The daemon had not published its console contract for
+the amendment (A18 onward) when this was written, so nothing below is reconciled against it.
+
+- **Caps** are read-only: the Dashboard and Offers pages show, per asset, the largest swap, the
+  open value, the open-value cap and the headroom (recomputed as `max(0, max_open − open_value)`).
+  States: off, not open yet (switch on, both caps zero), reached, open, unreadable; "fixed for
+  good" when the configuration is frozen with caps on.
+- **Worst-case lock-up** shown beside the freeze window is `D_c + W_z` after the notice (a freeze
+  just before `T_co`, with `T_ff = max(t_Z + W_z, T_co)` as the model computes it), against `D_c`
+  without a watcher. It is the wait before the claim opens, not the time to the final deadline.
+- **"Sell-XMR" in the work order** (payout address, maker watcher) is the taker selling XMR:
+  direction B, the console's "Buy XMR" offers, where the maker is the locker. The console words
+  it as "swaps where the taker sells XMR and you lock the funds".
+- **Who froze** and **freeze counts per taker** are not in the frozen types. The console reads
+  optional `frozen_by` and `taker_freezes` on the swap detail when the daemon sends them;
+  otherwise it says the daemon did not report who froze, and counts frozen swaps per taker from
+  the swaps the daemon lists (state FROZEN or an outcome `*_after_freeze`).
+- **"Degraded"** is derived: a chain not connected, Monero nodes disagreeing or down, or the
+  inventory wallet unreachable.
+- **The watcher's signed acknowledgement** is shown as `extras.watching_until`; the signature
+  itself is not in the types.
+- **Release record**: `/release.json` is fetched from the origin that served the page (no token).
+  A development server has none. The console does not hash the deployed program itself (it talks
+  only to the daemon); it shows the daemon's `program_build` comparison.
+
 ## Requests to the daemon
 
 Answered by the daemon in its A11 to A16 and read by the console: upgrade status per chain with
@@ -73,6 +104,19 @@ authority, reason and check time; a dry-run published edit refused before it is 
 and `instruction` on every swap summary; link history as display addresses with `superseded`;
 `sol_usd` and `compute_units_per_update` on validate; one list of ten refusal reasons; the
 unsigned transaction for a parked payout.
+
+Amendment 1, to confirm or add (the daemon's A18 onward was not available):
+
+- `frozen_by` (the key that froze) and `taker_freezes` on swap views; a `degraded` flag in status.
+- The watcher's signed acknowledgement per swap, so the console can show more than "watching until".
+- The new compute-unit and gas figures: the console uses `compute_units_per_update` from fees,
+  offers and validate when present; no gas field exists in the types, so Ethereum costs are shown
+  only as the daemon reports them in `spent_24h` and `occasional`.
+- Parked payouts under the new rules (SPEC 11.2: proceeds parked under the payout address; anyone
+  may push): the console still offers only `withdraw-owed-tx`. If the daemon adds a push or
+  deliver route, the console needs its shape.
+- Whether a cap-limited offer is reported with `enabled` true and `capacity_xmr` 0 (assumed) or
+  as disabled with a reason.
 
 Still open. None is worked around silently.
 

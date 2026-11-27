@@ -256,6 +256,8 @@ const NO_DEADLINES: Omit<SwapDeadlines, 't_lock' | 't_final' | 't_exp'> = {
   t_hold: null,
   t_split: null,
   t_settled: null,
+  t_freeze: null,
+  t_ff: null,
 };
 const deadlines = (tLock: number, more: Partial<SwapDeadlines>): SwapDeadlines => ({
   ...NO_DEADLINES,
@@ -355,6 +357,7 @@ export function seedSwaps(now: number): SwapDetail[] {
     last_error: null,
     outcome: null,
     needs_review: false,
+    extras: { payout: null, watcher: null, freeze_window_secs: 0, watching_until: null },
   } satisfies Partial<SwapDetail>;
   const swaps: SwapDetail[] = [
     {
@@ -541,6 +544,7 @@ export function seedSwaps(now: number): SwapDetail[] {
       opened_at: now - 3 * 60,
       next_deadline: { at: now + 7 * 60, label: 'Lock-notice deadline for the taker' },
       actions: ['abort'],
+      extras: { payout: fakeSol('payout-buy'), watcher: null, freeze_window_secs: 0, watching_until: null },
       deadlines: deadlines(now - 3 * 60, { t_active: now - 3 * 60, t_note_deadline: now + 7 * 60 }),
     },
     {
@@ -613,6 +617,9 @@ export function seedApprovals(now: number): { pending: PendingApproval[]; advanc
         recommendation: 'approve',
         reasons: ['Within the automatic size limit', 'Exposure after this swap: 71 of 400 XMR'],
         dleq_ok: null,
+        payout: null,
+        watcher: null,
+        watcher_denied: false,
       },
       {
         chain: 'ethereum',
@@ -626,6 +633,9 @@ export function seedApprovals(now: number): { pending: PendingApproval[]; advanc
         recommendation: 'approve',
         reasons: ['The taker’s proof verifies', 'Within the automatic size limit'],
         dleq_ok: true,
+        payout: null,
+        watcher: null,
+        watcher_denied: false,
       },
       {
         chain: 'solana',
@@ -639,6 +649,9 @@ export function seedApprovals(now: number): { pending: PendingApproval[]; advanc
         recommendation: 'reject',
         reasons: ['Above the automatic size limit of 25 XMR'],
         dleq_ok: null,
+        payout: null,
+        watcher: null,
+        watcher_denied: false,
       },
     ],
     advance: [
@@ -850,5 +863,46 @@ export function seedInventory(): InventoryResponse {
       { asset: 'usdc_sol', balance: usdc(96_420.55), cap: usdc(60_000), escrowed: usdc(4_082.27) },
       { asset: 'usdc_eth', balance: usdc(18_300), cap: null, escrowed: '0' },
     ],
+  };
+}
+
+/** A frozen sell-XMR swap (direction A): the taker's watcher froze it, and the maker claims at the frozen-final time. */
+export function frozenSwap(now: number): SwapDetail {
+  const tLock = now - 100 * 60;
+  const tNotice = now - 98 * 60;
+  const tClaimOpen = tNotice + 101 * 60;
+  const tFreeze = now - 20 * 60;
+  const window = 24 * 3_600;
+  return {
+    chain: 'solana',
+    ref: fakeSol('swap-frozen'),
+    market: 'usdc_sol',
+    direction: 'A',
+    state: 'FROZEN',
+    phase: 'frozen',
+    taker: fakeSol('taker-frozen'),
+    xmr: xmr(5),
+    amount: usdc(2_092.68),
+    deposit: usdc(41.85),
+    depth: 10,
+    opened_at: tLock,
+    next_deadline: { at: tFreeze + window, label: 'Frozen-final time: the claim opens' },
+    outcome: null,
+    needs_review: false,
+    actions: ['abort'],
+    mode: 0,
+    flags: 1,
+    deposit_state: 0,
+    deadlines: { ...NO_DEADLINES, t_lock: tLock, t_final: tLock + 7 * 86_400, t_exp: tLock + 37 * 86_400, t_active: tLock, t_notice: tNotice, t_cut: tNotice + 45 * 60, t_claim_open: tClaimOpen, t_freeze: tFreeze, t_ff: Math.max(tFreeze + window, tClaimOpen) },
+    joint_address: fakeXmrAddr('joint-frozen'),
+    lock_txid: fakeHex('lock-frozen', 32),
+    lock_confirmations: 40,
+    lock_state: 'confirmed',
+    sweep_txid: null,
+    evidence_published: false,
+    intents: [{ id: 'int-50', kind: 'post_notice', status: 'confirmed', tx: fakeSol('sig-notice-frozen'), at: tNotice }],
+    messages: [],
+    last_error: null,
+    extras: { payout: null, watcher: fakeSol('watcher-of-taker'), freeze_window_secs: window, watching_until: null },
   };
 }

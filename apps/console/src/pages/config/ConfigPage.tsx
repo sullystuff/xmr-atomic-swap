@@ -29,6 +29,7 @@ import {
 import { editToml } from '../../lib/config/edit.js';
 import { ConfigSyntaxError, diffConfig, getPath, isTable, parseToml, renderValue, setPath, stringifyToml, type Toml } from '../../lib/config/toml.js';
 import { POOL_RISK, issuesAboutKey, resolveOffers, unknownKeys, validateConfig } from '../../lib/config/validate.js';
+import { WATCHER_HONESTY } from '../../ui/amendment.js';
 import { WxmrOnlyPreset } from './preset.js';
 import { costBasis, estimateCost } from '../../lib/cost.js';
 import type { FeesX, OffersX } from '../../api/extensions.js';
@@ -611,6 +612,11 @@ function OperationSection() {
       {OPERATION_SECTIONS.map((s) => (
         <div key={s.path}>
           <h3 className="subhead">{s.title}</h3>
+          {s.path === 'watcher' ? (
+            <p className="muted" style={{ marginBottom: 6 }} data-testid="watcher-setting-note">
+              Off unless a URL is set. For swaps where the taker sells XMR and you lock the funds: the daemon names the watcher’s key when it funds and hands it that one swap’s notice key. {WATCHER_HONESTY} It is the mitigation for your daemon being down during a funded swap, and it applies only to buy-XMR offers with a freeze window.
+            </p>
+          ) : null}
           <SectionFields section={s} skip={s.path === 'solana' ? ['priority_fee_microlamports'] : []} />
         </div>
       ))}

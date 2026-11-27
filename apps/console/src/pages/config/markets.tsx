@@ -7,6 +7,7 @@ import { getPath } from '../../lib/config/toml.js';
 import { POOL_RISK, canBePending, issuesAt, resolveOffer, type ResolvedOffer } from '../../lib/config/validate.js';
 import { MARKET_LABEL } from '../../lib/format.js';
 import { Badge, Button, Card, Notice, Switch } from '../../ui/kit.js';
+import { FreezeWindowNote } from '../../ui/amendment.js';
 import { Field, Messages, useForm } from './fields.js';
 
 const MARKET_NOTE: Record<Market, { pays: string; prices: string }> = {
@@ -117,6 +118,7 @@ const GROUPS: { title: string; keys: string[] }[] = [
   { title: 'Size and volume', keys: ['min_xmr', 'max_xmr', 'daily_cap_xmr', 'offer_valid_seconds'] },
   { title: 'Approval', keys: ['approval_mode', 'approval_window_seconds'] },
   { title: 'Depth, deadlines and deposit', keys: ['confirmation_depth', 'claim_delay_minutes', 'claim_window_minutes', 'notice_seconds', 'final_days', 'deposit_pct', 'withhold_policy', 'withhold_move_pct'] },
+  { title: 'Watchers', keys: ['freeze_window_hours'] },
 ];
 
 function OfferEditor({ market, direction, blobEndpoint, onClose }: { market: Market; direction: MarketDirection; blobEndpoint: boolean | null; onClose: () => void }) {
@@ -173,6 +175,9 @@ function OfferEditor({ market, direction, blobEndpoint, onClose }: { market: Mar
           ) : null}
         </div>
       );
+    }
+    if (f.key === 'freeze_window_hours') {
+      return <FreezeWindowNote market={market} direction={direction} claimDelaySecs={o.terms.claim_delay_secs} freezeWindowSecs={o.terms.freeze_window_secs} depositBps={o.terms.deposit_bps} />;
     }
     if (f.key === 'deposit_pct') {
       return <span className="unit">of the locked amount, 5% at most</span>;

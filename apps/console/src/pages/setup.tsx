@@ -12,6 +12,7 @@ import { fmtDuration, fmtTime } from '../lib/format.js';
 import { watchSigners, type OwnerSigner } from '../lib/wallet.js';
 import { UpgradeTable, upgradeSummary } from '../ui/domain.js';
 import { OwnerTransaction, TxNotice } from '../ui/owner-tx.js';
+import { ProgramBuildCard, ReleaseCard, WatcherCard, useReleaseRecord } from '../ui/amendment.js';
 import { Async, Badge, Button, Card, ConfirmButton, Countdown, Empty, Id, Notice, PageHead, Stat, Time } from '../ui/kit.js';
 import { AlertList } from './monitor.js';
 
@@ -791,6 +792,7 @@ export function KeysPage() {
 
 export function StatusPage() {
   const { status, statusError, refresh, connection } = useLive();
+  const release = useReleaseRecord();
   if (!status) {
     return (
       <>
@@ -833,6 +835,19 @@ export function StatusPage() {
             </Notice>
           </div>
           <UpgradeTable chains={status.chains} />
+        </Card>
+
+        <div className="cols-2">
+          <Card title="This console’s release">
+            <ReleaseCard record={release} />
+          </Card>
+          <Card title="Program build">
+            <ProgramBuildCard build={status.program_build} />
+          </Card>
+        </div>
+
+        <Card title="Your watcher">
+          <WatcherCard watcher={status.watcher} />
         </Card>
 
         <Card title="Chain connections" flush>

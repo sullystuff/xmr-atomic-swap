@@ -3,7 +3,9 @@ import { useId, useState } from 'react';
 import { MARKET_CHAIN } from '@xmrswap/protocol';
 import type { AssetId, OfferView, RebalanceResponse, RefillView, VenueId } from '@xmrswap/protocol/daemon-api';
 import type { OfferViewX, RefillViewX } from '../api/extensions.js';
-import { useAction, useClient, useQuery } from '../api/hooks.js';
+import { useAction, useClient, useLive, useQuery } from '../api/hooks.js';
+import { capacityLimitText, capsState } from '../lib/amendment.js';
+import { CapsPanel } from '../ui/amendment.js';
 import { ASSETS, DIRECTION_LABEL, MODE_OPTIONS, VENUE_LABEL, chainLabel } from '../lib/config/schema.js';
 import { patchConfig } from '../lib/config/patch.js';
 import { getPath, isTable, setPath, type Toml } from '../lib/config/toml.js';
@@ -64,6 +66,7 @@ function OfferStatus({ o }: { o: OfferViewX }) {
 }
 
 export function OffersPage() {
+  const { status } = useLive();
   const offers = useQuery('offers', undefined, ['offers', 'status']);
   const fees = useQuery('fees', undefined, ['offers']);
   const config = useQuery('configGet', undefined, ['offers']);
@@ -73,6 +76,9 @@ export function OffersPage() {
         What each market and direction publishes right now, or would publish in dry run. A taker can lock against a live offer at once, so check these against your intent.
       </PageHead>
       <div className="stack">
+        <Card title="Protocol beta caps" note="What the protocol allows to be open, per asset. Your offers cannot fill beyond it." flush>
+          {status ? <CapsPanel caps={status.caps} /> : <Empty title="Waiting for the daemon" />}
+        </Card>
         <Card title="Offers by market and direction" flush>
           <Async query={offers} what="the offers">
             {(r) => {
@@ -133,7 +139,14 @@ export function OffersPage() {
                           <td className="num">
                             {fmtUnits(o.min_xmr, 12, 2)} to {fmtUnits(o.max_xmr, 12, 2)}
                           </td>
-                          <td className="num">{o.enabled ? fmtXmr(o.capacity_xmr, 2) : <span className="muted">none</span>}</td>
+                          <td className="num">
+                            {o.enabled ? fmtXmr(o.capacity_xmr, 2) : <span className="muted">none</span>}
+                            {o.enabled ? (
+                              <div className={o.capacity_limit === 'max_swap' || o.capacity_limit === 'max_open' ? 'msg warning' : 'muted'} data-testid="capacity-limit" style={{ whiteSpace: 'normal', minWidth: '16ch' }}>
+                                {capacityLimitText(o.capacity_limit, status ? status.caps.filter((c) => c.market === o.market).map(capsState)[0] : undefined, o.market)}
+                              </div>
+                            ) : null}
+                          </td>
                           <td>
                             {o.key_pool ? (
                               <>
@@ -150,7 +163,7 @@ export function OffersPage() {
                             {MODE_LABEL[o.terms.approval_mode]}
                             {o.terms.approval_mode !== 'auto' || MARKET_CHAIN[o.market] === 'ethereum' ? ` · window ${o.terms.approval_window_secs} s` : ''}
                             <div className="muted">
-                              claim delay {Math.round(o.terms.claim_delay_secs / 60)} min · deposit {fmtPct(o.terms.deposit_bps / 100, 2)} · depth up to {Math.max(...o.terms.depth_tiers.map((t) => t.depth), 0)}
+                              claim delay {Math.round(o.terms.claim_delay_secs / 60)} min · deposit {fmtPct(o.terms.deposit_bps / 100, 2)} · depth up to {Math.max(...o.terms.depth_tiers.map((t) => t.depth), 0)} · {o.terms.freeze_window_secs > 0 ? `freeze window ${fmtDuration(o.terms.freeze_window_secs)}` : 'no watcher accepted'}
                             </div>
                           </td>
                           <td>

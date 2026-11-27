@@ -124,6 +124,7 @@ export function offerDefaults(market: Market): Record<string, unknown> {
     claim_window_minutes: eth ? 90 : 30,
     withhold_policy: 'never',
     withhold_move_pct: 1.0,
+    freeze_window_hours: 0,
   };
 }
 export const DEFAULT_DEPTH_TIERS: readonly { above_xmr: number; depth: number }[] = [
@@ -262,6 +263,14 @@ export function offerFields(market: Market): FieldDef[] {
       },
       defText: 'off',
       help: 'Extra deviation as the reference price moves. Off unless set.',
+    },
+    {
+      key: 'freeze_window_hours',
+      label: 'Freeze window',
+      type: num({ min: 0, max: 72 }),
+      def: 0,
+      unit: 'hours',
+      help: '0 = this offer accepts no watcher (the default). Otherwise 1 to 72 hours: how long a watcher may pause the claim.',
     },
     {
       key: 'without_ready',
@@ -594,6 +603,9 @@ export const APPROVALS: SectionDef = {
   fields: [
     { key: 'allow', label: 'Always approve', type: { t: 'list' }, def: [] },
     { key: 'deny', label: 'Always reject', type: { t: 'list' }, def: [] },
+    { key: 'deny_watchers', label: 'Refuse these watcher keys', type: { t: 'list' }, def: [], help: 'A lock that names one of these watchers is rejected: in window mode and on Ethereum before the fact.' },
+    { key: 'refuse_watchers', label: 'Refuse every lock that names a watcher', type: { t: 'bool' }, def: false, help: 'Whatever the key. Takers who want a watcher then cannot use your sell-XMR offers, even ones with a freeze window.' },
+    { key: 'max_taker_freezes', label: 'Refuse a taker frozen this many times', type: int({ min: 1 }), defText: 'no limit', unit: 'freezes', help: 'A taker whose swaps with you were frozen this many times or more is refused.' },
     { key: 'auto_max_xmr', label: 'Approve automatically up to', type: num({ min: 0 }), unit: 'XMR', defText: 'no limit' },
     {
       key: 'advance',
@@ -631,6 +643,18 @@ export const ALERTS: SectionDef = {
   ],
 };
 
+/** The watcher the daemon hands its own swaps to, where the taker sells XMR and the maker is the locker (SPEC 11.6). */
+export const WATCHER: SectionDef = {
+  path: 'watcher',
+  title: 'Your watcher',
+  fields: [
+    { key: 'url', label: 'Watcher URL', type: { t: 'text' }, defText: 'none: no watcher', help: 'The address of a watcher service you run or trust. Leave empty for none.' },
+    { key: 'solana_key', label: 'Watcher’s Solana key', type: { t: 'text' }, help: 'Its public key (base58). Named when you fund on Solana; its acknowledgements are checked against it.' },
+    { key: 'ethereum_key', label: 'Watcher’s Ethereum address', type: { t: 'text' }, help: 'Its public address. Named when you fund on Ethereum.' },
+    { key: 'retry_seconds', label: 'Retry a watcher that did not answer every', type: num({ min: 0, exclusiveMin: true }), def: 30, unit: 's' },
+  ],
+};
+
 /** Contact channels as written in the file; the Registration page edits what is published. */
 export const REGISTRATION: SectionDef = {
   path: 'registration',
@@ -653,7 +677,7 @@ export const REGISTRATION: SectionDef = {
   ],
 };
 
-export const OPERATION_SECTIONS: readonly SectionDef[] = [DAEMON, SOLANA, ETHEREUM, MONERO, ROTATION, TOR, APPROVALS, INBOX, ALERTS, REGISTRATION];
+export const OPERATION_SECTIONS: readonly SectionDef[] = [DAEMON, SOLANA, ETHEREUM, MONERO, ROTATION, TOR, APPROVALS, WATCHER, INBOX, ALERTS, REGISTRATION];
 
 /** Every fixed table of the file. Markets, levels and venues are expanded from their id lists. */
 export function allSections(): SectionDef[] {
@@ -672,7 +696,7 @@ export function allSections(): SectionDef[] {
     ...OPERATION_SECTIONS,
   ];
 }
-export const TOP_LEVEL_TABLES = ['pricing', 'markets', 'liquidity', 'guardrails', 'rebalance', 'daemon', 'solana', 'ethereum', 'monero', 'offers', 'rotation', 'tor', 'approvals', 'inbox', 'alerts', 'registration'] as const;
+export const TOP_LEVEL_TABLES = ['pricing', 'markets', 'liquidity', 'guardrails', 'rebalance', 'daemon', 'solana', 'ethereum', 'monero', 'offers', 'rotation', 'tor', 'approvals', 'watcher', 'inbox', 'alerts', 'registration'] as const;
 
 export const fieldOf = (section: SectionDef, key: string): FieldDef => {
   const f = section.fields.find((x) => x.key === key);

@@ -42,7 +42,7 @@ export interface SummaryExtras {
   instruction?: SwapInstruction | null;
 }
 export type SwapSummaryX = SwapSummary & SummaryExtras;
-export type SwapDetailX = SwapDetail & SummaryExtras;
+export type SwapDetailX = SwapDetail & SummaryExtras & FreezeExtras;
 export interface SwapsX extends SwapsResponse {
   swaps: SwapSummaryX[];
 }
@@ -128,6 +128,35 @@ export interface LinkEntry {
   superseded?: boolean;
 }
 export type RefillChoice = 'continue' | 'refund';
+
+/**
+ * `GET /release.json` of the bundle that serves the console (deploy/DEVIATIONS.md E11): the
+ * server describing which build its files are. `release` is `null` when no record has the served
+ * tree's hash.
+ */
+export interface ReleaseRecord {
+  format: string;
+  ui: { tree_hash: string; files: number; bytes: number };
+  recorded: boolean;
+  release: {
+    version: string;
+    status: 'development-snapshot' | 'release';
+    commit: string;
+    commit_time?: string;
+    program_id: string;
+    contract?: string | null;
+    chain_id?: number | null;
+    program_executable_hash?: string | null;
+    program_hash_source?: 'docker' | 'local';
+    onchain_deployed?: boolean;
+  } | null;
+}
+/** A swap's extras as the daemon may extend them: who froze it. */
+export interface FreezeExtras {
+  frozen_by?: string | null;
+  /** How many of this taker's swaps with this maker were frozen. */
+  taker_freezes?: number;
+}
 
 /** A3: a refused configuration carries every issue. */
 export interface ErrorExtras {

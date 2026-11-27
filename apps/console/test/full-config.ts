@@ -25,6 +25,7 @@ claim_window_minutes = 90
 withhold_policy = "price_moved"
 withhold_move_pct = 1.5
 volatility_widen = { per_pct_move = 0.2, max_pct = 2 }
+freeze_window_hours = 24
 without_ready = "abort"
 `;
 
@@ -228,7 +229,16 @@ publish = true
 allow = [ "AllowedTakerExample" ]
 deny = [ "DeniedTakerExample" ]
 auto_max_xmr = 25
+deny_watchers = [ "DeniedWatcherExample" ]
+refuse_watchers = false
+max_taker_freezes = 3
 advance = [ { taker = "RegularTakerExample", max_xmr = 100, days = 30 } ]
+
+[watcher]
+url = "https://watcher.example.org"
+solana_key = "WatcherSolanaKeyExample"
+ethereum_key = "0x00000000000000000000000000000000000000f0"
+retry_seconds = 30
 
 [inbox]
 policy = "swap_only"

@@ -68,6 +68,7 @@ import {
   seedRefills,
   seedRegistration,
   seedSwaps,
+  frozenSwap,
   sol,
   xmr,
 } from './fixtures.js';
@@ -86,6 +87,10 @@ export interface MockOptions {
    * The two copies drift; tests use this to stand for a daemon that is ahead of the console.
    */
   daemonKnows?: readonly string[];
+  /** `GET /release.json` of the bundle that serves the console; `null` (the default) = the file is not there. */
+  release?: unknown;
+  /** Seed a frozen swap as well (the dev server does; tests ask for it when they need one). */
+  frozen?: boolean;
   /** Whether the registry lists a blob endpoint. */
   blobEndpoint?: boolean;
   /** `true`, `false` or `null` per chain: can the program or contract still be upgraded. */
@@ -136,7 +141,7 @@ export const REFRESH_CU = 24_120;
 type Params = Record<string, string>;
 type Handler = (ctx: { params: Params; query: URLSearchParams; body: unknown }) => unknown;
 
-const OPEN_STATES = new Set(['PENDING', 'ACTIVE', 'NOTICED', 'READY', 'ABORTED_FREE', 'ABORTED_HOLD', 'HOLD', 'WITHHELD']);
+const OPEN_STATES = new Set(['PENDING', 'ACTIVE', 'NOTICED', 'READY', 'FROZEN', 'ABORTED_FREE', 'ABORTED_HOLD', 'HOLD', 'WITHHELD']);
 
 export class MockDaemon {
   readonly token: string;
@@ -173,6 +178,7 @@ export class MockDaemon {
   constructor(opts: MockOptions = {}) {
     this.clock = opts.now ?? (() => Math.floor(Date.now() / 1000));
     this.token = opts.token ?? MOCK_TOKEN;
+    this.release = opts.release ?? null;
     this.daemonKnows = opts.daemonKnows ?? [];
     const now = this.now();
     this.startedAt = now - 6 * 86_400 - 4_000;
@@ -186,6 +192,7 @@ export class MockDaemon {
     this.upgradeable = opts.upgradeable ?? { solana: true, ethereum: true };
     const empty = opts.empty === true;
     this.swaps = empty ? [] : seedSwaps(now);
+    if (opts.frozen) this.swaps.unshift(frozenSwap(now));
     const approvals = seedApprovals(now);
     this.pending = empty ? [] : approvals.pending;
     this.advance = empty ? [] : approvals.advance;
@@ -215,6 +222,8 @@ export class MockDaemon {
 
   handle(req: MockRequest): MockResponse {
     const [rawPath = '', rawQuery = ''] = req.path.split('?');
+    // The serving bundle's own record of what it is (deploy E11); not part of the daemon API and needs no token.
+    if (rawPath === '/release.json' && req.method.toUpperCase() === 'GET') return this.release === null || this.release === undefined ? { status: 404, body: { error: 'not_found' } } : { status: 200, body: this.release };
     if (!rawPath.startsWith('/api/')) return { status: 404, body: { error: 'not_found' } satisfies ApiError };
     if (req.authorization !== `Bearer ${this.token}`) {
       return { status: 401, body: { error: 'unauthorized', detail: 'Missing or wrong bearer token.' } satisfies ApiError };
@@ -394,7 +403,8 @@ export class MockDaemon {
       chains: [
         {
           chain: 'solana',
-          connected: true,
+          connected: this.disconnected.solana === undefined,
+          ...(this.disconnected.solana !== undefined ? { last_error: this.disconnected.solana } : {}),
           endpoint: 'primary (SOLANA_RPC_URL)',
           network: fakeSol('genesis'),
           network_ok: true,
@@ -407,7 +417,8 @@ export class MockDaemon {
         },
         {
           chain: 'ethereum',
-          connected: true,
+          connected: this.disconnected.ethereum === undefined,
+          ...(this.disconnected.ethereum !== undefined ? { last_error: this.disconnected.ethereum } : {}),
           endpoint: 'primary (ETH_RPC_URL)',
           network: '1',
           network_ok: true,
@@ -445,6 +456,13 @@ export class MockDaemon {
       },
       needs_review: this.swaps.filter((s) => s.needs_review).length,
       alerts: this.alerts,
+      caps: (['usdc_sol', 'sol', 'usdc_eth', 'eth'] as const).map((market) => ({ market, caps: this.capsOf(market) })),
+      program_build: {
+        program_id: ADDR.program,
+        ...this.programBuild,
+        matches: this.programBuild.expected_hash === null || this.programBuild.on_chain_hash === null ? null : this.programBuild.expected_hash === this.programBuild.on_chain_hash,
+      },
+      watcher: { url: typeof getPath(this.parsed, 'watcher.url') === 'string' && getPath(this.parsed, 'watcher.url') !== '' ? (getPath(this.parsed, 'watcher.url') as string) : null, ...this.watcherState },
     };
   }
 
@@ -482,6 +500,31 @@ export class MockDaemon {
           : this.dryRun
             ? 'Dry run: computed but not published'
             : undefined;
+    // Capacity: the inventory, then the maker's own daily cap, then the protocol's caps at the current price (SPEC 11.1).
+    const capacity = ((): { xmr: string; limit: OfferView['capacity_limit'] } => {
+      let best = BigInt(o.direction === 'sell_xmr' ? this.inventory.capacity_xmr : xmr(Math.min(o.maxXmr ?? 0, 120)));
+      let limit: OfferView['capacity_limit'] = 'inventory';
+      if (typeof o.values.daily_cap_xmr === 'number' && BigInt(xmr(o.values.daily_cap_xmr)) < best) {
+        best = BigInt(xmr(o.values.daily_cap_xmr));
+        limit = 'config';
+      }
+      const c = this.capsOf(o.market);
+      if (c && c.on) {
+        const price = BigInt(tiers[0]?.price ?? '0');
+        const inXmr = (base: string): bigint => (price === 0n ? 0n : (BigInt(base) * 1_000_000_000_000n) / price);
+        // Whichever of the two caps binds; with both equal (a protocol that is not open yet) it is the open-value cap.
+        const one = inXmr(c.max_swap);
+        const head = inXmr(c.headroom);
+        if (head <= one && head < best) {
+          best = head;
+          limit = 'max_open';
+        } else if (one < best) {
+          best = one;
+          limit = 'max_swap';
+        }
+      }
+      return { xmr: best.toString(), limit };
+    })();
     const view: OfferView = {
       market: o.market,
       direction: o.direction,
@@ -492,7 +535,8 @@ export class MockDaemon {
       deviation_pct: dev,
       min_xmr: xmr(typeof o.values.min_xmr === 'number' ? o.values.min_xmr : 0.1),
       max_xmr: xmr(o.maxXmr ?? 0),
-      capacity_xmr: on ? (o.direction === 'sell_xmr' ? this.inventory.capacity_xmr : xmr(Math.min(o.maxXmr ?? 0, 120))) : '0',
+      capacity_xmr: on ? capacity.xmr : '0',
+      capacity_limit: capacity.limit,
       terms: o.terms,
       key_pool: !on || o.direction === 'buy_xmr' ? null : eth ? { size: 64, available: 57 } : { size: 16, available: o.market === 'sol' ? 3 : 11 },
       seq_or_quote_id: live ? (eth ? '8841' : '120394') : null,
@@ -545,10 +589,10 @@ export class MockDaemon {
     const out: SwapAction[] = [];
     if (s.state === 'DONE' || s.state === 'NONE') return out;
     if (s.state === 'PENDING' && (s.deadlines.t_pending_deadline === null || now < s.deadlines.t_pending_deadline)) out.push('approve', 'reject');
-    if (s.state === 'ACTIVE' || s.state === 'NOTICED') out.push('abort');
+    if (s.state === 'ACTIVE' || s.state === 'NOTICED' || s.state === 'FROZEN') out.push('abort');
     if (s.state === 'HOLD' && s.deadlines.t_hold !== null && now < s.deadlines.t_hold) out.push('withhold');
     if (s.state === 'HOLD' || s.state === 'WITHHELD') out.push('release');
-    if (s.deadlines.t_notice !== null && !s.evidence_published && s.direction === 'A' && s.state !== 'NOTICED' && s.state !== 'READY') out.push('publish-evidence');
+    if (s.deadlines.t_notice !== null && !s.evidence_published && s.direction === 'A' && s.state !== 'NOTICED' && s.state !== 'READY' && s.state !== 'FROZEN') out.push('publish-evidence');
     return out;
   }
   private instructionOf(ref: string): object | null {
@@ -565,6 +609,36 @@ export class MockDaemon {
     s.outcome = outcome;
     s.next_deadline = null;
     s.deadlines.t_settled = this.now();
+  }
+  private release: unknown = null;
+  /** The on-chain beta caps per market's asset (SPEC 11.1). `null` = the chain could not be read. */
+  private caps: Record<Market, { on: boolean; max_swap: string; max_open: string; open_value: string; frozen: boolean } | null> = {
+    usdc_sol: { on: true, max_swap: '250000000000', max_open: '1000000000000', open_value: '29294900000', frozen: false },
+    sol: { on: true, max_swap: '1500000000000', max_open: '6000000000000', open_value: '161575000000', frozen: false },
+    usdc_eth: { on: true, max_swap: '250000000000', max_open: '1000000000000', open_value: '5888360000', frozen: false },
+    eth: { on: true, max_swap: '80000000000000000000', max_open: '300000000000000000000', open_value: '0', frozen: false },
+  };
+  /** Test seam: what the chain says the caps of a market are (the maker cannot set them). */
+  setCaps(market: Market | 'all', caps: { on: boolean; max_swap: string; max_open: string; open_value: string; frozen?: boolean } | null): void {
+    for (const m of market === 'all' ? (['usdc_sol', 'sol', 'usdc_eth', 'eth'] as const) : [market]) this.caps[m] = caps === null ? null : { frozen: false, ...caps };
+    this.push('status', 'offers');
+  }
+  private capsOf(market: Market): { on: boolean; max_swap: string; max_open: string; open_value: string; headroom: string; frozen: boolean } | null {
+    const c = this.caps[market];
+    if (c === null) return null;
+    const head = BigInt(c.max_open) - BigInt(c.open_value);
+    return { ...c, headroom: (head > 0n ? head : 0n).toString() };
+  }
+  /** The Solana program build the daemon expects and the one deployed (SPEC 11.5). Tests may change it. */
+  programBuild: { expected_hash: string | null; on_chain_hash: string | null } = { expected_hash: null, on_chain_hash: fakeHex('program-data', 32) };
+  /** The maker's own watcher as the daemon sees it. Tests may change it. */
+  watcherState: { reachable: boolean | null; solana: string | null; ethereum: string | null; watching: number; last_error?: string } = { reachable: null, solana: null, ethereum: null, watching: 0 };
+  /** Test seam: one chain's connection drops, so the daemon reports itself degraded. */
+  disconnected: Partial<Record<ChainName, string>> = {};
+  /** Test seam: put a swap in front of the list, or change one. */
+  putSwap(swap: SwapDetail): void {
+    this.swaps = [swap, ...this.swaps.filter((x) => x.ref !== swap.ref)];
+    this.push('swaps', 'status');
   }
   private readonly acknowledged = new Set<string>();
   /** Swaps with a payout parked on chain, and the address it is keyed to. */
@@ -692,7 +766,7 @@ export class MockDaemon {
   private approvals(): ApprovalsResponse {
     const now = this.now();
     return {
-      pending: this.pending.filter((p) => p.deadline > now),
+      pending: this.pending.filter((p) => p.deadline > now).map((p) => ({ ...p, watcher_denied: p.watcher !== null && Array.isArray(getPath(this.parsed, 'approvals.deny_watchers')) && (getPath(this.parsed, 'approvals.deny_watchers') as unknown[]).includes(p.watcher) })),
       advance: this.advance.map((a) => ({ ...a, active: a.active && a.expires_at > now && a.epoch === this.epochs[a.chain].approval_epoch })),
       epochs: (['solana', 'ethereum'] as const).map((chain) => ({ chain, ...this.epochs[chain] })),
     };
@@ -803,6 +877,13 @@ export class MockDaemon {
     };
   }
 
+  /** Test seam: a pending lock names a watcher. */
+  nameWatcher(ref: string, watcher: string): void {
+    const p = this.pending.find((x) => x.ref === ref);
+    if (p) p.watcher = watcher;
+    const sw = this.swaps.find((x) => x.ref === ref);
+    if (sw) sw.extras = { ...sw.extras, watcher };
+  }
   /** Test seam: a refill fails at its venue. */
   failRefill(id: string, detail: string): void {
     const r = this.findRefill(id);
@@ -1289,6 +1370,7 @@ function summary(s: SwapDetail): SwapSummary {
     outcome: s.outcome,
     needs_review: s.needs_review,
     actions: s.actions,
+    extras: s.extras,
     // The daemon's additions (A13).
     ...({ mode: s.mode, instruction: x.instruction ?? null } as object),
   };

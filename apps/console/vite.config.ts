@@ -13,7 +13,7 @@ function mockDaemon(): Plugin {
     apply: 'serve',
     async configureServer(server) {
       const { startMockServer, MOCK_TOKEN } = await import('./server/mock-server.js');
-      const mock = await startMockServer({ port: MOCK_PORT });
+      const mock = await startMockServer({ port: MOCK_PORT, frozen: true });
       server.httpServer?.once('close', () => void mock.close());
       server.config.logger.info(`\n  mock daemon on ${mock.url} (bearer token: ${MOCK_TOKEN})\n`);
     },

@@ -137,6 +137,8 @@ export function resolveOffer(cfg: Toml, market: Market, direction: MarketDirecti
   const raw = getPath(cfg, `markets.${market}.${direction}`);
   const file = isTable(raw) ? raw : {};
   const values: Record<string, unknown> = { ...offerDefaults(market), ...file };
+  // With a freeze window the default withhold policy is "price moved" (SPEC 7.11): a refund after a freeze always leaves the deposit withholdable.
+  if (file.withhold_policy === undefined && typeof file.freeze_window_hours === 'number' && file.freeze_window_hours > 0) values.withhold_policy = 'price_moved';
   const wanted = values.enabled === true;
   const keptOff: string[] = [];
 
@@ -173,6 +175,8 @@ export function resolveOffer(cfg: Toml, market: Market, direction: MarketDirecti
     final_secs: Math.round(n('final_days', 7) * 86_400),
     deposit_bps: Math.round(n('deposit_pct', 0) * 100),
     depth_tiers: depthTiers.map((t) => ({ above_xmr: xmrToPiconero(t.above_xmr), depth: t.depth })),
+    // `W_z` (SPEC 11.6): 0 = no watcher accepted.
+    freeze_window_secs: Math.round(n('freeze_window_hours', 0) * 3_600),
     min_claim_delay_secs: minClaimDelaySecs(chain, deepestDepth),
   };
   return { market, direction, chain, wanted, keptOff, source, fallbacks, crossCheck, disagreementApplies, values, maxXmr, depthTiers, deepestDepth, claimDelayMinutes, minClaimDelayMinutes: minDelay, terms };
@@ -704,9 +708,18 @@ function checkOffer(issues: Issues, cfg: Toml, base: string, o: ResolvedOffer, p
   if (o.terms.claim_window_secs < minClaimWindowSecs(chain))
     issues.error(`${base}.claim_window_minutes`, `${where}: the claim window must be at least ${Math.ceil(minClaimWindowSecs(chain) / 60)} minutes on ${chainLabel(chain)}.`);
 
-  // Final window: `W_p + W_n + D_c + W_c + 86,400 <= W_f <= MAX_FINAL`.
+  // Freeze window: 0, or MIN_FREEZE..MAX_FREEZE (1 to 72 hours).
+  const wz = o.terms.freeze_window_secs;
+  if (wz !== 0 && (wz < c.minFreezeSecs || wz > c.maxFreezeSecs) && !issues.errors.some((e) => e.path === `${base}.freeze_window_hours`))
+    issues.error(`${base}.freeze_window_hours`, `${where}: the freeze window is 0 (no watcher accepted) or between ${c.minFreezeSecs / 3_600} and ${c.maxFreezeSecs / 3_600} hours.`);
+  if (wz > 0 && o.direction === 'sell_xmr' && o.terms.deposit_bps === 0)
+    issues.warn(`${base}.freeze_window_hours`, `${where}: with no deposit there is nothing to withhold when a taker walks away after a freeze. The deposit is what prices the longer wait.`);
+  if (wz > 0 && o.direction === 'buy_xmr' && (getPath(cfg, 'watcher.url') === undefined || getPath(cfg, 'watcher.url') === ''))
+    issues.warn(`${base}.freeze_window_hours`, `${where}: no watcher is configured ([watcher] url), so nothing would freeze a swap for you; takers are still told you can pause the swap for up to ${wz / 3_600} hours.`);
+
+  // Final window: `W_p + W_n + D_c + W_z + W_c + 86,400 <= W_f <= MAX_FINAL`.
   const wp = pending ? wa : o.direction === 'buy_xmr' ? wn : 0;
-  const need = wp + wn + o.terms.claim_delay_secs + o.terms.claim_window_secs + 86_400;
+  const need = wp + wn + o.terms.claim_delay_secs + wz + o.terms.claim_window_secs + 86_400;
   if (o.terms.final_secs < need)
     issues.error(`${base}.final_days`, `${where}: the final deadline must be at least ${(Math.ceil((need / 86_400) * 100) / 100).toFixed(2)} days to leave room for the other deadlines plus one day.`);
   else if (o.terms.final_secs > c.maxFinalSecs && !issues.errors.some((e) => e.path === `${base}.final_days`))

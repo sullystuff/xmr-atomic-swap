@@ -5,9 +5,11 @@ import type { AdvanceApprovalRecord, Alert, DepositView, InboxItem, SwapDeadline
 import { ApiFailure } from '../api/client.js';
 import { useAction, useChainNow, useClient, useLive, useNow, useQuery } from '../api/hooks.js';
 import { chainLabel } from '../lib/config/schema.js';
-import { MARKET_LABEL, fmtInt, fmtMarketAmount, fmtRate, fmtTime, fmtUnits, fmtUsd, fmtXmr, parseUnits } from '../lib/format.js';
+import { MARKET_LABEL, fmtDuration, fmtInt, fmtMarketAmount, fmtRate, fmtTime, fmtUnits, fmtUsd, fmtXmr, parseUnits } from '../lib/format.js';
 import { ACTION_NOUN, DIR_LABEL, DepositSummary, InstructionNote, MessageThread, StateBadge, SwapActions, SwapLink, refusalText } from '../ui/domain.js';
 import { OwnerTransaction, TxNotice } from '../ui/owner-tx.js';
+import { CapsPanel, FrozenPanel, SwapWatcherStatus } from '../ui/amendment.js';
+import { freezeCounts } from '../lib/amendment.js';
 import { PricedBy } from './market.js';
 import { Async, Badge, Button, Card, ConfirmButton, Countdown, Empty, Id, Notice, PageHead, Stat, Time } from '../ui/kit.js';
 
@@ -87,6 +89,9 @@ export function DashboardPage() {
     <>
       <PageHead title="Dashboard">Makers and takers both judge a maker on this history. Rates are your public on-chain record, merged across both chains.</PageHead>
       <div className="stack">
+        <Card title="Protocol beta caps" note="Set by the protocol’s admin on-chain. What is open now, and what is left." flush>
+          {status ? <CapsPanel caps={status.caps} /> : <Empty title="Waiting for the daemon" />}
+        </Card>
         <Card title="History" flush>
           <Async query={stats} what="the statistics">
             {(s) => (
@@ -350,6 +355,7 @@ export function SwapsPage() {
                             {dirLabel(s)}
                             {s.mode !== undefined ? ` · ${MODE_NAME[s.mode] ?? `mode ${s.mode}`}` : ''}
                           </div>
+                          {s.extras.watcher ? <div className="muted">names a watcher</div> : null}
                         </td>
                         <td className="num">{fmtUnits(s.xmr, 12, 4)}</td>
                         <td className="num">
@@ -390,6 +396,8 @@ const DEADLINE_ROWS: { key: keyof SwapDeadlines; label: string; note: string }[]
   { key: 't_notice', label: 'Lock notice posted', note: '' },
   { key: 't_cut', label: 'Automatic refund cutoff', note: 'Confirmation time plus 15 minutes' },
   { key: 't_claim_open', label: 'Claim without ready opens', note: 'Your claim delay has passed' },
+  { key: 't_freeze', label: 'Frozen', note: 'A watcher or the locker paused the swap' },
+  { key: 't_ff', label: 'Frozen-final time', note: 'The claim without ready opens here instead' },
   { key: 't_ready', label: 'Ready set', note: '' },
   { key: 't_claim_deadline', label: 'Claim deadline', note: 'A miss is recorded against you' },
   { key: 't_refund', label: 'Refunded', note: '' },
@@ -403,6 +411,9 @@ const DEADLINE_ROWS: { key: keyof SwapDeadlines; label: string; note: string }[]
 export function SwapDetailPage({ swapRef }: { swapRef: string }) {
   const swap = useQuery('swap', { params: { ref: swapRef } }, ['swaps', 'inbox']);
   const deposits = useQuery('deposits', undefined, ['swaps']);
+  const all = useQuery('swaps', { body: { limit: 500 } }, ['swaps']);
+  const counts = freezeCounts(all.data?.swaps ?? []);
+  const { status } = useLive();
   const chainNow = useChainNow();
   return (
     <>
@@ -423,6 +434,16 @@ export function SwapDetailPage({ swapRef }: { swapRef: string }) {
                 <Notice tone="bad" title="Parked for you to review.">
                   {s.last_error ?? 'The daemon stopped acting on this swap.'} The daemon never re-sends on ambiguity; decide below.
                 </Notice>
+              ) : null}
+              {s.state === 'FROZEN' ? (
+                <Card title="Frozen">
+                  <FrozenPanel swap={s} frozenBy={s.frozen_by} />
+                </Card>
+              ) : null}
+              {s.direction === 'B' ? (
+                <Card title="Watcher for this swap">
+                  <SwapWatcherStatus swap={s} status={status} />
+                </Card>
               ) : null}
               {s.instruction ? (
                 <div data-testid="instruction" data-status={s.instruction.status}>
@@ -446,10 +467,43 @@ export function SwapDetailPage({ swapRef }: { swapRef: string }) {
                     <dd>{fmtXmr(s.xmr, 12)}</dd>
                     <dt>Amount</dt>
                     <dd>{fmtMarketAmount(s.market, s.amount, 9)}</dd>
-                    <dt>Taker</dt>
+                    <dt>Taker’s wallet</dt>
                     <dd>
-                      <code>{s.taker}</code>
+                      <code style={{ overflowWrap: 'anywhere' }}>{s.taker}</code>
+                      <div className="muted" data-testid="taker-freezes">
+                        {(() => {
+                          const n = s.taker_freezes ?? counts.get(s.taker)?.frozen ?? 0;
+                          const of = counts.get(s.taker)?.swaps;
+                          return n === 0 ? 'No swap of this taker with you was ever frozen.' : `${n} of this taker’s ${of ?? 'swaps'}${of ? (of === 1 ? ' swap' : ' swaps') : ''} with you ${n === 1 ? 'was' : 'were'} frozen.`;
+                        })()}
+                      </div>
                     </dd>
+                    {s.direction === 'B' ? (
+                      <>
+                        <dt>Taker’s payout address</dt>
+                        <dd data-testid="payout-address">
+                          {s.extras.payout ? (
+                            <>
+                              <code style={{ overflowWrap: 'anywhere' }}>{s.extras.payout}</code>
+                              <div className="muted">Where the taker’s claim pays. It is not the taker’s wallet: refunds and the take deposit go back to the wallet, never here.</div>
+                            </>
+                          ) : (
+                            <span className="muted">the taker’s own wallet (no separate payout address was named)</span>
+                          )}
+                        </dd>
+                      </>
+                    ) : null}
+                    <dt>Freeze window</dt>
+                    <dd>{s.extras.freeze_window_secs > 0 ? `${fmtDuration(s.extras.freeze_window_secs)}${s.extras.watcher ? '' : '; no watcher named, so it cannot be frozen'}` : 'none: this swap cannot be frozen'}</dd>
+                    {s.direction === 'A' && s.extras.watcher ? (
+                      <>
+                        <dt>Taker’s watcher</dt>
+                        <dd>
+                          <code style={{ overflowWrap: 'anywhere' }}>{s.extras.watcher}</code>
+                          <div className="muted">It may freeze this swap once, after your lock notice.</div>
+                        </dd>
+                      </>
+                    ) : null}
                     <dt>Depth</dt>
                     <dd>{s.depth} confirmations</dd>
                     {s.next_deadline ? (
@@ -651,6 +705,8 @@ function ParkedPayout({ swapRef, chain }: { swapRef: string; chain: ChainName })
 
 export function ApprovalsPage() {
   const approvals = useQuery('approvals', undefined, ['swaps']);
+  const all = useQuery('swaps', { body: { limit: 500 } }, ['swaps']);
+  const counts = freezeCounts(all.data?.swaps ?? []);
   const chainNow = useChainNow();
   return (
     <>
@@ -693,8 +749,23 @@ export function ApprovalsPage() {
                           <td>
                             <SwapLink swapRef={p.ref} />
                             <div className="muted">
-                              taker <Id value={p.taker} />
+                              taker’s wallet <Id value={p.taker} />
                             </div>
+                            {p.payout ? (
+                              <div className="muted">
+                                pays out to <Id value={p.payout} /> (not the taker’s wallet)
+                              </div>
+                            ) : null}
+                            {p.watcher ? (
+                              <div data-testid="approval-watcher">
+                                names a watcher <Id value={p.watcher} /> {p.watcher_denied ? <Badge tone="bad">On your deny list</Badge> : <Badge tone="warn">May freeze</Badge>}
+                              </div>
+                            ) : null}
+                            {(counts.get(p.taker)?.frozen ?? 0) > 0 ? (
+                              <div className="msg warning">
+                                {counts.get(p.taker)?.frozen} of this taker’s {counts.get(p.taker)?.swaps} swaps with you were frozen
+                              </div>
+                            ) : null}
                           </td>
                           <td>
                             {MARKET_LABEL[p.market]}
