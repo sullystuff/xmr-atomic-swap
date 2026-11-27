@@ -322,6 +322,32 @@ pub fn notice_commitment(swap_ref: &[u8; 32], txid: &[u8; 32], view: &[u8; 32]) 
   sha256(&[&ds("notice"), swap_ref, txid, view])
 }
 
+/// `noticeKey(ownSecret, peerPub, side)`: the swap's notice key
+/// `K("notice") = HKDF-SHA256(X25519(own, peer), DS("ecdh"), "notice" ‖ 0x00 ‖ taker_pub ‖ maker_pub)`.
+/// Both parties derive the same 32 bytes. It decrypts that one swap's notice and nothing else,
+/// and is what a locker hands to a watcher (SPEC 11.6).
+pub fn notice_key(own_secret: &[u8; 32], peer_pub: &[u8; 32], side: Side) -> Result<[u8; 32]> {
+  pair_key(own_secret, peer_pub, side, KeyUse::Notice)
+}
+
+/// `noticeOpenWithKey(key, swapRef, ciphertext, commitment)`: [`notice_open`] for a holder of
+/// the notice key alone (a watcher: no X25519 secret, no spend share). Any failure means "no
+/// lock"; a wrong key fails the same way.
+pub fn notice_open_with_key(key: &[u8; 32], swap_ref: &[u8; 32], ciphertext: &[u8], commitment: &[u8; 32]) -> Result<([u8; 32], [u8; 32])> {
+  if ciphertext.len() != NOTICE_CT_LEN {
+    return Err(Error::BadLength);
+  }
+  let pt = XChaCha20Poly1305::new(key.into())
+    .decrypt(XNonce::from_slice(&ciphertext[..24]), Payload { msg: &ciphertext[24..], aad: swap_ref })
+    .map_err(|_| Error::NoticeDecrypt)?;
+  let txid: [u8; 32] = pt[..32].try_into().unwrap();
+  let view: [u8; 32] = pt[32..].try_into().unwrap();
+  if notice_commitment(swap_ref, &txid, &view) != *commitment {
+    return Err(Error::NoticeCommitmentMismatch);
+  }
+  Ok((txid, view))
+}
+
 /// Arguments shared by [`notice_seal`] and [`notice_open`].
 pub struct NoticeKeys<'a> {
   /// The caller's X25519 secret (taker: the swap's one-time `enc` key; maker: the key of the

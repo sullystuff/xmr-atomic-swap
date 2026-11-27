@@ -1,0 +1,580 @@
+{
+  "cases": [
+    {
+      "input": {
+        "op": "notice_key",
+        "own_secret": "8324dec2844d3d0bb80079e2deb35ee4c758aae88775cec2bc8872cad6bce793",
+        "peer_pub": "fb4a655dbc5cb5a5208acccde359496120129cbd34cc5725927eb05fe7d87f68",
+        "side": "taker"
+      },
+      "name": "notice-key-taker",
+      "output": {
+        "notice_key": "2d578940954281981a06620122bdcfb2cc98c19ce5eeb0e389e67dfea337f69c"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "op": "notice_key",
+        "own_secret": "93fc2a9ef9211dcf3181f4618d13331bb7c877626e634970a2395eb3368f9ed8",
+        "peer_pub": "044e91a3b6d4f27af44361825394a9b8ccf1cbffa118a757c8bd91cc4663da51",
+        "side": "maker"
+      },
+      "name": "notice-key-maker",
+      "output": {
+        "notice_key": "2d578940954281981a06620122bdcfb2cc98c19ce5eeb0e389e67dfea337f69c"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "op": "notice_key",
+        "own_secret": "8324dec2844d3d0bb80079e2deb35ee4c758aae88775cec2bc8872cad6bce793",
+        "peer_pub": "fb4a655dbc5cb5a5208acccde359496120129cbd34cc5725927eb05fe7d87f68",
+        "side": "maker"
+      },
+      "name": "notice-key-sides-swapped-is-another-key",
+      "output": {
+        "notice_key": "9c5da3384c17aeb49095f5237f5837d9c94fddb3cd5052096e0909d7be010d77"
+      },
+      "valid": true
+    },
+    {
+      "error": "LowOrderEncryptionKey",
+      "input": {
+        "op": "notice_key",
+        "own_secret": "8324dec2844d3d0bb80079e2deb35ee4c758aae88775cec2bc8872cad6bce793",
+        "peer_pub": "e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800",
+        "side": "taker"
+      },
+      "name": "notice-key-low-order-peer",
+      "valid": false
+    },
+    {
+      "input": {
+        "ciphertext": "41fdfb0285ba7a8cf97de23448fb7abc96e7641e5e5d58cc52a8311b7bcc3e98b1c025e3e75109e6170654610ad57b13191d5cb9f256a5f73140844cd02d3824b1f4000a3dbdaa981d8407bf8a9a194e556d7e2079eb12634668dd29a1beb0c08b886bee47169a69",
+        "commitment": "71afafe44ffea12685801874ad4ae5f266c62ba031bf6867e98e6064ccf9e632",
+        "notice_key": "2d578940954281981a06620122bdcfb2cc98c19ce5eeb0e389e67dfea337f69c",
+        "op": "notice_open_with_key",
+        "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630"
+      },
+      "name": "open-with-key",
+      "output": {
+        "txid": "ce1de0ce1cc8d0d17e463ccb7b477617f4eb39c3943ce123f7f6aba7d4f11ee9",
+        "view": "802c5a100d3efa6be050aab875f9c31bf4fa7fe4b1505cf67e64a94a3588d709"
+      },
+      "valid": true
+    },
+    {
+      "error": "NoticeDecrypt",
+      "input": {
+        "ciphertext": "41fdfb0285ba7a8cf97de23448fb7abc96e7641e5e5d58cc52a8311b7bcc3e98b1c025e3e75109e6170654610ad57b13191d5cb9f256a5f73140844cd02d3824b1f4000a3dbdaa981d8407bf8a9a194e556d7e2079eb12634668dd29a1beb0c08b886bee47169a69",
+        "commitment": "71afafe44ffea12685801874ad4ae5f266c62ba031bf6867e98e6064ccf9e632",
+        "notice_key": "9c5da3384c17aeb49095f5237f5837d9c94fddb3cd5052096e0909d7be010d77",
+        "op": "notice_open_with_key",
+        "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630"
+      },
+      "name": "open-with-another-key",
+      "valid": false
+    },
+    {
+      "error": "NoticeDecrypt",
+      "input": {
+        "ciphertext": "41fdfb0285ba7a8cf97de23448fb7abc96e7641e5e5d58cc52a8311b7bcc3e98b1c025e3e75109e6170654610ad57b13191d5cb9f256a5f73140844cd02d3824b1f4000a3dbdaa981d8407bf8a9a194e556d7e2079eb12634668dd29a1beb0c08b886bee47169a69",
+        "commitment": "71afafe44ffea12685801874ad4ae5f266c62ba031bf6867e98e6064ccf9e632",
+        "notice_key": "2d578940954281981a06620122bdcfb2cc98c19ce5eeb0e389e67dfea337f69c",
+        "op": "notice_open_with_key",
+        "swap_ref": "8fe5d1e4ed6140fdb92cb5cf0974fcdcbe305bb6e6a677c5b5914ae100386113"
+      },
+      "name": "open-for-another-swap",
+      "valid": false
+    },
+    {
+      "error": "NoticeCommitmentMismatch",
+      "input": {
+        "ciphertext": "41fdfb0285ba7a8cf97de23448fb7abc96e7641e5e5d58cc52a8311b7bcc3e98b1c025e3e75109e6170654610ad57b13191d5cb9f256a5f73140844cd02d3824b1f4000a3dbdaa981d8407bf8a9a194e556d7e2079eb12634668dd29a1beb0c08b886bee47169a69",
+        "commitment": "32892342606a45d9c61627d10f548c45dbb0e9e3497e39f78bb5c018b220d3d2",
+        "notice_key": "2d578940954281981a06620122bdcfb2cc98c19ce5eeb0e389e67dfea337f69c",
+        "op": "notice_open_with_key",
+        "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630"
+      },
+      "name": "open-against-another-commitment",
+      "valid": false
+    },
+    {
+      "error": "NoticeDecrypt",
+      "input": {
+        "ciphertext": "41fdfb0285ba7a8cf97de23448fb7abc96e7641e5e5d58cc52a8311b7bcc3e98b1c025e3e75109e6170654610ad57b13191d5cb9f256a5f73140844cd12d3824b1f4000a3dbdaa981d8407bf8a9a194e556d7e2079eb12634668dd29a1beb0c08b886bee47169a69",
+        "commitment": "71afafe44ffea12685801874ad4ae5f266c62ba031bf6867e98e6064ccf9e632",
+        "notice_key": "2d578940954281981a06620122bdcfb2cc98c19ce5eeb0e389e67dfea337f69c",
+        "op": "notice_open_with_key",
+        "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630"
+      },
+      "name": "open-altered-ciphertext",
+      "valid": false
+    },
+    {
+      "error": "BadLength",
+      "input": {
+        "ciphertext": "41fdfb0285ba7a8cf97de23448fb7abc96e7641e5e5d58cc52a8311b7bcc3e98b1c025e3e75109e6170654610ad57b13191d5cb9f256a5f73140844cd02d3824b1f4000a3dbdaa981d8407bf8a9a194e556d7e2079eb12634668dd29a1beb0c08b886bee47169a",
+        "commitment": "71afafe44ffea12685801874ad4ae5f266c62ba031bf6867e98e6064ccf9e632",
+        "notice_key": "2d578940954281981a06620122bdcfb2cc98c19ce5eeb0e389e67dfea337f69c",
+        "op": "notice_open_with_key",
+        "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630"
+      },
+      "name": "open-103-bytes",
+      "valid": false
+    },
+    {
+      "input": {
+        "chain_tag": 1,
+        "deployment": "9iThgKLtMAhXcy4GbMwLVvdu9AhWYW56HBMES7iezZug",
+        "direction": "A",
+        "ephemeral_secret": "85346056b45bb8dd2187070b2cff190206145ec7bcf5af3f7bad69a8b26f3c70",
+        "format": 2,
+        "issued_at": "1800000500",
+        "locker_enc_pub": "044e91a3b6d4f27af44361825394a9b8ccf1cbffa118a757c8bd91cc4663da51",
+        "locker_enc_secret": "8324dec2844d3d0bb80079e2deb35ee4c758aae88775cec2bc8872cad6bce793",
+        "nonce": "128da3d3692795af10387da8774f24475f614199f11fee01",
+        "notice_key": "2d578940954281981a06620122bdcfb2cc98c19ce5eeb0e389e67dfea337f69c",
+        "op": "seal",
+        "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630",
+        "watcher": "254a757c79ee6437e72cf0fd1fb70ed79cb6eabf4700e4d4b1fa9459dcfbac3e"
+      },
+      "name": "seal-solana-direction-a",
+      "output": {
+        "aad": "786d72737761702f76312f77617463682d7265710002012c39695468674b4c744d41685863793447624d774c56766475394168575957353648424d45533769657a5a7567ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630254a757c79ee6437e72cf0fd1fb70ed79cb6eabf4700e4d4b1fa9459dcfbac3ef4d3496b00000000",
+        "body": {
+          "chain": "solana",
+          "deployment": "9iThgKLtMAhXcy4GbMwLVvdu9AhWYW56HBMES7iezZug",
+          "issued_at": 1800000500,
+          "notice_key": "S086Jf9zT8WiQxaUfrse1gOM2qaST5OxtVtOxAMjTgsSjaPTaSeVrxA4fah3TyRHX2FBmfEf7gHjvruFhfGgwO9E0KdX6m11qzlJRALx+vIU1UeA+W4qYtKOOfB/yHMVUjfDxo8XaSk=",
+          "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630",
+          "v": 2
+        },
+        "sealed": "4b4f3a25ff734fc5a24316947ebb1ed6038cdaa6924f93b1b55b4ec403234e0b128da3d3692795af10387da8774f24475f614199f11fee01e3bebb8585f1a0c0ef44d0a757ea6d75ab39494402f1faf214d54780f96e2a62d28e39f07fc873155237c3c68f176929"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "body": {
+          "chain": "solana",
+          "deployment": "9iThgKLtMAhXcy4GbMwLVvdu9AhWYW56HBMES7iezZug",
+          "issued_at": 1800000500,
+          "notice_key": "S086Jf9zT8WiQxaUfrse1gOM2qaST5OxtVtOxAMjTgsSjaPTaSeVrxA4fah3TyRHX2FBmfEf7gHjvruFhfGgwO9E0KdX6m11qzlJRALx+vIU1UeA+W4qYtKOOfB/yHMVUjfDxo8XaSk=",
+          "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630",
+          "v": 2
+        },
+        "chain_tag": 1,
+        "deployment": "9iThgKLtMAhXcy4GbMwLVvdu9AhWYW56HBMES7iezZug",
+        "format": 2,
+        "issued_at": "1800000500",
+        "locker_enc_pub": "044e91a3b6d4f27af44361825394a9b8ccf1cbffa118a757c8bd91cc4663da51",
+        "op": "open",
+        "sealed": "4b4f3a25ff734fc5a24316947ebb1ed6038cdaa6924f93b1b55b4ec403234e0b128da3d3692795af10387da8774f24475f614199f11fee01e3bebb8585f1a0c0ef44d0a757ea6d75ab39494402f1faf214d54780f96e2a62d28e39f07fc873155237c3c68f176929",
+        "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630",
+        "watcher_seed": "ca4f5d18514ad7f8093ba3bbaaf855f4ccca0438f2b6c74a7cda9d4018a8a544"
+      },
+      "name": "open-solana-direction-a",
+      "output": {
+        "notice_key": "2d578940954281981a06620122bdcfb2cc98c19ce5eeb0e389e67dfea337f69c"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "chain_tag": 2,
+        "deployment": "31337:0xe7501885e3c726ef74694299b7cd49d65e8ed897",
+        "direction": "B",
+        "ephemeral_secret": "85346056b45bb8dd2187070b2cff190206145ec7bcf5af3f7bad69a8b26f3c70",
+        "format": 2,
+        "issued_at": "1800000577",
+        "locker_enc_pub": "fb4a655dbc5cb5a5208acccde359496120129cbd34cc5725927eb05fe7d87f68",
+        "locker_enc_secret": "93fc2a9ef9211dcf3181f4618d13331bb7c877626e634970a2395eb3368f9ed8",
+        "nonce": "128da3d3692795af10387da8774f24475f614199f11fee01",
+        "notice_key": "2d578940954281981a06620122bdcfb2cc98c19ce5eeb0e389e67dfea337f69c",
+        "op": "seal",
+        "swap_ref": "86bfd03c1bf7f4dd20b0af001b96cf45c08708d491e4261de9c5f7e3f7e49e63",
+        "watcher": "254a757c79ee6437e72cf0fd1fb70ed79cb6eabf4700e4d4b1fa9459dcfbac3e"
+      },
+      "name": "seal-ethereum-direction-b",
+      "output": {
+        "aad": "786d72737761702f76312f77617463682d7265710002023033313333373a30786537353031383835653363373236656637343639343239396237636434396436356538656438393786bfd03c1bf7f4dd20b0af001b96cf45c08708d491e4261de9c5f7e3f7e49e63254a757c79ee6437e72cf0fd1fb70ed79cb6eabf4700e4d4b1fa9459dcfbac3e41d4496b00000000",
+        "body": {
+          "chain": "ethereum",
+          "deployment": "31337:0xe7501885e3c726ef74694299b7cd49d65e8ed897",
+          "issued_at": 1800000577,
+          "notice_key": "S086Jf9zT8WiQxaUfrse1gOM2qaST5OxtVtOxAMjTgsSjaPTaSeVrxA4fah3TyRHX2FBmfEf7gEG7bNAH/0i7q08YpQQdgfmhweDipZ9z+sizq/IwujaX5PcjdzEFYBxPX4Ijt6SheY=",
+          "swap_ref": "86bfd03c1bf7f4dd20b0af001b96cf45c08708d491e4261de9c5f7e3f7e49e63",
+          "v": 2
+        },
+        "sealed": "4b4f3a25ff734fc5a24316947ebb1ed6038cdaa6924f93b1b55b4ec403234e0b128da3d3692795af10387da8774f24475f614199f11fee0106edb3401ffd22eead3c6294107607e68707838a967dcfeb22ceafc8c2e8da5f93dc8ddcc41580713d7e088ede9285e6"
+      },
+      "valid": true
+    },
+    {
+      "input": {
+        "body": {
+          "chain": "ethereum",
+          "deployment": "31337:0xe7501885e3c726ef74694299b7cd49d65e8ed897",
+          "issued_at": 1800000577,
+          "notice_key": "S086Jf9zT8WiQxaUfrse1gOM2qaST5OxtVtOxAMjTgsSjaPTaSeVrxA4fah3TyRHX2FBmfEf7gEG7bNAH/0i7q08YpQQdgfmhweDipZ9z+sizq/IwujaX5PcjdzEFYBxPX4Ijt6SheY=",
+          "swap_ref": "86bfd03c1bf7f4dd20b0af001b96cf45c08708d491e4261de9c5f7e3f7e49e63",
+          "v": 2
+        },
+        "chain_tag": 2,
+        "deployment": "31337:0xe7501885e3c726ef74694299b7cd49d65e8ed897",
+        "format": 2,
+        "issued_at": "1800000577",
+        "locker_enc_pub": "fb4a655dbc5cb5a5208acccde359496120129cbd34cc5725927eb05fe7d87f68",
+        "op": "open",
+        "sealed": "4b4f3a25ff734fc5a24316947ebb1ed6038cdaa6924f93b1b55b4ec403234e0b128da3d3692795af10387da8774f24475f614199f11fee0106edb3401ffd22eead3c6294107607e68707838a967dcfeb22ceafc8c2e8da5f93dc8ddcc41580713d7e088ede9285e6",
+        "swap_ref": "86bfd03c1bf7f4dd20b0af001b96cf45c08708d491e4261de9c5f7e3f7e49e63",
+        "watcher_seed": "ca4f5d18514ad7f8093ba3bbaaf855f4ccca0438f2b6c74a7cda9d4018a8a544"
+      },
+      "name": "open-ethereum-direction-b",
+      "output": {
+        "notice_key": "2d578940954281981a06620122bdcfb2cc98c19ce5eeb0e389e67dfea337f69c"
+      },
+      "valid": true
+    },
+    {
+      "error": "WatchKeyInvalid",
+      "input": {
+        "body": {
+          "chain": "solana",
+          "deployment": "9iThgKLtMAhXcy4GbMwLVvdu9AhWYW56HBMES7iezZug",
+          "issued_at": 1800000500,
+          "notice_key": "S086Jf9zT8WiQxaUfrse1gOM2qaST5OxtVtOxAMjTgsSjaPTaSeVrxA4fah3TyRHX2FBmfEf7gHSEvSmL269AnrOpZKib+LLRu02PzY13kF0EU4wRrYgUQwn7WVq3kapT291ZrVCnYs=",
+          "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630",
+          "v": 2
+        },
+        "chain_tag": 1,
+        "deployment": "9iThgKLtMAhXcy4GbMwLVvdu9AhWYW56HBMES7iezZug",
+        "format": 2,
+        "issued_at": "1800000500",
+        "locker_enc_pub": "044e91a3b6d4f27af44361825394a9b8ccf1cbffa118a757c8bd91cc4663da51",
+        "op": "open",
+        "sealed": "4b4f3a25ff734fc5a24316947ebb1ed6038cdaa6924f93b1b55b4ec403234e0b128da3d3692795af10387da8774f24475f614199f11fee01d212f4a62f6ebd027acea592a26fe2cb46ed363f3635de4174114e3046b620510c27ed656ade46a94f6f7566b5429d8b",
+        "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630",
+        "watcher_seed": "ca4f5d18514ad7f8093ba3bbaaf855f4ccca0438f2b6c74a7cda9d4018a8a544"
+      },
+      "name": "reject-wrong-locker-key-stranger",
+      "valid": false
+    },
+    {
+      "error": "WatchKeyInvalid",
+      "input": {
+        "body": {
+          "chain": "solana",
+          "deployment": "9iThgKLtMAhXcy4GbMwLVvdu9AhWYW56HBMES7iezZug",
+          "issued_at": 1800000500,
+          "notice_key": "S086Jf9zT8WiQxaUfrse1gOM2qaST5OxtVtOxAMjTgsSjaPTaSeVrxA4fah3TyRHX2FBmfEf7gEG7bNAH/0i7q08YpQQdgfmhweDipZ9z+sizq/IwujaXyLoixvxJ9iWaEdtaeR8Quo=",
+          "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630",
+          "v": 2
+        },
+        "chain_tag": 1,
+        "deployment": "9iThgKLtMAhXcy4GbMwLVvdu9AhWYW56HBMES7iezZug",
+        "format": 2,
+        "issued_at": "1800000500",
+        "locker_enc_pub": "044e91a3b6d4f27af44361825394a9b8ccf1cbffa118a757c8bd91cc4663da51",
+        "op": "open",
+        "sealed": "4b4f3a25ff734fc5a24316947ebb1ed6038cdaa6924f93b1b55b4ec403234e0b128da3d3692795af10387da8774f24475f614199f11fee0106edb3401ffd22eead3c6294107607e68707838a967dcfeb22ceafc8c2e8da5f22e88b1bf127d89668476d69e47c42ea",
+        "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630",
+        "watcher_seed": "ca4f5d18514ad7f8093ba3bbaaf855f4ccca0438f2b6c74a7cda9d4018a8a544"
+      },
+      "name": "reject-wrong-locker-key-counterparty",
+      "valid": false
+    },
+    {
+      "error": "WatchKeyInvalid",
+      "input": {
+        "body": {
+          "chain": "solana",
+          "deployment": "9iThgKLtMAhXcy4GbMwLVvdu9AhWYW56HBMES7iezZug",
+          "issued_at": 1800000500,
+          "notice_key": "S086Jf9zT8WiQxaUfrse1gOM2qaST5OxtVtOxAMjTgsSjaPTaSeVrxA4fah3TyRHX2FBmfEf7gF5k1eGrir5hymq810vHlI9v3r+nI5Qd6xeD8SIGchh4/gFrWVAtDr//istu5renTU=",
+          "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630",
+          "v": 2
+        },
+        "chain_tag": 1,
+        "deployment": "9iThgKLtMAhXcy4GbMwLVvdu9AhWYW56HBMES7iezZug",
+        "format": 2,
+        "issued_at": "1800000500",
+        "locker_enc_pub": "044e91a3b6d4f27af44361825394a9b8ccf1cbffa118a757c8bd91cc4663da51",
+        "op": "open",
+        "sealed": "4b4f3a25ff734fc5a24316947ebb1ed6038cdaa6924f93b1b55b4ec403234e0b128da3d3692795af10387da8774f24475f614199f11fee0179935786ae2af98729aaf35d2f1e523dbf7afe9c8e5077ac5e0fc48819c861e3f805ad6540b43afffe2b2dbb9ade9d35",
+        "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630",
+        "watcher_seed": "ca4f5d18514ad7f8093ba3bbaaf855f4ccca0438f2b6c74a7cda9d4018a8a544"
+      },
+      "name": "reject-wrong-watcher",
+      "valid": false
+    },
+    {
+      "error": "WatchKeyInvalid",
+      "input": {
+        "body": {
+          "chain": "solana",
+          "deployment": "9iThgKLtMAhXcy4GbMwLVvdu9AhWYW56HBMES7iezZug",
+          "issued_at": 1800000500,
+          "notice_key": "S086Jf9zT8WiQxaUfrse1gOM2qaST5OxtVtOxAMjTgsSjaPTaSeVrxA4fah3TyRHX2FBmfEf7gHjvruFhfGgwO9E0KdX6m11qzlJRALx+vIU1UeA+W4qYtKOOfB/yHMVUjfDxo8XaSk=",
+          "swap_ref": "8fe5d1e4ed6140fdb92cb5cf0974fcdcbe305bb6e6a677c5b5914ae100386113",
+          "v": 2
+        },
+        "chain_tag": 1,
+        "deployment": "9iThgKLtMAhXcy4GbMwLVvdu9AhWYW56HBMES7iezZug",
+        "format": 2,
+        "issued_at": "1800000500",
+        "locker_enc_pub": "044e91a3b6d4f27af44361825394a9b8ccf1cbffa118a757c8bd91cc4663da51",
+        "op": "open",
+        "sealed": "4b4f3a25ff734fc5a24316947ebb1ed6038cdaa6924f93b1b55b4ec403234e0b128da3d3692795af10387da8774f24475f614199f11fee01e3bebb8585f1a0c0ef44d0a757ea6d75ab39494402f1faf214d54780f96e2a62d28e39f07fc873155237c3c68f176929",
+        "swap_ref": "8fe5d1e4ed6140fdb92cb5cf0974fcdcbe305bb6e6a677c5b5914ae100386113",
+        "watcher_seed": "ca4f5d18514ad7f8093ba3bbaaf855f4ccca0438f2b6c74a7cda9d4018a8a544"
+      },
+      "name": "reject-replay-onto-another-swap",
+      "valid": false
+    },
+    {
+      "error": "WatchKeyInvalid",
+      "input": {
+        "body": {
+          "chain": "ethereum",
+          "deployment": "9iThgKLtMAhXcy4GbMwLVvdu9AhWYW56HBMES7iezZug",
+          "issued_at": 1800000500,
+          "notice_key": "S086Jf9zT8WiQxaUfrse1gOM2qaST5OxtVtOxAMjTgsSjaPTaSeVrxA4fah3TyRHX2FBmfEf7gHjvruFhfGgwO9E0KdX6m11qzlJRALx+vIU1UeA+W4qYtKOOfB/yHMVUjfDxo8XaSk=",
+          "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630",
+          "v": 2
+        },
+        "chain_tag": 2,
+        "deployment": "9iThgKLtMAhXcy4GbMwLVvdu9AhWYW56HBMES7iezZug",
+        "format": 2,
+        "issued_at": "1800000500",
+        "locker_enc_pub": "044e91a3b6d4f27af44361825394a9b8ccf1cbffa118a757c8bd91cc4663da51",
+        "op": "open",
+        "sealed": "4b4f3a25ff734fc5a24316947ebb1ed6038cdaa6924f93b1b55b4ec403234e0b128da3d3692795af10387da8774f24475f614199f11fee01e3bebb8585f1a0c0ef44d0a757ea6d75ab39494402f1faf214d54780f96e2a62d28e39f07fc873155237c3c68f176929",
+        "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630",
+        "watcher_seed": "ca4f5d18514ad7f8093ba3bbaaf855f4ccca0438f2b6c74a7cda9d4018a8a544"
+      },
+      "name": "reject-replay-onto-another-chain",
+      "valid": false
+    },
+    {
+      "error": "WatchKeyInvalid",
+      "input": {
+        "body": {
+          "chain": "solana",
+          "deployment": "28WcBBCNANehCEFdRLUEG3Yg6LF2BJRTLuSr2joBLJVj",
+          "issued_at": 1800000500,
+          "notice_key": "S086Jf9zT8WiQxaUfrse1gOM2qaST5OxtVtOxAMjTgsSjaPTaSeVrxA4fah3TyRHX2FBmfEf7gHjvruFhfGgwO9E0KdX6m11qzlJRALx+vIU1UeA+W4qYtKOOfB/yHMVUjfDxo8XaSk=",
+          "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630",
+          "v": 2
+        },
+        "chain_tag": 1,
+        "deployment": "28WcBBCNANehCEFdRLUEG3Yg6LF2BJRTLuSr2joBLJVj",
+        "format": 2,
+        "issued_at": "1800000500",
+        "locker_enc_pub": "044e91a3b6d4f27af44361825394a9b8ccf1cbffa118a757c8bd91cc4663da51",
+        "op": "open",
+        "sealed": "4b4f3a25ff734fc5a24316947ebb1ed6038cdaa6924f93b1b55b4ec403234e0b128da3d3692795af10387da8774f24475f614199f11fee01e3bebb8585f1a0c0ef44d0a757ea6d75ab39494402f1faf214d54780f96e2a62d28e39f07fc873155237c3c68f176929",
+        "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630",
+        "watcher_seed": "ca4f5d18514ad7f8093ba3bbaaf855f4ccca0438f2b6c74a7cda9d4018a8a544"
+      },
+      "name": "reject-replay-onto-another-deployment",
+      "valid": false
+    },
+    {
+      "error": "WatchKeyInvalid",
+      "input": {
+        "body": {
+          "chain": "solana",
+          "deployment": "9iThgKLtMAhXcy4GbMwLVvdu9AhWYW56HBMES7iezZug",
+          "issued_at": 1800000501,
+          "notice_key": "S086Jf9zT8WiQxaUfrse1gOM2qaST5OxtVtOxAMjTgsSjaPTaSeVrxA4fah3TyRHX2FBmfEf7gHjvruFhfGgwO9E0KdX6m11qzlJRALx+vIU1UeA+W4qYtKOOfB/yHMVUjfDxo8XaSk=",
+          "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630",
+          "v": 2
+        },
+        "chain_tag": 1,
+        "deployment": "9iThgKLtMAhXcy4GbMwLVvdu9AhWYW56HBMES7iezZug",
+        "format": 2,
+        "issued_at": "1800000501",
+        "locker_enc_pub": "044e91a3b6d4f27af44361825394a9b8ccf1cbffa118a757c8bd91cc4663da51",
+        "op": "open",
+        "sealed": "4b4f3a25ff734fc5a24316947ebb1ed6038cdaa6924f93b1b55b4ec403234e0b128da3d3692795af10387da8774f24475f614199f11fee01e3bebb8585f1a0c0ef44d0a757ea6d75ab39494402f1faf214d54780f96e2a62d28e39f07fc873155237c3c68f176929",
+        "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630",
+        "watcher_seed": "ca4f5d18514ad7f8093ba3bbaaf855f4ccca0438f2b6c74a7cda9d4018a8a544"
+      },
+      "name": "reject-issued-at-altered",
+      "valid": false
+    },
+    {
+      "error": "WatchKeyInvalid",
+      "input": {
+        "body": {
+          "chain": "solana",
+          "deployment": "9iThgKLtMAhXcy4GbMwLVvdu9AhWYW56HBMES7iezZug",
+          "issued_at": 1800000500,
+          "notice_key": "S086Jf9zT8WiQxaUfrse1gOM2qaST5OxtVtOxAMjTgsSjaPTaSeVrxA4fah3TyRHX2FBmfEf7gHjvruFhfGgwO9E0KdX6m11qzlJRALx+vIU1UeA+W4qYtKOOfB/yHMVUjfDxo8XaSg=",
+          "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630",
+          "v": 2
+        },
+        "chain_tag": 1,
+        "deployment": "9iThgKLtMAhXcy4GbMwLVvdu9AhWYW56HBMES7iezZug",
+        "format": 2,
+        "issued_at": "1800000500",
+        "locker_enc_pub": "044e91a3b6d4f27af44361825394a9b8ccf1cbffa118a757c8bd91cc4663da51",
+        "op": "open",
+        "sealed": "4b4f3a25ff734fc5a24316947ebb1ed6038cdaa6924f93b1b55b4ec403234e0b128da3d3692795af10387da8774f24475f614199f11fee01e3bebb8585f1a0c0ef44d0a757ea6d75ab39494402f1faf214d54780f96e2a62d28e39f07fc873155237c3c68f176928",
+        "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630",
+        "watcher_seed": "ca4f5d18514ad7f8093ba3bbaaf855f4ccca0438f2b6c74a7cda9d4018a8a544"
+      },
+      "name": "reject-altered-seal",
+      "valid": false
+    },
+    {
+      "error": "WatchKeyInvalid",
+      "input": {
+        "body": {
+          "chain": "solana",
+          "deployment": "9iThgKLtMAhXcy4GbMwLVvdu9AhWYW56HBMES7iezZug",
+          "issued_at": 1800000500,
+          "notice_key": "4Ot6fDtBuK4WVuP68Z/EatoJjeucMrH9hmIFFl9JuAASjaPTaSeVrxA4fah3TyRHX2FBmfEf7gHjvruFhfGgwO9E0KdX6m11qzlJRALx+vIU1UeA+W4qYtKOOfB/yHMVUjfDxo8XaSk=",
+          "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630",
+          "v": 2
+        },
+        "chain_tag": 1,
+        "deployment": "9iThgKLtMAhXcy4GbMwLVvdu9AhWYW56HBMES7iezZug",
+        "format": 2,
+        "issued_at": "1800000500",
+        "locker_enc_pub": "044e91a3b6d4f27af44361825394a9b8ccf1cbffa118a757c8bd91cc4663da51",
+        "op": "open",
+        "sealed": "e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800128da3d3692795af10387da8774f24475f614199f11fee01e3bebb8585f1a0c0ef44d0a757ea6d75ab39494402f1faf214d54780f96e2a62d28e39f07fc873155237c3c68f176929",
+        "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630",
+        "watcher_seed": "ca4f5d18514ad7f8093ba3bbaaf855f4ccca0438f2b6c74a7cda9d4018a8a544"
+      },
+      "name": "reject-low-order-ephemeral-key",
+      "valid": false
+    },
+    {
+      "error": "WatchKeyInvalid",
+      "input": {
+        "body": {
+          "chain": "solana",
+          "deployment": "9iThgKLtMAhXcy4GbMwLVvdu9AhWYW56HBMES7iezZug",
+          "issued_at": 1800000500,
+          "notice_key": "S086Jf9zT8WiQxaUfrse1gOM2qaST5OxtVtOxAMjTgsSjaPTaSeVrxA4fah3TyRHX2FBmfEf7gHjvruFhfGgwO9E0KdX6m11qzlJRALx+vIU1UeA+W4qYtKOOfB/yHMVUjfDxo8XaQ==",
+          "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630",
+          "v": 2
+        },
+        "chain_tag": 1,
+        "deployment": "9iThgKLtMAhXcy4GbMwLVvdu9AhWYW56HBMES7iezZug",
+        "format": 2,
+        "issued_at": "1800000500",
+        "locker_enc_pub": "044e91a3b6d4f27af44361825394a9b8ccf1cbffa118a757c8bd91cc4663da51",
+        "op": "open",
+        "sealed": "4b4f3a25ff734fc5a24316947ebb1ed6038cdaa6924f93b1b55b4ec403234e0b128da3d3692795af10387da8774f24475f614199f11fee01e3bebb8585f1a0c0ef44d0a757ea6d75ab39494402f1faf214d54780f96e2a62d28e39f07fc873155237c3c68f1769",
+        "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630",
+        "watcher_seed": "ca4f5d18514ad7f8093ba3bbaaf855f4ccca0438f2b6c74a7cda9d4018a8a544"
+      },
+      "name": "reject-103-bytes",
+      "valid": false
+    },
+    {
+      "error": "WatchFormatUnsupported",
+      "input": {
+        "body": {
+          "chain": "solana",
+          "notice_key": "S086Jf9zT8WiQxaUfrse1gOM2qaST5OxtVtOxAMjTgsSjaPTaSeVrxA4fah3TyRHX2FBmfEf7gEfGqM0X5gRcnJ5id2CaIyDGOGfURXmoDb6iwcQ7IyRpF0l+fxnCONt/h/tMWIJgjU=",
+          "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630"
+        },
+        "chain_tag": 1,
+        "deployment": "9iThgKLtMAhXcy4GbMwLVvdu9AhWYW56HBMES7iezZug",
+        "format": 1,
+        "issued_at": "1800000500",
+        "locker_enc_pub": "044e91a3b6d4f27af44361825394a9b8ccf1cbffa118a757c8bd91cc4663da51",
+        "op": "open",
+        "sealed": "4b4f3a25ff734fc5a24316947ebb1ed6038cdaa6924f93b1b55b4ec403234e0b128da3d3692795af10387da8774f24475f614199f11fee011f1aa3345f981172727989dd82688c8318e19f5115e6a036fa8b0710ec8c91a45d25f9fc6708e36dfe1fed3162098235",
+        "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630",
+        "watcher_seed": "ca4f5d18514ad7f8093ba3bbaaf855f4ccca0438f2b6c74a7cda9d4018a8a544"
+      },
+      "name": "reject-format-1",
+      "valid": false
+    },
+    {
+      "error": "WatchKeyInvalid",
+      "input": {
+        "body": {
+          "chain": "solana",
+          "deployment": "9iThgKLtMAhXcy4GbMwLVvdu9AhWYW56HBMES7iezZug",
+          "issued_at": 1800000500,
+          "notice_key": "S086Jf9zT8WiQxaUfrse1gOM2qaST5OxtVtOxAMjTgsSjaPTaSeVrxA4fah3TyRHX2FBmfEf7gEfGqM0X5gRcnJ5id2CaIyDGOGfURXmoDb6iwcQ7IyRpF0l+fxnCONt/h/tMWIJgjU=",
+          "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630",
+          "v": 2
+        },
+        "chain_tag": 1,
+        "deployment": "9iThgKLtMAhXcy4GbMwLVvdu9AhWYW56HBMES7iezZug",
+        "format": 2,
+        "issued_at": "1800000500",
+        "locker_enc_pub": "044e91a3b6d4f27af44361825394a9b8ccf1cbffa118a757c8bd91cc4663da51",
+        "op": "open",
+        "sealed": "4b4f3a25ff734fc5a24316947ebb1ed6038cdaa6924f93b1b55b4ec403234e0b128da3d3692795af10387da8774f24475f614199f11fee011f1aa3345f981172727989dd82688c8318e19f5115e6a036fa8b0710ec8c91a45d25f9fc6708e36dfe1fed3162098235",
+        "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630",
+        "watcher_seed": "ca4f5d18514ad7f8093ba3bbaaf855f4ccca0438f2b6c74a7cda9d4018a8a544"
+      },
+      "name": "reject-format-1-bytes-presented-as-format-2",
+      "valid": false
+    },
+    {
+      "error": "WatchFormatUnsupported",
+      "input": {
+        "body": {
+          "chain": "solana",
+          "deployment": "9iThgKLtMAhXcy4GbMwLVvdu9AhWYW56HBMES7iezZug",
+          "issued_at": 1800000500,
+          "notice_key": "S086Jf9zT8WiQxaUfrse1gOM2qaST5OxtVtOxAMjTgsSjaPTaSeVrxA4fah3TyRHX2FBmfEf7gHjvruFhfGgwO9E0KdX6m11qzlJRALx+vIU1UeA+W4qYtKOOfB/yHMVUjfDxo8XaSk=",
+          "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630",
+          "v": 3
+        },
+        "chain_tag": 1,
+        "deployment": "9iThgKLtMAhXcy4GbMwLVvdu9AhWYW56HBMES7iezZug",
+        "format": 3,
+        "issued_at": "1800000500",
+        "locker_enc_pub": "044e91a3b6d4f27af44361825394a9b8ccf1cbffa118a757c8bd91cc4663da51",
+        "op": "open",
+        "sealed": "4b4f3a25ff734fc5a24316947ebb1ed6038cdaa6924f93b1b55b4ec403234e0b128da3d3692795af10387da8774f24475f614199f11fee01e3bebb8585f1a0c0ef44d0a757ea6d75ab39494402f1faf214d54780f96e2a62d28e39f07fc873155237c3c68f176929",
+        "swap_ref": "ed6b7bf870385185a5a0bf90a5d0575eb83efa55454ffeb81f083ef91d168630",
+        "watcher_seed": "ca4f5d18514ad7f8093ba3bbaaf855f4ccca0438f2b6c74a7cda9d4018a8a544"
+      },
+      "name": "reject-format-3",
+      "valid": false
+    }
+  ],
+  "format": "xmrswap-vectors/1",
+  "keys": {
+    "maker_pub": "fb4a655dbc5cb5a5208acccde359496120129cbd34cc5725927eb05fe7d87f68",
+    "maker_secret": "93fc2a9ef9211dcf3181f4618d13331bb7c877626e634970a2395eb3368f9ed8",
+    "operator_pub": "65e66106813d8b548a92b0e401cf5769f6cef7f0d5e3114f961031d36c6eae65",
+    "operator_seed": "16b7e8bf0ce108ac045aa65dc99a649db1f6809da285fdddd415be3c3f8503ef",
+    "taker_pub": "044e91a3b6d4f27af44361825394a9b8ccf1cbffa118a757c8bd91cc4663da51",
+    "taker_secret": "8324dec2844d3d0bb80079e2deb35ee4c758aae88775cec2bc8872cad6bce793"
+  },
+  "layout": {
+    "aad": "DS(\"watch-req\") || 0x02 || chain_tag || len(deployment) u8 || deployment (UTF-8) || swap_ref || watcher Ed25519 key || issued_at u64 LE",
+    "body": "the JSON of POST /watch/v1/swaps: notice_key is `sealed` in base64. Freshness of issued_at against the swap's lock time and the watcher's clock is the service's check and is not part of these vectors",
+    "deployment": "Solana: the program id, base58. Ethereum: \"<chain id>:<contract, lowercase 0x hex>\"",
+    "locker_enc_pub": "read by the watcher from the swap on chain: taker_enc_key in direction A, maker_enc_key in direction B",
+    "notice_key": "HKDF-SHA256(ikm = X25519(own, peer), salt = DS(\"ecdh\"), info = \"notice\" || 0x00 || taker_pub || maker_pub, L = 32)",
+    "seal_key": "HKDF-SHA256(ikm = X25519(eph, W) || X25519(locker_enc, W), salt = DS(\"watch/2\"), info = eph_pub || W || locker_enc_pub, L = 32)",
+    "sealed": "eph_pub[32] || nonce[24] || XChaCha20-Poly1305(seal_key, nonce, aad, notice_key)[48]",
+    "watcher_x25519": "the X25519 form of the watcher's Ed25519 key: public u = (1 + y) / (1 - y); secret = clamp(SHA-512(seed)[0..32])"
+  },
+  "sealed_len": 104,
+  "suite": "watch_request",
+  "watcher": {
+    "ed25519": "254a757c79ee6437e72cf0fd1fb70ed79cb6eabf4700e4d4b1fa9459dcfbac3e",
+    "ed25519_base58": "3WZwKy7dV6RqGv4NZhqX1Pv8wKKDitBmKftcisg9rEuT",
+    "seed": "ca4f5d18514ad7f8093ba3bbaaf855f4ccca0438f2b6c74a7cda9d4018a8a544",
+    "x25519": "649f920eb35969806d10686a51508cc2fcfe5dcaa1590109800fe316a5d2416c"
+  },
+  "wire_format": 2
+}

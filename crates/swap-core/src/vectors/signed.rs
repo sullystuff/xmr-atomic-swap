@@ -1010,6 +1010,170 @@ pub fn wallet_seed() -> VectorFile {
   )
 }
 
+/// SPEC 11.6: `watch_request.json`. The notice key a locker hands to a watcher, the keyed open
+/// of a notice (on the notices of `notice.json`: same parties, same bytes), and the
+/// authenticated seal of a watch request in wire format 2, with the requests a watcher must
+/// refuse.
+pub fn watch_request() -> VectorFile {
+  use crate::{
+    envelope::{notice_key, notice_open_with_key},
+    primitives::{ds, ChainTag},
+    wallet_key::base58,
+    Error,
+    watch::{ed25519_public_to_x25519, ed25519_seed_to_x25519, watch_request_aad, watch_request_open, watch_request_seal, WatchBinding, SEALED_NOTICE_KEY_LEN, WATCH_FORMAT},
+  };
+  let p = parties();
+  let mut cases = Vec::new();
+
+  // The notice key: both sides derive the same 32 bytes.
+  let key = notice_key(&p.taker_secret, &p.maker_pub, Side::Taker).unwrap();
+  assert_eq!(notice_key(&p.maker_secret, &p.taker_pub, Side::Maker).unwrap(), key);
+  cases.push(ok_case("notice-key-taker", json!({ "op": "notice_key", "own_secret": h(p.taker_secret), "peer_pub": h(p.maker_pub), "side": "taker" }), json!({ "notice_key": h(key) })));
+  cases.push(ok_case("notice-key-maker", json!({ "op": "notice_key", "own_secret": h(p.maker_secret), "peer_pub": h(p.taker_pub), "side": "maker" }), json!({ "notice_key": h(key) })));
+  let swapped = notice_key(&p.taker_secret, &p.maker_pub, Side::Maker).unwrap();
+  assert_ne!(swapped, key);
+  cases.push(ok_case("notice-key-sides-swapped-is-another-key", json!({ "op": "notice_key", "own_secret": h(p.taker_secret), "peer_pub": h(p.maker_pub), "side": "maker" }), json!({ "notice_key": h(swapped) })));
+  cases.push(err_case("notice-key-low-order-peer", json!({ "op": "notice_key", "own_secret": h(p.taker_secret), "peer_pub": h(crate::envelope::LOW_ORDER_X25519[2]), "side": "taker" }), "LowOrderEncryptionKey"));
+
+  // The keyed open, on the first notice of notice.json.
+  let swap_ref = fixed("notice/swap-ref");
+  let txid = fixed("notice/txid");
+  let view = scalar("notice/view");
+  let nonce: [u8; 24] = fixed_n("notice/nonce");
+  let commitment = notice_commitment(&swap_ref, &txid, &view);
+  let ct = notice_seal(&NoticeKeys { own_secret: &p.maker_secret, peer_pub: &p.taker_pub, side: Side::Maker, swap_ref: &swap_ref }, &txid, &view, nonce).unwrap();
+  let open_in = |key: &[u8; 32], swap_ref: &[u8; 32], ct: &[u8], commitment: &[u8; 32]| json!({ "op": "notice_open_with_key", "notice_key": h(key), "swap_ref": h(swap_ref), "ciphertext": h(ct), "commitment": h(commitment) });
+  assert_eq!(notice_open_with_key(&key, &swap_ref, &ct, &commitment).unwrap(), (txid, view));
+  cases.push(ok_case("open-with-key", open_in(&key, &swap_ref, &ct, &commitment), json!({ "txid": h(txid), "view": h(view) })));
+  cases.push(err_case("open-with-another-key", open_in(&swapped, &swap_ref, &ct, &commitment), "NoticeDecrypt"));
+  cases.push(err_case("open-for-another-swap", open_in(&key, &fixed("notice/swap-ref-2"), &ct, &commitment), "NoticeDecrypt"));
+  cases.push(err_case("open-against-another-commitment", open_in(&key, &swap_ref, &ct, &fixed("watch/other-commitment")), "NoticeCommitmentMismatch"));
+  let mut flipped = ct;
+  flipped[60] ^= 1;
+  cases.push(err_case("open-altered-ciphertext", open_in(&key, &swap_ref, &flipped, &commitment), "NoticeDecrypt"));
+  cases.push(err_case("open-103-bytes", open_in(&key, &swap_ref, &ct[..103], &commitment), "BadLength"));
+
+  // Watch requests. The watcher's key is its Solana key; the locker is the taker in direction A
+  // (its one-time encryption key) and the maker in direction B.
+  let watcher_seed = fixed("watch/watcher");
+  let watcher = ed25519_public(&watcher_seed);
+  let watcher_x = ed25519_public_to_x25519(&watcher).unwrap();
+  assert_eq!(watcher_x, x25519_public(&ed25519_seed_to_x25519(&watcher_seed)));
+  let program = base58(&fixed("watch/program-id"));
+  let contract: [u8; 20] = fixed_n("eip712/contract");
+  let eth_deployment = format!("31337:{}", h0x(contract));
+  let eph = fixed("watch/ephemeral");
+  let seal_nonce: [u8; 24] = fixed_n("watch/nonce");
+  let issued_at = 1_800_000_500u64;
+  let chain_name = |c: ChainTag| if c == ChainTag::Solana { "solana" } else { "ethereum" };
+  // The wire body of `POST /watch/v1/swaps`.
+  let body = |b: &WatchBinding, sealed: &[u8]| json!({ "v": b.format, "chain": chain_name(b.chain), "swap_ref": h(b.swap_ref), "deployment": b.deployment, "issued_at": b.issued_at, "notice_key": base64(sealed) });
+  let open_input = |b: &WatchBinding, sealed: &[u8], locker_pub: &[u8; 32], seed: &[u8; 32]| {
+    json!({
+      "op": "open", "watcher_seed": h(seed), "locker_enc_pub": h(locker_pub), "format": b.format, "chain_tag": b.chain as u8,
+      "deployment": b.deployment, "swap_ref": h(b.swap_ref), "issued_at": d(b.issued_at), "sealed": h(sealed), "body": body(b, sealed),
+    })
+  };
+  let sol = WatchBinding { format: WATCH_FORMAT, chain: ChainTag::Solana, deployment: &program, swap_ref: &swap_ref, watcher: &watcher, issued_at };
+  let swap_ref_eth = fixed("watch/swap-id");
+  let eth = WatchBinding { format: WATCH_FORMAT, chain: ChainTag::Ethereum, deployment: &eth_deployment, swap_ref: &swap_ref_eth, watcher: &watcher, issued_at: issued_at + 77 };
+  let mut sealed_sol = [0u8; SEALED_NOTICE_KEY_LEN];
+  for (name, b, locker_secret, locker_pub, direction) in [("seal-solana-direction-a", &sol, &p.taker_secret, &p.taker_pub, "A"), ("seal-ethereum-direction-b", &eth, &p.maker_secret, &p.maker_pub, "B")] {
+    let sealed = watch_request_seal(&key, locker_secret, b, &eph, seal_nonce).unwrap();
+    assert_eq!(watch_request_open(&sealed, &watcher_seed, locker_pub, b).unwrap(), key);
+    cases.push(ok_case(
+      name,
+      json!({
+        "op": "seal", "direction": direction, "notice_key": h(key), "locker_enc_secret": h(locker_secret), "locker_enc_pub": h(locker_pub),
+        "watcher": h(watcher), "format": b.format, "chain_tag": b.chain as u8, "deployment": b.deployment, "swap_ref": h(b.swap_ref),
+        "issued_at": d(b.issued_at), "ephemeral_secret": h(eph), "nonce": h(seal_nonce),
+      }),
+      json!({ "aad": h(watch_request_aad(b).unwrap()), "sealed": h(sealed), "body": body(b, &sealed) }),
+    ));
+    cases.push(ok_case(&name.replace("seal-", "open-"), open_input(b, &sealed, locker_pub, &watcher_seed), json!({ "notice_key": h(key) })));
+    if b.chain == ChainTag::Solana {
+      sealed_sol = sealed;
+    }
+  }
+  let reject = |name: &str, b: &WatchBinding, sealed: &[u8], locker_pub: &[u8; 32], seed: &[u8; 32], error: Error| -> Value {
+    assert_eq!(watch_request_open(sealed, seed, locker_pub, b), Err(error), "{name}");
+    err_case(name, open_input(b, sealed, locker_pub, seed), &error.to_string())
+  };
+  // Sealed by someone who does not hold the locker's encryption secret: a stranger, and the
+  // counterparty (who knows the notice key too).
+  let stranger = fixed("watch/stranger-enc");
+  let by_stranger = watch_request_seal(&key, &stranger, &sol, &eph, seal_nonce).unwrap();
+  cases.push(reject("reject-wrong-locker-key-stranger", &sol, &by_stranger, &p.taker_pub, &watcher_seed, Error::WatchKeyInvalid));
+  let by_counterparty = watch_request_seal(&key, &p.maker_secret, &sol, &eph, seal_nonce).unwrap();
+  cases.push(reject("reject-wrong-locker-key-counterparty", &sol, &by_counterparty, &p.taker_pub, &watcher_seed, Error::WatchKeyInvalid));
+  // Sealed to another watcher.
+  let other_seed = fixed("watch/watcher-2");
+  let other_watcher = ed25519_public(&other_seed);
+  let to_other = watch_request_seal(&key, &p.taker_secret, &WatchBinding { watcher: &other_watcher, ..sol.clone() }, &eph, seal_nonce).unwrap();
+  assert_eq!(watch_request_open(&to_other, &other_seed, &p.taker_pub, &sol).unwrap(), key);
+  cases.push(reject("reject-wrong-watcher", &sol, &to_other, &p.taker_pub, &watcher_seed, Error::WatchKeyInvalid));
+  // The locker's genuine request, replayed onto another swap, chain, deployment or time.
+  let swap_ref2 = fixed("notice/swap-ref-2");
+  cases.push(reject("reject-replay-onto-another-swap", &WatchBinding { swap_ref: &swap_ref2, ..sol.clone() }, &sealed_sol, &p.taker_pub, &watcher_seed, Error::WatchKeyInvalid));
+  cases.push(reject("reject-replay-onto-another-chain", &WatchBinding { chain: ChainTag::Ethereum, ..sol.clone() }, &sealed_sol, &p.taker_pub, &watcher_seed, Error::WatchKeyInvalid));
+  let program2 = base58(&fixed("watch/program-id-2"));
+  cases.push(reject("reject-replay-onto-another-deployment", &WatchBinding { deployment: &program2, ..sol.clone() }, &sealed_sol, &p.taker_pub, &watcher_seed, Error::WatchKeyInvalid));
+  cases.push(reject("reject-issued-at-altered", &WatchBinding { issued_at: issued_at + 1, ..sol.clone() }, &sealed_sol, &p.taker_pub, &watcher_seed, Error::WatchKeyInvalid));
+  let mut altered = sealed_sol;
+  altered[SEALED_NOTICE_KEY_LEN - 1] ^= 1;
+  cases.push(reject("reject-altered-seal", &sol, &altered, &p.taker_pub, &watcher_seed, Error::WatchKeyInvalid));
+  let mut low = sealed_sol;
+  low[..32].copy_from_slice(&crate::envelope::LOW_ORDER_X25519[2]);
+  cases.push(reject("reject-low-order-ephemeral-key", &sol, &low, &p.taker_pub, &watcher_seed, Error::WatchKeyInvalid));
+  cases.push(reject("reject-103-bytes", &sol, &sealed_sol[..103], &p.taker_pub, &watcher_seed, Error::WatchKeyInvalid));
+  // Format 1: the unauthenticated seal that preceded this format
+  // (k = HKDF(X25519(eph, W), DS("watch"), eph_pub ‖ W), aad = chain_tag ‖ swap_ref). Its body
+  // carried no `v`; it is refused as such, and its bytes do not open as format 2 either.
+  let format_1 = {
+    use chacha20poly1305::{aead::{Aead, KeyInit, Payload}, XChaCha20Poly1305, XNonce};
+    let eph_pub = x25519_public(&eph);
+    let dh = crate::envelope::x25519_shared(&eph, &watcher_x).unwrap();
+    let mut k = [0u8; 32];
+    hkdf::Hkdf::<sha2::Sha256>::new(Some(&ds("watch")), &dh).expand(&[&eph_pub[..], &watcher_x[..]].concat(), &mut k).unwrap();
+    let aad = [&[1u8][..], &swap_ref[..]].concat();
+    let ct = XChaCha20Poly1305::new((&k).into()).encrypt(XNonce::from_slice(&seal_nonce), Payload { msg: &key, aad: &aad }).unwrap();
+    [&eph_pub[..], &seal_nonce[..], &ct[..]].concat()
+  };
+  assert_eq!(format_1.len(), SEALED_NOTICE_KEY_LEN);
+  let v1 = WatchBinding { format: 1, ..sol.clone() };
+  assert_eq!(watch_request_open(&format_1, &watcher_seed, &p.taker_pub, &v1), Err(Error::WatchFormatUnsupported));
+  let mut input = open_input(&v1, &format_1, &p.taker_pub, &watcher_seed);
+  // As it was sent: no version, no deployment, no time.
+  input["body"] = json!({ "chain": "solana", "swap_ref": h(swap_ref), "notice_key": base64(&format_1) });
+  cases.push(err_case("reject-format-1", input, "WatchFormatUnsupported"));
+  cases.push(reject("reject-format-1-bytes-presented-as-format-2", &sol, &format_1, &p.taker_pub, &watcher_seed, Error::WatchKeyInvalid));
+  cases.push(reject("reject-format-3", &WatchBinding { format: 3, ..sol.clone() }, &sealed_sol, &p.taker_pub, &watcher_seed, Error::WatchFormatUnsupported));
+
+  suite(
+    "watch_request",
+    cases,
+    vec![
+      ("wire_format", json!(WATCH_FORMAT)),
+      ("sealed_len", json!(SEALED_NOTICE_KEY_LEN)),
+      ("keys", keys_json(&p)),
+      ("watcher", json!({ "seed": h(watcher_seed), "ed25519": h(watcher), "ed25519_base58": base58(&watcher), "x25519": h(watcher_x) })),
+      (
+        "layout",
+        json!({
+          "notice_key": "HKDF-SHA256(ikm = X25519(own, peer), salt = DS(\"ecdh\"), info = \"notice\" || 0x00 || taker_pub || maker_pub, L = 32)",
+          "watcher_x25519": "the X25519 form of the watcher's Ed25519 key: public u = (1 + y) / (1 - y); secret = clamp(SHA-512(seed)[0..32])",
+          "seal_key": "HKDF-SHA256(ikm = X25519(eph, W) || X25519(locker_enc, W), salt = DS(\"watch/2\"), info = eph_pub || W || locker_enc_pub, L = 32)",
+          "aad": "DS(\"watch-req\") || 0x02 || chain_tag || len(deployment) u8 || deployment (UTF-8) || swap_ref || watcher Ed25519 key || issued_at u64 LE",
+          "sealed": "eph_pub[32] || nonce[24] || XChaCha20-Poly1305(seal_key, nonce, aad, notice_key)[48]",
+          "deployment": "Solana: the program id, base58. Ethereum: \"<chain id>:<contract, lowercase 0x hex>\"",
+          "locker_enc_pub": "read by the watcher from the swap on chain: taker_enc_key in direction A, maker_enc_key in direction B",
+          "body": "the JSON of POST /watch/v1/swaps: notice_key is `sealed` in base64. Freshness of issued_at against the swap's lock time and the watcher's clock is the service's check and is not part of these vectors",
+        }),
+      ),
+    ],
+  )
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;

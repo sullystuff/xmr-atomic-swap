@@ -459,6 +459,89 @@ describe('wallet_seed.json (SPEC 11.3)', () => {
   });
 });
 
+describe('watch_request.json and the notices of notice.json (SPEC 11.6)', () => {
+  const s = suite('watch_request');
+  const byOp = (op: string) => s.cases.filter((c: any) => c.input.op === op);
+
+  it('notice key derivation', () => {
+    expect(byOp('notice_key').length).toBe(4);
+    for (const c of byOp('notice_key')) {
+      const run = () => core.noticeKey(hx(c.input.own_secret), hx(c.input.peer_pub), c.input.side);
+      if (c.valid) expect(hex(run()), c.name).toBe(c.output.notice_key);
+      else expect(codeOf(run), c.name).toBe(c.error);
+    }
+  });
+
+  it('the notice key opens every notice of notice.json, with no X25519 secret', () => {
+    const n = suite('notice');
+    const key = core.noticeKey(hx(n.keys.taker_secret), hx(n.keys.maker_pub), 'taker');
+    expect(hex(key)).toBe(s.cases.find((c: any) => c.name === 'notice-key-taker').output.notice_key);
+    let opened = 0;
+    let refused = 0;
+    for (const c of n.cases) {
+      const i = c.input;
+      if (c.valid && c.output?.ciphertext) {
+        const got = core.noticeOpenWithKey({ key, swapRef: hx(i.swap_ref), ciphertext: hx(c.output.ciphertext), commitment: hx(c.output.commitment) });
+        expect([hex(got.txid), hex(got.view)], c.name).toEqual([i.txid, i.view]);
+        opened++;
+      } else if (!c.valid && i.ciphertext && i.commitment && i.swap_ref) {
+        // Whatever notice.json refuses for a party, the key alone refuses the same way.
+        expect(codeOf(() => core.noticeOpenWithKey({ key, swapRef: hx(i.swap_ref), ciphertext: hx(i.ciphertext), commitment: hx(i.commitment) })), c.name).toBe(c.error);
+        refused++;
+      }
+    }
+    expect(opened).toBeGreaterThanOrEqual(3);
+    expect(refused).toBeGreaterThanOrEqual(1);
+  });
+
+  it('keyed open cases', () => {
+    expect(byOp('notice_open_with_key').length).toBe(6);
+    for (const c of byOp('notice_open_with_key')) {
+      const i = c.input;
+      const run = () => core.noticeOpenWithKey({ key: hx(i.notice_key), swapRef: hx(i.swap_ref), ciphertext: hx(i.ciphertext), commitment: hx(i.commitment) });
+      if (c.valid) expect([hex(run().txid), hex(run().view)], c.name).toEqual([c.output.txid, c.output.view]);
+      else expect(codeOf(run), c.name).toBe(c.error);
+    }
+  });
+
+  it('seal: the exact 104 bytes and the wire body', () => {
+    expect(byOp('seal').length).toBe(2);
+    for (const c of byOp('seal')) {
+      const i = c.input;
+      const sealed = core.watchRequestSeal({
+        noticeKey: hx(i.notice_key), lockerEncSecret: hx(i.locker_enc_secret), watcher: hx(i.watcher), chainTag: i.chain_tag, deployment: i.deployment,
+        swapRef: hx(i.swap_ref), issuedAt: BigInt(i.issued_at), ephemeralSecret: hx(i.ephemeral_secret), nonce: hx(i.nonce),
+      });
+      expect(sealed.length).toBe(core.SEALED_NOTICE_KEY_LEN);
+      expect(hex(sealed), c.name).toBe(c.output.sealed);
+      expect(Buffer.from(sealed).toString('base64'), c.name).toBe(c.output.body.notice_key);
+      expect(c.output.body.v).toBe(core.WATCH_FORMAT);
+      // Fresh randomness by default: two seals differ and both open.
+      const fresh = { noticeKey: hx(i.notice_key), lockerEncSecret: hx(i.locker_enc_secret), watcher: hx(i.watcher), chainTag: i.chain_tag, deployment: i.deployment, swapRef: hx(i.swap_ref), issuedAt: BigInt(i.issued_at) };
+      const a = core.watchRequestSeal(fresh);
+      expect(hex(a)).not.toBe(hex(core.watchRequestSeal(fresh)));
+      expect(hex(core.watchRequestOpen({ sealed: a, watcherSeed: hx(s.watcher.seed), lockerEncPub: hx(i.locker_enc_pub), chainTag: i.chain_tag, deployment: i.deployment, swapRef: hx(i.swap_ref), issuedAt: BigInt(i.issued_at) }))).toBe(i.notice_key);
+    }
+  });
+
+  it('open: the locker\'s request opens; every other one is refused', () => {
+    const opens = byOp('open');
+    expect(opens.filter((c: any) => c.valid).length).toBe(2);
+    expect(opens.filter((c: any) => !c.valid).length).toBe(13);
+    for (const c of opens) {
+      const i = c.input;
+      const run = () => core.watchRequestOpen({ sealed: hx(i.sealed), watcherSeed: hx(i.watcher_seed), lockerEncPub: hx(i.locker_enc_pub), chainTag: i.chain_tag, deployment: i.deployment, swapRef: hx(i.swap_ref), issuedAt: BigInt(i.issued_at), format: i.format });
+      if (c.valid) expect(hex(run()), c.name).toBe(c.output.notice_key);
+      else expect(codeOf(run), c.name).toBe(c.error);
+    }
+    for (const name of ['reject-wrong-locker-key-stranger', 'reject-wrong-locker-key-counterparty', 'reject-wrong-watcher', 'reject-replay-onto-another-swap']) {
+      expect(opens.find((c: any) => c.name === name).error, name).toBe('WatchKeyInvalid');
+    }
+    expect(opens.find((c: any) => c.name === 'reject-format-1').error).toBe('WatchFormatUnsupported');
+    expect(opens.find((c: any) => c.name === 'reject-format-1').input.body.v).toBeUndefined();
+  });
+});
+
 describe('terms.json', () => {
   it('terms hashes', () => {
     const s = suite('terms');

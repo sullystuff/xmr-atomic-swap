@@ -53,6 +53,11 @@ pub enum Error {
   AmountOutOfRange,
   /// Amount arithmetic overflowed its on-chain type.
   MathOverflow,
+  /// A watch request in a wire format this core does not speak (format 1 was unauthenticated).
+  WatchFormatUnsupported,
+  /// A watch request not sealed by the swap's locker to this watcher for this chain, deployment,
+  /// swap and time (or altered, or the watcher key is not a usable Ed25519 point).
+  WatchKeyInvalid,
   PassphraseDecrypt,
   PassphraseMalformed,
 }

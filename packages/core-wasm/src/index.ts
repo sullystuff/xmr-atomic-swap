@@ -131,6 +131,50 @@ export interface NoticeOpenArgs extends NoticeKeys {
   commitment: Bytes;
 }
 
+/** `noticeOpenWithKey`: a notice opened with the notice key alone (SPEC 11.6). */
+export interface NoticeOpenWithKeyArgs {
+  /** `noticeKey(...)`, 32 bytes. */
+  key: Bytes;
+  swapRef: Bytes;
+  /** 104 bytes. */
+  ciphertext: Bytes;
+  /** The on-chain `notice_commitment`; the opening must match it. */
+  commitment: Bytes;
+}
+
+/** What a watch request (wire format 2) is bound to. */
+export interface WatchBinding {
+  /** `CHAIN_TAG` of the swap's chain. */
+  chainTag: ChainTag;
+  /** The program id in base58 (Solana), or `"<chain id>:<contract, lowercase 0x>"` (Ethereum). 1 to 255 bytes. */
+  deployment: string;
+  swapRef: Bytes;
+  /** Unix seconds. */
+  issuedAt: bigint;
+  /** Wire format; defaults to 2. Anything else is refused (`WatchFormatUnsupported`). */
+  format?: number;
+}
+export interface WatchRequestSealArgs extends WatchBinding {
+  /** `noticeKey(...)` of the swap. */
+  noticeKey: Bytes;
+  /** The secret of the locker's encryption key recorded in the swap (A: the taker's one-time key; B: the maker's). It authenticates the request. */
+  lockerEncSecret: Bytes;
+  /** The watcher's Ed25519 key (its Solana key), 32 bytes. */
+  watcher: Bytes;
+  /** 32 bytes. Defaults to fresh randomness. */
+  ephemeralSecret?: Bytes;
+  /** 24 bytes. Defaults to fresh randomness. */
+  nonce?: Bytes;
+}
+export interface WatchRequestOpenArgs extends WatchBinding {
+  /** 104 bytes: `eph_pub ‖ nonce ‖ ciphertext`. */
+  sealed: Bytes;
+  /** The 32-byte seed of the watcher's Ed25519 key. */
+  watcherSeed: Bytes;
+  /** The locker's encryption key read from the swap on chain (`taker_enc_key` in A, `maker_enc_key` in B). */
+  lockerEncPub: Bytes;
+}
+
 export interface SolApprovalFields {
   clusterTag: Bytes;
   programId: Bytes;
@@ -528,6 +572,10 @@ interface Raw {
   noticeCommitment(swapRef: Bytes, txid: Bytes, view: Bytes): Bytes;
   noticeSeal(args: NoticeSealArgs): Bytes;
   noticeOpen(args: NoticeOpenArgs): { txid: Bytes; view: Bytes };
+  noticeKey(ownSecret: Bytes, peerPub: Bytes, side: string): Bytes;
+  noticeOpenWithKey(args: NoticeOpenWithKeyArgs): { txid: Bytes; view: Bytes };
+  watchRequestSeal(args: WatchRequestSealArgs): Bytes;
+  watchRequestOpen(args: WatchRequestOpenArgs): Bytes;
   encodeSolApproval(fields: SolApprovalFields): Bytes;
   termsHash(fields: TermsHashFields): Bytes;
   openHashSolana(fields: OpenHashSolanaFields): Bytes;
@@ -670,6 +718,39 @@ export const noticeCommitment = (swapRef: Bytes, txid: Bytes, view: Bytes): Byte
 export const noticeSeal = (args: NoticeSealArgs): Bytes => call((r) => r.noticeSeal(args));
 /** Decrypt a lock notice and require it to open `commitment`. Any failure means "no lock". */
 export const noticeOpen = (args: NoticeOpenArgs): { txid: Bytes; view: Bytes } => call((r) => r.noticeOpen(args));
+
+// ------------------------------------------------------------------ SPEC 11.6: watcher protocol
+
+/** Size of a sealed notice key: `eph_pub[32] ‖ nonce[24] ‖ ciphertext[48]`. */
+export const SEALED_NOTICE_KEY_LEN = 104;
+/** The wire format of a watch request. */
+export const WATCH_FORMAT = 2;
+
+/**
+ * The swap's notice key `K("notice")`: 32 bytes that decrypt that one swap's notice and nothing
+ * else. Both parties derive the same key; `side` is the caller's. Computable before the notice
+ * exists, which is why a locker can hand it to a watcher at lock or fund time.
+ */
+export const noticeKey = (ownSecret: Bytes, peerPub: Bytes, side: 'taker' | 'maker'): Bytes => call((r) => r.noticeKey(ownSecret, peerPub, side));
+/**
+ * Open a notice with the notice key alone (a watcher holds no X25519 secret and no spend share).
+ * Throws `NoticeDecrypt` or `NoticeCommitmentMismatch`; either means "no lock".
+ */
+export const noticeOpenWithKey = (args: NoticeOpenWithKeyArgs): { txid: Bytes; view: Bytes } => call((r) => r.noticeOpenWithKey(args));
+/**
+ * Seal a notice key to a watcher, authenticated as the swap's locker (wire format 2):
+ * `eph_pub ‖ nonce ‖ XChaCha20-Poly1305(k, nonce, aad, notice_key)`, 104 bytes, with
+ * `k = HKDF-SHA256(X25519(eph, W) ‖ X25519(locker_enc, W), DS("watch/2"), eph_pub ‖ W ‖ locker_enc_pub)`
+ * and `aad = DS("watch-req") ‖ 2 ‖ chain_tag ‖ len ‖ deployment ‖ swap_ref ‖ watcher key ‖ issued_at (u64 LE)`.
+ */
+export const watchRequestSeal = (args: WatchRequestSealArgs): Bytes => call((r) => r.watchRequestSeal(args));
+/**
+ * The watcher's side: recover the notice key from a sealed request. Throws `WatchKeyInvalid` for
+ * anything not sealed by the swap's locker to this watcher for this chain, deployment, swap and
+ * time, and `WatchFormatUnsupported` for another wire format. Freshness of `issuedAt` against
+ * the swap's lock time and the clock is the caller's check.
+ */
+export const watchRequestOpen = (args: WatchRequestOpenArgs): Bytes => call((r) => r.watchRequestOpen(args));
 
 // ------------------------------------------------------------------ SPEC 2.9, 4.2, 3.12, 2.10
 

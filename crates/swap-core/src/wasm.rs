@@ -440,6 +440,88 @@ pub fn notice_open(args: JsValue) -> JsResult<JsValue> {
   Ok(Obj::new().set("txid", bytes(&txid)).set("view", bytes(&view)).done())
 }
 
+// ---------------------------------------------------------------- 11.6: notice key, watch request
+
+/// `noticeKey(ownSecret, peerPub, side)` → the swap's 32-byte notice key `K("notice")`.
+#[wasm_bindgen(js_name = noticeKey)]
+pub fn notice_key(own_secret: &[u8], peer_pub: &[u8], side: &str) -> JsResult<Vec<u8>> {
+  let side = match side {
+    "taker" => Side::Taker,
+    "maker" => Side::Maker,
+    _ => return Err(bad("side must be \"taker\" or \"maker\"")),
+  };
+  Ok(envelope::notice_key(&fixed(own_secret, "ownSecret")?, &fixed(peer_pub, "peerPub")?, side).map_err(err)?.to_vec())
+}
+
+/// `{ key, swapRef, ciphertext, commitment }` → `{ txid, view }`: open a notice with the notice
+/// key alone.
+#[wasm_bindgen(js_name = noticeOpenWithKey)]
+pub fn notice_open_with_key(args: JsValue) -> JsResult<JsValue> {
+  let (txid, view) = envelope::notice_open_with_key(
+    &get_bytes(&args, "key")?,
+    &get_bytes(&args, "swapRef")?,
+    &get_vec(&args, "ciphertext")?,
+    &get_bytes(&args, "commitment")?,
+  )
+  .map_err(err)?;
+  Ok(Obj::new().set("txid", bytes(&txid)).set("view", bytes(&view)).done())
+}
+
+fn watch_format(args: &JsValue) -> JsResult<u8> {
+  if has(args, "format") {
+    get_u8(args, "format")
+  } else {
+    Ok(crate::watch::WATCH_FORMAT)
+  }
+}
+
+/// `{ noticeKey, lockerEncSecret, watcher, chainTag, deployment, swapRef, issuedAt, format?,
+/// ephemeralSecret?, nonce? }` → `Uint8Array(104)`: the sealed notice key of a watch request.
+#[wasm_bindgen(js_name = watchRequestSeal)]
+pub fn watch_request_seal(args: JsValue) -> JsResult<Vec<u8>> {
+  let deployment = get_str(&args, "deployment")?;
+  let swap_ref: [u8; 32] = get_bytes(&args, "swapRef")?;
+  let watcher: [u8; 32] = get_bytes(&args, "watcher")?;
+  let binding = crate::watch::WatchBinding {
+    format: watch_format(&args)?,
+    chain: crate::primitives::ChainTag::from_u8(get_u8(&args, "chainTag")?).map_err(err)?,
+    deployment: &deployment,
+    swap_ref: &swap_ref,
+    watcher: &watcher,
+    issued_at: get_u64(&args, "issuedAt")?,
+  };
+  let eph = match get_opt_bytes::<32>(&args, "ephemeralSecret")? {
+    Some(e) => e,
+    None => {
+      let mut e = [0u8; 32];
+      getrandom::getrandom(&mut e).map_err(|_| JsError::new("RandomnessUnavailable"))?;
+      e
+    }
+  };
+  let nonce = match get_opt_bytes::<24>(&args, "nonce")? {
+    Some(n) => n,
+    None => random_nonce()?,
+  };
+  Ok(crate::watch::watch_request_seal(&get_bytes(&args, "noticeKey")?, &get_bytes(&args, "lockerEncSecret")?, &binding, &eph, nonce).map_err(err)?.to_vec())
+}
+
+/// `{ sealed, watcherSeed, lockerEncPub, chainTag, deployment, swapRef, issuedAt, format? }` →
+/// the notice key, or `WatchKeyInvalid` / `WatchFormatUnsupported`.
+#[wasm_bindgen(js_name = watchRequestOpen)]
+pub fn watch_request_open(args: JsValue) -> JsResult<Vec<u8>> {
+  let deployment = get_str(&args, "deployment")?;
+  let swap_ref: [u8; 32] = get_bytes(&args, "swapRef")?;
+  let binding = crate::watch::WatchBinding {
+    format: watch_format(&args)?,
+    chain: crate::primitives::ChainTag::from_u8(get_u8(&args, "chainTag")?).map_err(err)?,
+    deployment: &deployment,
+    swap_ref: &swap_ref,
+    watcher: &[0u8; 32],
+    issued_at: get_u64(&args, "issuedAt")?,
+  };
+  Ok(crate::watch::watch_request_open(&get_vec(&args, "sealed")?, &get_bytes(&args, "watcherSeed")?, &get_bytes(&args, "lockerEncPub")?, &binding).map_err(err)?.to_vec())
+}
+
 // ---------------------------------------------------------------- 2.9, 4.2, 3.12
 
 #[wasm_bindgen(js_name = encodeSolApproval)]

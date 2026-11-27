@@ -48,6 +48,7 @@ pub mod sweep;
 pub mod twin;
 pub mod vectors;
 pub mod wallet_key;
+pub mod watch;
 
 #[cfg(target_arch = "wasm32")]
 mod wasm;
