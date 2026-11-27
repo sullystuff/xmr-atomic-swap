@@ -22,6 +22,10 @@ pub struct SwapOpened {
     pub deposit: u64,
     pub xmr: u64,
     pub depth: u8,
+    /// Direction B: where a claim pays. Zeros in direction A.
+    pub payout: Pubkey,
+    /// Direction A: the watcher named at lock. Zeros when none.
+    pub watcher: Pubkey,
 }
 
 #[event]
@@ -333,4 +337,27 @@ pub struct TreasurySwept {
     pub asset: u8,
     pub amount: u64,
     pub destination: Pubkey,
+}
+
+// ------------------------------------------------------------------ Amendment 1
+
+/// Amendment 1 (SPEC 11.1): `set_caps`.
+#[event]
+pub struct CapsChanged {
+    pub caps_on: bool,
+    pub max_swap: [u64; 2],
+    pub max_open: [u64; 2],
+}
+
+/// Amendment 1 (SPEC 11.6): `freeze` (Z1).
+#[event]
+pub struct Frozen {
+    pub swap: Pubkey,
+    pub maker: Pubkey,
+    pub counter: u8,
+    pub at: i64,
+    pub taker: Pubkey,
+    pub watcher: Pubkey,
+    /// `T_ff = max(t_freeze + w_z, t_claim_open)`.
+    pub frozen_until: i64,
 }

@@ -222,11 +222,13 @@ fn open_hash_vectors() {
             &h32(&i["locker_view"]),
             &h32(&i["taker_enc_key"]),
             &h32(&i["maker_enc_key"]),
+            &h32(&i["payout"]),
+            &h32(&i["watcher"]),
         );
         assert_eq!(got, h32(&case["output"]["open_hash"]), "{}", case["name"]);
         n += 1;
     }
-    assert_eq!(n, 3);
+    assert_eq!(n, 5);
 }
 
 // ------------------------------------------------------------------ the checks of SPEC 4.6

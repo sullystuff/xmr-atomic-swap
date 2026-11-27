@@ -39,7 +39,8 @@ fn program_constants_are_the_vectors_constants() {
         assert_eq!(*got, value.to_string(), "{name}");
         checked += 1;
     }
-    assert_eq!(checked, 20);
+    assert_eq!(checked, want.len() - 2);
+    assert!(checked >= 22, "the freeze bounds are among them");
     // The harness's own copies.
     assert_eq!(want["HOLD_SECS"], HOLD_SECS);
     assert_eq!(want["SPLIT_SECS"], SPLIT_SECS);
@@ -58,6 +59,7 @@ fn terms_from(params: &Value, mode: u8) -> Terms {
         d_c: u("d_c") as u32,
         w_c: u("w_c") as u32,
         w_f: u("w_f") as u32,
+        w_z: u("w_z") as u32,
         ..Terms::default()
     }
 }
@@ -131,7 +133,8 @@ fn deadlines_json_bounds_at_set_offer_and_again_at_lock() {
         }
     }
     println!("deadlines.json bounds (solana): {accepted} accepted, {refused} refused");
-    assert_eq!((accepted, refused), (20, 16));
+    assert_eq!(accepted + refused, cases.len());
+    assert!(accepted >= 26 && refused >= 23, "{accepted} {refused}");
 }
 
 fn t(v: &Value) -> Option<i64> {
@@ -141,7 +144,7 @@ fn t(v: &Value) -> Option<i64> {
 #[test]
 fn deadlines_json_derivation_from_real_event_times() {
     let cases = solana_cases("derive");
-    assert_eq!(cases.len(), 7);
+    assert!(cases.len() >= 10);
     for case in &cases {
         let name = case["name"].as_str().unwrap();
         let i = &case["input"];
@@ -152,6 +155,7 @@ fn deadlines_json_derivation_from_real_event_times() {
         let mut m = w.register_maker();
         w.set_time(t(&i["t_lock"]).unwrap());
         let mut fx = w.swap_with(&mut m, ASSET_SOL, direction, &terms, Stage::Opened);
+        let watcher = w.fund(SOL);
 
         if let Some(t_active) = t(&i["t_active"]) {
             w.set_time(t_active);
@@ -159,7 +163,9 @@ fn deadlines_json_derivation_from_real_event_times() {
                 if direction == DIR_A {
                     ok(w.approve(&mut m, &fx));
                 } else {
-                    ok(w.fund_swap(&mut m, &fx));
+                    // A case with a freeze names the maker's watcher at fund.
+                    let named = t(&i["t_freeze"]).map(|_| watcher.pubkey());
+                    ok(w.fund_swap_with(&mut m, &fx, named));
                 }
             }
         }
@@ -176,6 +182,25 @@ fn deadlines_json_derivation_from_real_event_times() {
             }
             w.set_time(t_notice);
             ok(w.notice(&m, &mut fx));
+        }
+        if let Some(t_freeze) = t(&i["t_freeze"]) {
+            // Frozen by the watcher; T_ff = max(t_Z + W_z, T_co) is in the event and decides when
+            // the claim opens and the locker's `set_ready` closes.
+            assert_eq!(direction, DIR_B, "the vectors' frozen derivations are direction B");
+            w.set_time(t_freeze);
+            let res = ok(w.call(&m, &fx, &Call::Freeze, &watcher));
+            let ev = &logged_events(&res, "Frozen")[0];
+            let t_ff = t(&out["t_ff"]).unwrap();
+            assert_eq!(i64::from_le_bytes(ev[137..145].try_into().unwrap()), t_ff, "{name}: frozen_until");
+            let s = w.swap(&fx.pda).unwrap();
+            assert_eq!((s.state, s.t_freeze, s.t_ff()), (FROZEN, t_freeze, t_ff), "{name}");
+            let (op, taker) = (m.operator.insecure_clone(), fx.taker.insecure_clone());
+            w.set_time(t_ff - 1);
+            ok(w.would(&m, &fx, &Call::SetReady, &op));
+            assert_err(w.would(&m, &fx, &Call::Claim(fx.s_t), &taker), "TooEarly");
+            w.set_time(t_ff);
+            assert_err(w.would(&m, &fx, &Call::SetReady, &op), "TooLate");
+            ok(w.would(&m, &fx, &Call::Claim(fx.s_t), &taker));
         }
         if let Some(t_ready) = t(&i["t_ready"]) {
             // T_ready_min is the first second `set_ready` is accepted.

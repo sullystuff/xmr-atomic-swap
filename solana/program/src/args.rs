@@ -17,6 +17,8 @@ pub struct OfferTerms {
     pub d_c: u32,
     pub w_c: u32,
     pub w_f: u32,
+    /// Freeze window (SPEC 11.6). 0 = this offer accepts no watcher.
+    pub w_z: u32,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug)]
@@ -65,9 +67,11 @@ pub struct QuoteTerms {
     pub maker_pok: [u8; 64],
     /// At most 120 s after posting; valid while `now <= expires_at`.
     pub expires_at: i64,
+    /// Freeze window (SPEC 11.6). 0 = no watcher accepted.
+    pub w_z: u32,
 }
 
-/// 247 bytes, 248 with an approval.
+/// 248 bytes; 249 with an approval; 33 more with a watcher.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug)]
 pub struct LockArgs {
     pub swap_nonce: [u8; 16],
@@ -91,9 +95,11 @@ pub struct LockArgs {
     pub key_hint: u8,
     /// Index of the Ed25519 instruction carrying an advance approval.
     pub approval_ix: Option<u8>,
+    /// The key that may freeze this swap (SPEC 11.6). Refused when the offer's `w_z` is 0.
+    pub watcher: Option<Pubkey>,
 }
 
-/// 214 bytes, 215 with an approval.
+/// 246 bytes, 247 with an approval.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug)]
 pub struct TakeArgs {
     pub swap_nonce: [u8; 16],
@@ -108,6 +114,8 @@ pub struct TakeArgs {
     pub taker_enc_key: [u8; 32],
     pub maker_enc_version: u32,
     pub approval_ix: Option<u8>,
+    /// Where a claim pays (SPEC 11.2). The taker's own address by default.
+    pub payout: Pubkey,
 }
 
 /// The opening of a notice commitment, posted in clear.

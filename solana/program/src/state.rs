@@ -18,7 +18,17 @@ pub struct Config {
     pub split_mode: u8,
     pub bump: u8,
     pub treasury_bump: u8,
-    pub reserved: [u8; 117],
+    /// 139. Amendment 1 (SPEC 11.1): nonzero = the caps below are enforced at `lock` / `take`.
+    /// After `initialize` the switch is on and every cap is zero (fail closed).
+    pub caps_on: u8,
+    /// 140. Largest `amount` of one swap, per asset.
+    pub max_swap: [u64; 2],
+    /// 156. Largest open value at once, per asset.
+    pub max_open: [u64; 2],
+    /// 172. The sum of the counted values of the open swaps, per asset. Maintained whether or
+    /// not the switch is on.
+    pub open_value: [u64; 2],
+    pub reserved: [u8; 68],
 }
 
 /// PDA `["treasury"]`, 16 bytes. Holds SOL fees as lamports above rent; authority of the
@@ -117,7 +127,9 @@ pub struct Offer {
     pub pool_used: u16,
     /// Maker spend commitments (direction A only).
     pub pool: [[u8; 32]; 16],
-    pub reserved: [u8; 34],
+    /// 734. Freeze window (SPEC 11.6). 0 = no watcher accepted.
+    pub w_z: u32,
+    pub reserved: [u8; 30],
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -125,8 +137,8 @@ pub struct EthQuoteSlot {
     pub used: u8,
     pub updated_at: i64,
     /// The compact form of SPEC 2.10. Dynamic fields: `tierPrice` at 102..150, `validUntil` at
-    /// 199..207, `quoteId` at 243..251.
-    pub quote: [u8; 251],
+    /// 199..207, `quoteId` at 243..251; `freezeWindow` (static) at 251..255.
+    pub quote: [u8; 255],
     pub sig: [u8; 65],
 }
 
@@ -164,10 +176,12 @@ pub struct Quote {
     pub expires_at: i64,
     pub epoch: u32,
     pub quote_id: u64,
-    pub reserved: [u8; 30],
+    /// 162. Freeze window (SPEC 11.6).
+    pub w_z: u32,
+    pub reserved: [u8; 26],
 }
 
-/// PDA `["swap", taker, swap_nonce[16]]`, 736 bytes. Offsets in comments are frozen.
+/// PDA `["swap", taker, swap_nonce[16]]`, 800 bytes. Offsets in comments are frozen.
 #[account]
 pub struct Swap {
     /// 8
@@ -249,8 +263,16 @@ pub struct Swap {
     pub owed_taker: u64,
     pub owed_maker: u64,
     pub owed_treasury: u64,
-    /// 694
-    pub reserved: [u8; 42],
+    /// 694. Where a direction-B claim pays (SPEC 11.2); zeros in direction A.
+    pub payout: Pubkey,
+    /// 726. The key that may freeze (SPEC 11.6); zeros = none. A: named at `lock`. B: at `fund`.
+    pub watcher: Pubkey,
+    /// 758. Freeze window copied from the offer or quote.
+    pub w_z: u32,
+    /// 762. When the swap was frozen; 0 = never.
+    pub t_freeze: i64,
+    /// 770
+    pub reserved: [u8; 30],
 }
 
 // ------------------------------------------------------------------ derived values
@@ -273,30 +295,14 @@ impl Maker {
 }
 
 impl Swap {
-    /// `T_nl = t_final − d_c − w_c − 86,400`: the latest notice (direction B).
-    pub fn t_nl(&self) -> i64 {
-        self.t_final - self.d_c as i64 - self.w_c as i64 - DAY_SECS
-    }
-    pub fn t_exp(&self) -> i64 {
-        self.t_final.saturating_add(EXPIRY_SECS)
-    }
-    pub fn t_hold(&self) -> i64 {
-        self.t_refund.saturating_add(HOLD_SECS)
-    }
-    pub fn t_split(&self) -> i64 {
-        self.t_refund.saturating_add(SPLIT_SECS)
-    }
-    /// Earliest `set_ready`.
-    pub fn t_ready_min(&self) -> i64 {
-        self.t_notice + self.depth as i64 * READY_MIN_SECS_PER_CONF
-    }
     pub fn has(&self, f: u8) -> bool {
         self.flags & f != 0
     }
     pub fn is_a(&self) -> bool {
         self.direction == DIR_A
     }
-    /// SPEC 3.12: what `approve`, `fund` and `reject` bind to. Recomputed from the account.
+    /// SPEC 3.12, 11.2, 11.6: what `approve`, `fund` and `reject` bind to. Recomputed from the
+    /// account; the payout address and the watcher named at `lock` are part of it.
     pub fn open_hash(&self, swap_key: &Pubkey) -> [u8; 32] {
         crate::util::sha256(&[
             DS_OPEN,
@@ -310,13 +316,15 @@ impl Swap {
             &self.locker_view,
             &self.taker_enc_key,
             &self.maker_enc_key,
+            self.payout.as_ref(),
+            self.watcher.as_ref(),
         ])
     }
     /// `SHA256(DS("notice") ‖ swap PDA ‖ txid ‖ view)` (SPEC 2.8).
     pub fn notice_opening(swap_key: &Pubkey, txid: &[u8; 32], view: &[u8; 32]) -> [u8; 32] {
         crate::util::sha256(&[DS_NOTICE, swap_key.as_ref(), txid, view])
     }
-    /// An all-zero swap on the heap (the struct is 728 bytes: keep it off the caller's frame).
+    /// An all-zero swap on the heap (the struct is 792 bytes: keep it off the caller's frame).
     #[inline(never)]
     pub fn new_boxed() -> Box<Swap> {
         Box::new(Swap {
@@ -369,7 +377,11 @@ impl Swap {
             owed_taker: 0,
             owed_maker: 0,
             owed_treasury: 0,
-            reserved: [0; 42],
+            payout: Pubkey::default(),
+            watcher: Pubkey::default(),
+            w_z: 0,
+            t_freeze: 0,
+            reserved: [0; 30],
         })
     }
 }
@@ -377,7 +389,7 @@ impl Swap {
 impl Offer {
     /// SPEC 4.2 `terms_hash`.
     pub fn compute_terms_hash(&self) -> [u8; 32] {
-        let mut pre = [0u8; 54];
+        let mut pre = [0u8; 58];
         pre[0] = self.asset;
         pre[1] = self.direction;
         pre[2] = self.mode;
@@ -393,6 +405,7 @@ impl Offer {
             pre[at + 8] = self.depths[i];
             at += 9;
         }
+        pre[at..at + 4].copy_from_slice(&self.w_z.to_le_bytes());
         crate::util::sha256(&[DS_TERMS, &pre])
     }
     pub fn prices_used(&self) -> [bool; 3] {

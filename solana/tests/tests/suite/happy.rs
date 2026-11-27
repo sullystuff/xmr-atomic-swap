@@ -15,7 +15,7 @@ fn direction_a_sol_lock_notice_ready_claim() {
     let fx = w.open(&m, ASSET_SOL, DIR_A, XMR);
     let s = w.swap(&fx.pda).unwrap();
     assert_eq!((s.state, s.amount, s.deposit, s.mode), (ACTIVE, 1_500_000_000, 15_000_000, 0));
-    assert_eq!(w.lamports(&fx.pda), w.rent(736) + 1_500_000_000);
+    assert_eq!(w.lamports(&fx.pda), w.rent(SWAP_LEN) + 1_500_000_000);
     assert_eq!(w.lamports(&fx.session.pubkey()), w.rent(0) + 2_000_000);
 
     let mut fx = fx;
@@ -33,7 +33,7 @@ fn direction_a_sol_lock_notice_ready_claim() {
     assert_eq!((s.state, s.outcome, s.revealed), (DONE, 8, secret));
     assert_eq!(w.lamports(&m.payout.pubkey()) - payout_before, 1_500_000_000 - 750_000);
     assert_eq!(w.lamports(&w.treasury) - treasury_before, 750_000);
-    assert_eq!(w.lamports(&fx.pda), w.rent(736));
+    assert_eq!(w.lamports(&fx.pda), w.rent(SWAP_LEN));
     let claimed = logged_events(&res, "Claimed");
     assert_eq!(claimed.len(), 1);
     assert_eq!(claimed[0][..32], fx.pda.to_bytes());
@@ -47,7 +47,7 @@ fn direction_a_sol_lock_notice_ready_claim() {
     ok(w.call(&m, &fx, &Call::CloseSwap, &session));
     assert!(w.swap(&fx.pda).is_none());
     assert_eq!(w.lamports(&fx.session.pubkey()), 0);
-    assert_eq!(w.lamports(&fx.taker.pubkey()) - taker_before, w.rent(736) + session_before - FEE);
+    assert_eq!(w.lamports(&fx.taker.pubkey()) - taker_before, w.rent(SWAP_LEN) + session_before - FEE);
 }
 
 #[test]

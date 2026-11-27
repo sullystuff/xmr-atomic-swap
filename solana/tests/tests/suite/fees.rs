@@ -52,6 +52,8 @@ fn market(terms_a: &Terms, terms_b: &Terms) -> Market {
 
 /// Lock (A) or take (B) `xmr` at `price` on USDC; the taker can afford anything.
 fn open_at(k: &mut Market, direction: u8, xmr: u64, prices: [u64; 3]) -> (SwapFx, TxResult) {
+    // Each case stands alone: amounts run up to `u64::MAX`, and the open value is an exact sum.
+    k.w.reset_open_value(ASSET_USDC);
     ok(k.w.refresh(&k.m, &[(ASSET_USDC, direction, true, prices, u64::MAX)]));
     if direction == DIR_A {
         // One fresh pool key per lock.
@@ -267,6 +269,8 @@ fn pay_is_bounded_by_max_pay_and_receive_by_min_receive() {
 
 /// A quote for exactly `amount` with `dep_bps`, taken (direction B) or locked (direction A).
 fn open_quote(w: &mut World, m: &mut MakerFx, asset: u8, direction: u8, amount: u64, dep_bps: u16) -> SwapFx {
+    // Each case stands alone (see `open_at`).
+    w.reset_open_value(asset);
     let taker = w.fund(if asset == ASSET_SOL { amount.saturating_add(10 * SOL) } else { 10 * SOL });
     if asset == ASSET_USDC {
         // Exactly what the taker has to put in: the amount (A) or the take deposit (B).
@@ -310,10 +314,13 @@ fn amounts_json_bps_as_the_deposit() {
             zero += 1;
             continue;
         }
-        let fx = open_quote(&mut w, &mut m, ASSET_USDC, DIR_B, amount, bps);
+        // Direction A: the deposit is a share of the escrowed amount. (In direction B it is
+        // posted on top, and `amount + deposit` must fit the amount type: the largest case
+        // would be refused, which `open_value_arithmetic_is_exact` asserts.)
+        let fx = open_quote(&mut w, &mut m, ASSET_USDC, DIR_A, amount, bps);
         let s = w.swap(&fx.pda).unwrap();
         assert_eq!(s.deposit, num(&case["output"]["result"]), "{}", case["name"]);
-        assert_eq!(w.tokens(&fx.vault), s.deposit, "{}: the take deposit is what was escrowed", case["name"]);
+        assert_eq!(w.tokens(&fx.vault), amount, "{}", case["name"]);
         replayed += 1;
     }
     assert_eq!(replayed + zero, cases.len());

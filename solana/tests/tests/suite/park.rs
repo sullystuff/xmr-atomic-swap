@@ -255,7 +255,7 @@ fn lamport_payouts_that_would_leave_the_destination_below_rent_are_parked() {
     assert_eq!(w.lamports(&op.pubkey()), operator_before - FEE + 100_000);
     assert_eq!(w.lamports(&fx.taker.pubkey()), 0);
     assert_eq!(parked_events(&res), vec![(0, 1_000)]);
-    assert_eq!(w.lamports(&fx.pda), w.rent(736) + 1_000);
+    assert_eq!(w.lamports(&fx.pda), w.rent(SWAP_LEN) + 1_000);
     // Once the wallet is funded again the taker collects.
     w.svm.airdrop(&fx.taker.pubkey(), SOL).unwrap();
     let taker = fx.taker.insecure_clone();
@@ -291,7 +291,7 @@ fn lamport_payouts_that_would_leave_the_destination_below_rent_are_parked() {
     ix.accounts[S_MAKER_WALLET].pubkey = owner.pubkey();
     ok(w.send(&[ix], &[&owner]));
     assert_eq!(w.lamports(&owner.pubkey()), before - FEE + 500_000 - 250);
-    assert_eq!(w.lamports(&fx.pda), w.rent(736), "the account stays rent-exempt throughout");
+    assert_eq!(w.lamports(&fx.pda), w.rent(SWAP_LEN), "the account stays rent-exempt throughout");
 }
 
 #[test]
@@ -313,7 +313,7 @@ fn a_parked_row_marked_closed_stays_open_until_withdrawn_and_closed() {
     // No secret was revealed: anyone may close it; the rent goes to the taker.
     let before = w.lamports(&taker.pubkey());
     ok(w.call(&m, &fx, &Call::CloseSwap, &stranger));
-    assert_eq!(w.lamports(&taker.pubkey()) - before, w.rent(736) + w.rent(165));
+    assert_eq!(w.lamports(&taker.pubkey()) - before, w.rent(SWAP_LEN) + w.rent(165));
     assert!(w.swap(&fx.pda).is_none());
 }
 
@@ -337,7 +337,7 @@ fn close_swap_rules() {
         let before = w.lamports(&taker.pubkey());
         ok(w.call(&m, &fx, &Call::CloseSwap, &taker));
         let vault_rent = if asset == ASSET_USDC { w.rent(165) } else { 0 };
-        assert_eq!(w.lamports(&taker.pubkey()) - before, w.rent(736) + vault_rent - FEE);
+        assert_eq!(w.lamports(&taker.pubkey()) - before, w.rent(SWAP_LEN) + vault_rent - FEE);
         assert!(w.swap(&fx.pda).is_none() && !w.exists(&fx.vault));
 
         // After a refund in A the maker has to read s_T: the operator closes at any time; the
@@ -360,7 +360,7 @@ fn close_swap_rules() {
         let before = w.lamports(&taker.pubkey()) + w.lamports(&session.pubkey());
         ok(w.call(&m, &fx, &Call::CloseSwap, &session));
         assert_eq!(w.lamports(&session.pubkey()), 0);
-        assert_eq!(w.lamports(&taker.pubkey()), before - FEE + w.rent(736) + vault_rent);
+        assert_eq!(w.lamports(&taker.pubkey()), before - FEE + w.rent(SWAP_LEN) + vault_rent);
 
         // The non-revealing party closes at once (the operator, after the taker's refund).
         let (m, fx) = w.swap_at(asset, DIR_A, &Terms::default(), Stage::Noticed);
@@ -370,7 +370,7 @@ fn close_swap_rules() {
         ok(w.call(&m, &fx, &Call::Refund(fx.s_t), &taker));
         let before = w.lamports(&taker.pubkey());
         ok(w.call(&m, &fx, &Call::CloseSwap, &op));
-        assert_eq!(w.lamports(&taker.pubkey()) - before, w.rent(736) + vault_rent, "all rent to the taker");
+        assert_eq!(w.lamports(&taker.pubkey()) - before, w.rent(SWAP_LEN) + vault_rent, "all rent to the taker");
 
         // The address is free again: the same taker and nonce open a new swap there.
         let offer = w.offer_pda(&m.pda, asset, DIR_A);

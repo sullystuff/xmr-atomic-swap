@@ -184,16 +184,26 @@ fn no_call_can_pay_the_deposit_to_the_maker() {
         // A second refund or a claim of a refunded swap does not exist.
         assert_err(w.call(&m, &fx, &Call::Claim(w.maker_secret(&m, &fx)), &op), "BadState");
 
-        // split_deposit: the treasury half goes to the treasury, never to a wallet the caller names.
+        // split_deposit: the treasury half goes to the treasury, never to a wallet the caller
+        // names. A wrong account in a treasury slot does not fail the split (SPEC 11.1: an
+        // admin flipping `split_mode` must not be able to): the half is parked for the treasury,
+        // and what the operator named receives nothing. (Probed, not committed.)
         ok(w.call(&m, &fx, &Call::Withhold(fx.notice), &op));
         w.set_time(s.t_refund + SPLIT_SECS);
+        let before = (w.lamports(&operator_wallet), w.tokens(&operator_token));
         let mut ix = w.call_ix(&m, &fx, &Call::SplitDeposit, &operator_wallet);
-        ix.accounts[S_TREASURY].pubkey = operator_wallet;
-        assert_err(w.send(&[ix], &[&op]), "Unauthorized");
         if usdc {
-            let mut ix = w.call_ix(&m, &fx, &Call::SplitDeposit, &operator_wallet);
             ix.accounts[S_TREASURY_VAULT].pubkey = operator_token;
-            assert_err(w.send(&[ix], &[&op]), "Unauthorized");
+        } else {
+            ix.accounts[S_TREASURY].pubkey = operator_wallet;
+        }
+        let res = ok(w.simulate(&[ix], &[&op]));
+        let parked = logged_events(&res, "PayoutParked");
+        assert_eq!(parked.len(), 1);
+        assert_eq!((parked[0][73], u64::from_le_bytes(parked[0][74..82].try_into().unwrap())), (2, D / 2));
+        assert_eq!(before, (w.lamports(&operator_wallet), w.tokens(&operator_token)));
+        if usdc {
+            // The taker's own account stays pinned.
             let mut ix = w.call_ix(&m, &fx, &Call::SplitDeposit, &operator_wallet);
             ix.accounts[S_TAKER_TOKEN].pubkey = operator_token;
             assert_err(w.send(&[ix], &[&op]), "Unauthorized");
@@ -275,8 +285,10 @@ fn burn_mode_destroys_the_treasury_half_of_a_split_and_nothing_else() {
     let stranger = w.stranger.insecure_clone();
     ok(w.call(&m, &fx, &Call::Withhold(fx.notice), &op));
     w.set_time(s.t_refund + SPLIT_SECS);
-    // The Treasury PDA is not an acceptable destination for the burned half.
-    assert_err(w.call(&m, &fx, &Call::SplitDeposit, &stranger), "Unauthorized");
+    // The Treasury PDA is not the destination of a burned half: given it, the split would park
+    // that half (it does not fail, SPEC 11.1) and the Treasury PDA would receive nothing.
+    let res = ok(w.would(&m, &fx, &Call::SplitDeposit, &stranger));
+    assert_eq!(logged_events(&res, "PayoutParked").len(), 1);
     let treasury_before = w.lamports(&w.treasury);
     let taker_before = w.lamports(&fx.taker.pubkey());
     let mut ix = w.call_ix(&m, &fx, &Call::SplitDeposit, &stranger.pubkey());

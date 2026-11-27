@@ -66,6 +66,14 @@ pub const ABORTED_HOLD: u8 = 6;
 pub const HOLD: u8 = 7;
 pub const WITHHELD: u8 = 8;
 pub const DONE: u8 = 9;
+pub const FROZEN: u8 = 10;
+
+/// Account sizes (SPEC 4.1, 11.8).
+pub const SWAP_LEN: usize = 800;
+/// `Swap.flags` bit 5: counted in the asset's open value (SPEC 11.1).
+pub const FLAG_COUNTED: u8 = 32;
+pub const MIN_FREEZE_SECS: u32 = 3_600;
+pub const MAX_FREEZE_SECS: u32 = 259_200;
 
 /// Indexes into the Settle account list.
 pub const S_TAKER: usize = 4;
@@ -77,6 +85,10 @@ pub const S_TAKER_TOKEN: usize = 10;
 pub const S_MAKER_TOKEN: usize = 11;
 pub const S_TREASURY_VAULT: usize = 12;
 pub const S_TOKEN_PROGRAM: usize = 13;
+/// `claim` and `withdraw_owed` only (SPEC 11.2).
+pub const S_PAYOUT: usize = 14;
+pub const S_PAYOUT_TOKEN: usize = 15;
+pub const S_ATA_PROGRAM: usize = 16;
 
 // ------------------------------------------------------------------ vectors and small helpers
 
@@ -262,6 +274,12 @@ impl Enc {
     pub fn vec(self, v: &[u8]) -> Self {
         self.u32(v.len() as u32).bytes(v)
     }
+    pub fn opt_key(self, v: Option<Pubkey>) -> Self {
+        match v {
+            Some(k) => self.u8(1).key(&k),
+            None => self.u8(0),
+        }
+    }
     pub fn opt_u8(self, v: Option<u8>) -> Self {
         match v {
             Some(x) => self.u8(1).u8(x),
@@ -332,7 +350,7 @@ pub fn pok_prove(s: &[u8; 32], ctx: &[u8; 32]) -> [u8; 64] {
     out
 }
 
-/// SPEC 3.12 (Solana): what `approve`, `fund` and `reject` bind to.
+/// SPEC 3.12, 11.2, 11.6 (Solana): what `approve`, `fund` and `reject` bind to.
 #[allow(clippy::too_many_arguments)]
 pub fn open_hash_of(
     swap: &[u8; 32],
@@ -346,6 +364,8 @@ pub fn open_hash_of(
     locker_view: &[u8; 32],
     taker_enc_key: &[u8; 32],
     maker_enc_key: &[u8; 32],
+    payout: &[u8; 32],
+    watcher: &[u8; 32],
 ) -> [u8; 32] {
     sha256(&[
         &ds("open"),
@@ -359,6 +379,8 @@ pub fn open_hash_of(
         locker_view,
         taker_enc_key,
         maker_enc_key,
+        payout,
+        watcher,
     ])
 }
 
@@ -501,10 +523,15 @@ pub struct SwapAcc {
     pub owed_taker: u64,
     pub owed_maker: u64,
     pub owed_treasury: u64,
+    pub payout: Pubkey,
+    pub watcher: Pubkey,
+    pub w_z: u32,
+    pub t_freeze: i64,
 }
 impl SwapAcc {
     pub fn decode(d: &[u8]) -> Self {
-        assert_eq!(d.len(), 736, "Swap is 736 bytes");
+        assert_eq!(d.len(), SWAP_LEN, "Swap is 800 bytes");
+        assert_eq!(d[770..800], [0u8; 30], "the reserved bytes are zero");
         assert_eq!(d[..8], account_disc("Swap"));
         SwapAcc {
             taker: key_at(d, 8),
@@ -556,6 +583,10 @@ impl SwapAcc {
             owed_taker: u64_at(d, 670),
             owed_maker: u64_at(d, 678),
             owed_treasury: u64_at(d, 686),
+            payout: key_at(d, 694),
+            watcher: key_at(d, 726),
+            w_z: u32_at(d, 758),
+            t_freeze: i64_at(d, 762),
         }
     }
     /// SPEC 3.12, computed independently of the program.
@@ -572,13 +603,19 @@ impl SwapAcc {
             &self.locker_view,
             &self.taker_enc_key,
             &self.maker_enc_key,
+            &self.payout.to_bytes(),
+            &self.watcher.to_bytes(),
         )
     }
     pub fn t_exp(&self) -> i64 {
         self.t_final + EXPIRY_SECS
     }
     pub fn t_nl(&self) -> i64 {
-        self.t_final - self.d_c as i64 - self.w_c as i64 - DAY_SECS
+        self.t_final - self.d_c as i64 - self.w_z as i64 - self.w_c as i64 - DAY_SECS
+    }
+    /// `T_ff = max(t_Z + W_z, T_co)`: when a frozen swap's claim opens (SPEC 11.6, a1 D1).
+    pub fn t_ff(&self) -> i64 {
+        (self.t_freeze + self.w_z as i64).max(self.t_claim_open)
     }
 }
 
@@ -697,6 +734,7 @@ pub struct OfferAcc {
     pub pool_filled: u16,
     pub pool_used: u16,
     pub pool: Vec<[u8; 32]>,
+    pub w_z: u32,
 }
 impl OfferAcc {
     pub fn decode(d: &[u8]) -> Self {
@@ -730,6 +768,7 @@ impl OfferAcc {
             pool_filled: u16_at(d, 218),
             pool_used: u16_at(d, 220),
             pool: (0..16).map(|i| b32_at(d, 222 + 32 * i)).collect(),
+            w_z: u32_at(d, 734),
         }
     }
 }
@@ -752,6 +791,8 @@ pub struct Terms {
     pub d_c: u32,
     pub w_c: u32,
     pub w_f: u32,
+    /// Freeze window (SPEC 11.6); 0 = no watcher accepted.
+    pub w_z: u32,
 }
 impl Default for Terms {
     /// The parameters the vectors use: depth 10, 1% deposit, 60 s / 10 min / 90 min / 30 min / 7 days.
@@ -770,6 +811,7 @@ impl Default for Terms {
             d_c: 5_400,
             w_c: 1_800,
             w_f: 604_800,
+            w_z: 0,
         }
     }
 }
@@ -782,7 +824,14 @@ impl Terms {
         for v in self.depth_above {
             e = e.u64(v);
         }
-        e.bytes(&self.depths).u16(self.dep_bps).u32(self.w_a).u32(self.w_n).u32(self.d_c).u32(self.w_c).u32(self.w_f)
+        e.bytes(&self.depths)
+            .u16(self.dep_bps)
+            .u32(self.w_a)
+            .u32(self.w_n)
+            .u32(self.d_c)
+            .u32(self.w_c)
+            .u32(self.w_f)
+            .u32(self.w_z)
     }
     /// SPEC 4.2 `terms_hash`, computed independently of the program.
     pub fn hash(&self, asset: u8, direction: u8) -> [u8; 32] {
@@ -796,7 +845,8 @@ impl Terms {
             pre.extend_from_slice(&self.depth_above[i].to_le_bytes());
             pre.push(self.depths[i]);
         }
-        assert_eq!(pre.len(), 54);
+        pre.extend_from_slice(&self.w_z.to_le_bytes());
+        assert_eq!(pre.len(), 58);
         sha256(&[&ds("terms"), &pre])
     }
 }
@@ -838,6 +888,9 @@ pub struct SwapFx {
     pub enc_key: [u8; 32],
     /// The opening of the notice this test posted: `(txid, view)`.
     pub notice: Option<([u8; 32], [u8; 32])>,
+    /// Where a direction-B claim pays (SPEC 11.2): the taker's own wallet unless a test names
+    /// another. Direction A: the taker (what the `payout` account slot expects there).
+    pub payout: Pubkey,
 }
 
 /// Where the terms of a lock or take come from.
@@ -876,18 +929,23 @@ pub struct OpenRaw {
     pub sysvar: Option<Pubkey>,
     /// `(mint, taker_token, vault, token_program)`.
     pub token: Option<(Pubkey, Pubkey, Pubkey, Pubkey)>,
+    /// `lock` only: the watcher key (SPEC 11.6).
+    pub watcher: Option<Pubkey>,
+    /// `take` only: the payout address (SPEC 11.2).
+    pub payout: Pubkey,
 }
 
 /// A transition call with its arguments.
 #[derive(Clone, Debug)]
 pub enum Call {
     Approve { open: [u8; 32], share: [u8; 32], pok: [u8; 64] },
-    Fund { open: [u8; 32], share: [u8; 32], pok: [u8; 64], view: [u8; 32] },
+    Fund { open: [u8; 32], share: [u8; 32], pok: [u8; 64], view: [u8; 32], watcher: Option<Pubkey> },
     Reject { open: [u8; 32], reason: u8 },
     CancelPending,
     ExpirePending,
     PostNotice { commitment: [u8; 32], ct: [u8; 104] },
     SetReady,
+    Freeze,
     Abort,
     RefundUnnoticed,
     ExpireUnnoticed,
@@ -910,6 +968,7 @@ impl Call {
             Call::ExpirePending => "expire_pending",
             Call::PostNotice { .. } => "post_notice",
             Call::SetReady => "set_ready",
+            Call::Freeze => "freeze",
             Call::Abort => "abort",
             Call::RefundUnnoticed => "refund_unnoticed",
             Call::ExpireUnnoticed => "expire_unnoticed",
@@ -955,7 +1014,8 @@ pub fn program_data_address() -> Pubkey {
 pub fn base_svm() -> LiteSVM {
     // LiteSVM::new(): mainnet-beta's feature set, builtins, sysvars, SPL Token and ATA programs,
     // signature verification on, and (feature `precompiles`) the Ed25519 precompile.
-    let mut svm = LiteSVM::new();
+    // A deep in-process faucet: one world serves hundreds of scenarios, each with its own wallets.
+    let mut svm = LiteSVM::new().with_lamports(1_000_000_000 * SOL);
     svm.add_program_from_file(PROGRAM_ID, SO).expect("build first: (cd ../program && cargo build-sbf)");
     // Mainnet's Rent sysvar reads 5,080 lamports per byte; the crates default to 6,960.
     svm.set_sysvar(&solana_rent::Rent::with_lamports_per_byte(5_080));
@@ -1039,7 +1099,49 @@ impl World {
         };
         let admin = w.admin.insecure_clone();
         ok(w.send(&[ix], &[&admin]));
+        // A fresh deployment is fail-closed (SPEC 11.1): the switch is on and every cap is zero.
+        // The harness's one extra call: the switch on, caps no `u64` amount can reach, so every
+        // open still goes through the accounting.
+        ok(w.set_caps(true, [u64::MAX; 2], [u64::MAX; 2]));
         w
+    }
+
+    /// As [`World::new`] without the harness's `set_caps`: the state right after `initialize`.
+    pub fn fresh() -> Self {
+        let mut w = Self::new();
+        ok(w.set_caps(true, [0; 2], [0; 2]));
+        w
+    }
+
+    pub fn set_caps_ix(&self, admin: &Pubkey, on: bool, max_swap: [u64; 2], max_open: [u64; 2]) -> Instruction {
+        let mut e = Enc::ix("set_caps").bool(on);
+        for v in max_swap.iter().chain(max_open.iter()) {
+            e = e.u64(*v);
+        }
+        self.admin_ix(admin, e.0)
+    }
+    /// Forget the open value of an asset (as if every open swap had exited). For tests of
+    /// arithmetic that open swaps of up to `u64::MAX` one after another in one world: the add to
+    /// the open value is exact, so the second would not fit beside the first.
+    pub fn reset_open_value(&mut self, asset: u8) {
+        let at = 172 + 8 * asset as usize;
+        let config = self.config;
+        self.patch(&config, |d| d[at..at + 8].copy_from_slice(&0u64.to_le_bytes()));
+    }
+    pub fn set_caps(&mut self, on: bool, max_swap: [u64; 2], max_open: [u64; 2]) -> TxResult {
+        let admin = self.admin.insecure_clone();
+        let ix = self.set_caps_ix(&admin.pubkey(), on, max_swap, max_open);
+        self.send(&[ix], &[&admin])
+    }
+    /// `(caps_on, max_swap, max_open, open_value)` of an asset, from the `Config` account.
+    pub fn caps(&self, asset: u8) -> (bool, u64, u64, u64) {
+        let d = self.data(&self.config);
+        assert_eq!(d.len(), 256);
+        let a = asset as usize * 8;
+        (d[139] != 0, u64_at(&d, 140 + a), u64_at(&d, 156 + a), u64_at(&d, 172 + a))
+    }
+    pub fn open_value(&self, asset: u8) -> u64 {
+        self.caps(asset).3
     }
 
     // ---- time, transactions, balances
@@ -1317,7 +1419,9 @@ impl World {
                 e = e.bytes(&[0; 32]);
             }
         }
+        e = e.u32(t.w_z);
         let mut data = e.0;
+        assert_eq!(data.len(), 738);
         data.resize(768, 0);
         let lamports = w.rent(768);
         w.svm
@@ -1361,6 +1465,7 @@ impl World {
             .i64(self.now() + 60)
             .u32(self.maker(&m.pda).quote_epoch)
             .u64(quote_id)
+            .u32(t.w_z)
             .0;
         data.resize(192, 0);
         let lamports = self.rent(192);
@@ -1420,6 +1525,7 @@ impl World {
             .bytes(share)
             .bytes(pok)
             .i64(expires_at)
+            .u32(terms.w_z)
             .0;
         (
             Instruction {
@@ -1451,7 +1557,7 @@ impl World {
             meta(r.taker, r.taker_signs, true),
             meta(r.swap, false, true),
             meta(r.maker, false, true),
-            meta(self.config, false, false),
+            meta(self.config, false, true),
             meta(r.session, false, true),
             meta(SYSTEM, false, false),
             opt(offer, true),
@@ -1481,7 +1587,10 @@ impl World {
         if r.direction == DIR_A {
             e = e.u8(r.key_hint);
         }
-        Instruction { program_id: PROGRAM_ID, accounts, data: e.opt_u8(r.approval_ix).0 }
+        e = e.opt_u8(r.approval_ix);
+        // Amendment 1: lock names an optional watcher, take the payout address.
+        e = if r.direction == DIR_A { e.opt_key(r.watcher) } else { e.key(&r.payout) };
+        Instruction { program_id: PROGRAM_ID, accounts, data: e.0 }
     }
 
     /// A fresh, funded taker and a well-formed lock or take against `source`; nothing is sent.
@@ -1538,7 +1647,10 @@ impl World {
             source,
             sysvar: None,
             token: (asset == ASSET_USDC).then(|| (self.mint, self.ata(&taker.pubkey()), vault, TOKEN)),
+            watcher: None,
+            payout: taker.pubkey(),
         };
+        let payout = taker.pubkey();
         let fx = SwapFx {
             taker,
             session,
@@ -1553,6 +1665,7 @@ impl World {
             view_t,
             enc_key,
             notice: None,
+            payout,
         };
         (fx, raw)
     }
@@ -1611,7 +1724,7 @@ impl World {
                 meta(*caller, true, true),
                 meta(fx.pda, false, true),
                 meta(m.pda, false, true),
-                meta(self.config, false, false),
+                meta(self.config, false, true),
                 meta(fx.taker.pubkey(), false, true),
                 meta(maker_wallet, false, true),
                 meta(self.treasury, false, true),
@@ -1624,6 +1737,14 @@ impl World {
                 opt(usdc.then_some(TOKEN), false),
             ],
             data,
+        };
+        // `payout` (the swap's payout address; the taker in direction A), its associated token
+        // account, and no associated-token program unless a test adds it.
+        let with_payout = |mut ix: Instruction| {
+            ix.accounts.push(meta(fx.payout, false, true));
+            ix.accounts.push(opt(usdc.then(|| self.ata(&fx.payout)), true));
+            ix.accounts.push(opt(None, false));
+            ix
         };
         let operator = m.operator.pubkey();
         let payout = m.payout.pubkey();
@@ -1639,7 +1760,7 @@ impl World {
                 ],
                 data: Enc::ix(name).bytes(open).bytes(share).bytes(pok).0,
             },
-            Call::Fund { open, share, pok, view } => Instruction {
+            Call::Fund { open, share, pok, view, watcher } => Instruction {
                 program_id: PROGRAM_ID,
                 accounts: vec![
                     meta(*caller, true, true),
@@ -1652,18 +1773,19 @@ impl World {
                     opt(usdc.then_some(fx.vault), true),
                     opt(usdc.then_some(TOKEN), false),
                 ],
-                data: Enc::ix(name).bytes(open).bytes(share).bytes(pok).bytes(view).0,
+                data: Enc::ix(name).bytes(open).bytes(share).bytes(pok).bytes(view).opt_key(*watcher).0,
             },
             Call::Reject { open, reason } => settle(Enc::ix(name).bytes(open).u8(*reason).0, operator),
             Call::PostNotice { commitment, ct } => short(Enc::ix(name).bytes(commitment).bytes(ct).0),
-            Call::SetReady => short(Enc::ix(name).0),
+            Call::SetReady | Call::Freeze => short(Enc::ix(name).0),
             Call::Withhold(None) => short(Enc::ix(name).u8(0).0),
             Call::Withhold(Some((txid, view))) => short(Enc::ix(name).u8(1).bytes(txid).bytes(view).0),
             Call::PublishEvidence(txid, view) => short(Enc::ix(name).bytes(txid).bytes(view).0),
             Call::Refund(secret) => settle(Enc::ix(name).bytes(secret).0, operator),
-            Call::Claim(secret) => settle(Enc::ix(name).bytes(secret).0, payout),
+            // `claim` and `withdraw_owed`: the Settle list plus the payout accounts (SPEC 11.2).
+            Call::Claim(secret) => with_payout(settle(Enc::ix(name).bytes(secret).0, payout)),
             // A parked maker payout is pulled to the payout wallet in these tests.
-            Call::WithdrawOwed(who) => settle(Enc::ix(name).u8(*who).0, payout),
+            Call::WithdrawOwed(who) => with_payout(settle(Enc::ix(name).u8(*who).0, payout)),
             _ => settle(Enc::ix(name).0, operator),
         }
     }
@@ -1682,10 +1804,14 @@ impl World {
     }
     /// `fund` with a fresh share and view share and the swap's current open hash.
     pub fn fund_swap(&mut self, m: &mut MakerFx, fx: &SwapFx) -> TxResult {
+        self.fund_swap_with(m, fx, None)
+    }
+    /// `fund`, naming the maker's watcher (SPEC 11.6).
+    pub fn fund_swap_with(&mut self, m: &mut MakerFx, fx: &SwapFx, watcher: Option<Pubkey>) -> TxResult {
         let open = self.swap(&fx.pda).expect("swap").open_hash(&fx.pda);
         let (_, share, pok) = m.new_share();
         let op = m.operator.insecure_clone();
-        self.call(m, fx, &Call::Fund { open, share, pok, view: new_view() }, &op)
+        self.call(m, fx, &Call::Fund { open, share, pok, view: new_view(), watcher }, &op)
     }
     /// `post_notice` by the claimer (A: operator; B: the session key) with a fresh opening.
     pub fn notice(&mut self, m: &MakerFx, fx: &mut SwapFx) -> TxResult {
@@ -1765,8 +1891,34 @@ impl World {
     }
 
     pub fn swap_with(&mut self, m: &mut MakerFx, asset: u8, direction: u8, terms: &Terms, stage: Stage) -> SwapFx {
-        self.live_offer(m, asset, direction, terms, PRICE);
-        let mut fx = self.open(m, asset, direction, XMR);
+        self.swap_named(m, asset, direction, terms, stage, None)
+    }
+
+    /// As [`World::swap_at`], with a watcher named: by the taker at `lock` (direction A), by the
+    /// maker at `fund` (direction B). The offer must have a freeze window. Returns the watcher.
+    pub fn swap_watched(&mut self, asset: u8, direction: u8, terms: &Terms, stage: Stage) -> (MakerFx, SwapFx, Keypair) {
+        assert!(terms.w_z > 0, "a watcher needs a freeze window");
+        let mut m = self.register_maker();
+        let watcher = self.fund(SOL);
+        let fx = self.swap_named(&mut m, asset, direction, terms, stage, Some(watcher.pubkey()));
+        (m, fx, watcher)
+    }
+
+    fn swap_named(
+        &mut self,
+        m: &mut MakerFx,
+        asset: u8,
+        direction: u8,
+        terms: &Terms,
+        stage: Stage,
+        watcher: Option<Pubkey>,
+    ) -> SwapFx {
+        let offer = self.live_offer(m, asset, direction, terms, PRICE);
+        let (mut fx, mut raw) = self.prepare_open(m, asset, direction, XMR, Source::Offer(offer));
+        if direction == DIR_A {
+            raw.watcher = watcher;
+        }
+        ok(self.send_open(&fx, &raw));
         if stage == Stage::Opened {
             return fx;
         }
@@ -1775,7 +1927,7 @@ impl World {
             if direction == DIR_A {
                 ok(self.approve(m, &fx));
             } else {
-                ok(self.fund_swap(m, &fx));
+                ok(self.fund_swap_with(m, &fx, watcher));
             }
         }
         if stage == Stage::Active {
@@ -1839,7 +1991,7 @@ impl World {
             // The session key's lamports count as the taker's (the sweep returns them).
             fx.session.pubkey(),
         ];
-        Ledger { asset: fx.asset, keys, before: self.ledger_read(fx.asset, &keys), swap_rent: self.rent(736) as i128 }
+        Ledger { asset: fx.asset, keys, before: self.ledger_read(fx.asset, &keys), swap_rent: self.rent(SWAP_LEN) as i128 }
     }
 }
 
@@ -1897,7 +2049,7 @@ impl World {
     pub fn eth_board(&self, maker: &Pubkey) -> Pubkey {
         pda(&[b"eth_board", maker.as_ref()])
     }
-    pub fn set_eth_quote_ix(&self, m: &MakerFx, slot: u8, quote: &[u8; 251], sig: &[u8; 65]) -> Instruction {
+    pub fn set_eth_quote_ix(&self, m: &MakerFx, slot: u8, quote: &[u8; 255], sig: &[u8; 65]) -> Instruction {
         Instruction {
             program_id: PROGRAM_ID,
             accounts: vec![

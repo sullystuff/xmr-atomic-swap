@@ -17,6 +17,7 @@ pub mod contexts;
 pub mod curve;
 pub mod errors;
 pub mod events;
+pub mod logic;
 pub mod open;
 pub mod registry;
 pub mod settle;
@@ -63,6 +64,12 @@ pub mod xmr_swap {
     /// Sets `admin` to the default key; afterwards the four admin setters fail forever.
     pub fn freeze_config(ctx: Context<AdminConfig>) -> Result<()> {
         admin::freeze_config(ctx)
+    }
+
+    /// Amendment 1 (SPEC 11.1). Admin: the global switch and the per-asset caps. `ConfigFrozen`
+    /// after `freeze_config`.
+    pub fn set_caps(ctx: Context<AdminConfig>, caps_on: bool, max_swap: [u64; 2], max_open: [u64; 2]) -> Result<()> {
+        admin::set_caps(ctx, caps_on, max_swap, max_open)
     }
 
     /// Moves fees to a destination the treasury authority names. SOL: never below the Treasury
@@ -142,7 +149,7 @@ pub mod xmr_swap {
     }
 
     /// Full write of one board slot. Opaque to the program.
-    pub fn set_eth_quote(ctx: Context<SetEthQuote>, slot: u8, quote: [u8; 251], sig: [u8; 65]) -> Result<()> {
+    pub fn set_eth_quote(ctx: Context<SetEthQuote>, slot: u8, quote: [u8; 255], sig: [u8; 65]) -> Result<()> {
         registry::set_eth_quote(ctx, slot, quote, sig)
     }
 
@@ -189,8 +196,9 @@ pub mod xmr_swap {
         maker_spend_pub: [u8; 32],
         maker_pok: [u8; 64],
         maker_view: [u8; 32],
+        watcher: Option<Pubkey>,
     ) -> Result<()> {
-        open::fund(ctx, expected_open, maker_spend_pub, maker_pok, maker_view)
+        open::fund(ctx, expected_open, maker_spend_pub, maker_pok, maker_view, watcher)
     }
 
     // -------------------------------------------------------------- progress and settlement (SPEC 4.5)
@@ -220,6 +228,11 @@ pub mod xmr_swap {
         settle::set_ready(ctx)
     }
 
+    /// Z1 (SPEC 11.6). The watcher the swap names, or the locker: NOTICED, before `T_co`, once.
+    pub fn freeze(ctx: Context<Short>) -> Result<()> {
+        settle::freeze(ctx)
+    }
+
     /// A7a-d, B8.
     pub fn abort(ctx: Context<Settle>) -> Result<()> {
         settle::abort(ctx)
@@ -241,7 +254,7 @@ pub mod xmr_swap {
     }
 
     /// A11a-c, B10a-c.
-    pub fn claim(ctx: Context<Settle>, secret: [u8; 32]) -> Result<()> {
+    pub fn claim(ctx: Context<SettlePayout>, secret: [u8; 32]) -> Result<()> {
         settle::claim(ctx, secret)
     }
 
@@ -262,7 +275,7 @@ pub mod xmr_swap {
     }
 
     /// `who`: 0 taker, 1 maker (signer: the maker's owner), 2 treasury.
-    pub fn withdraw_owed(ctx: Context<Settle>, who: u8) -> Result<()> {
+    pub fn withdraw_owed(ctx: Context<SettlePayout>, who: u8) -> Result<()> {
         settle::withdraw_owed(ctx, who)
     }
 

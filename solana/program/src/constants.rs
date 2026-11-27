@@ -20,6 +20,9 @@ pub const MIN_CLAIM_DELAY_SECS: u32 = 3_600;
 pub const MIN_APPROVAL_SECS: u32 = 30;
 pub const MAX_APPROVAL_SECS: u32 = 3_600;
 pub const MAX_FINAL_SECS: u32 = 2_592_000;
+/// Bounds of a nonzero freeze window `W_z` (SPEC 11.6).
+pub const MIN_FREEZE_SECS: u32 = 3_600;
+pub const MAX_FREEZE_SECS: u32 = 259_200;
 pub const READY_MIN_SECS_PER_CONF: i64 = 60;
 pub const CLOSE_GRACE_SECS: i64 = 2_592_000;
 pub const LINK_DELAY_SECS: i64 = 604_800;
@@ -50,7 +53,7 @@ pub const MAKER_SIZE: usize = 1_280;
 pub const OFFER_SIZE: usize = 768;
 pub const ETH_BOARD_SIZE: usize = 1_408;
 pub const QUOTE_SIZE: usize = 192;
-pub const SWAP_SIZE: usize = 736;
+pub const SWAP_SIZE: usize = 800;
 
 /// Assets: `0` = SOL, `1` = USDC (`Config.usdc_mint`).
 pub const ASSET_SOL: u8 = 0;
@@ -69,6 +72,8 @@ pub mod state {
     pub const HOLD: u8 = 7;
     pub const WITHHELD: u8 = 8;
     pub const DONE: u8 = 9;
+    /// A watcher or the locker paused the claimer's claim-without-ready (SPEC 11.6).
+    pub const FROZEN: u8 = 10;
 }
 
 /// Bits of `Swap.flags`.
@@ -78,6 +83,8 @@ pub mod flag {
     pub const REVEALED: u8 = 1 << 2;
     pub const REVEALER_LOCKER: u8 = 1 << 3;
     pub const LATE_NOTICE: u8 = 1 << 4;
+    /// Counted in the asset's open value (SPEC 11.1).
+    pub const COUNTED: u8 = 1 << 5;
 }
 
 /// Counter ids (SPEC 3.7); also the `outcome` codes.
@@ -115,6 +122,10 @@ pub mod counter {
     pub const RELEASES: u8 = 30;
     pub const SPLITS: u8 = 31;
     pub const REJECTIONS_NO_FAULT: u8 = 32;
+    pub const FREEZES: u8 = 33;
+    pub const REFUNDS_AFTER_FREEZE: u8 = 34;
+    pub const BACKOUTS_AFTER_FREEZE: u8 = 35;
+    pub const CLAIMS_AFTER_FREEZE: u8 = 36;
     pub const COUNT: usize = 40;
     /// `outcome` while the swap is open; the counter byte of an event that moves none.
     pub const NONE: u8 = 0xff;
@@ -147,3 +158,23 @@ pub mod mode {
 
 pub const DIR_A: u8 = 0;
 pub const DIR_B: u8 = 1;
+
+/// The constants above are the ones the shared rules use (`escrow_logic::bounds::SOLANA`): the
+/// build fails if the two ever differ.
+const _: () = {
+    let c = &escrow_logic::bounds::SOLANA;
+    assert!(c.fee_bps == FEE_BPS && c.max_deposit_bps == MAX_DEPOSIT_BPS);
+    assert!(c.hold_secs == HOLD_SECS && c.split_secs == SPLIT_SECS && c.expiry_secs == EXPIRY_SECS);
+    assert!(c.block_allowance_secs == BLOCK_ALLOWANCE_SECS && c.cut_margin_secs == CUT_MARGIN_SECS);
+    assert!(c.margin_secs == MARGIN_SECS && c.finality_secs == FINALITY_SECS);
+    assert!(c.min_notice_secs == MIN_NOTICE_SECS && c.max_notice_secs == MAX_NOTICE_SECS);
+    assert!(c.min_claim_delay_secs == MIN_CLAIM_DELAY_SECS && c.max_approval_secs == MAX_APPROVAL_SECS);
+    assert!(c.max_final_secs == MAX_FINAL_SECS && c.ready_min_secs_per_conf == READY_MIN_SECS_PER_CONF);
+    assert!(c.close_grace_secs == CLOSE_GRACE_SECS && c.link_delay_secs == LINK_DELAY_SECS);
+    assert!(c.max_open_pending == MAX_OPEN_PENDING && c.max_amount == u64::MAX as u128);
+    assert!(c.explicit_approve == EXPLICIT_APPROVE);
+    assert!(escrow_logic::bounds::MIN_APPROVAL_SECS == MIN_APPROVAL_SECS);
+    assert!(escrow_logic::bounds::MIN_FREEZE_SECS == MIN_FREEZE_SECS && escrow_logic::bounds::MAX_FREEZE_SECS == MAX_FREEZE_SECS);
+    assert!(escrow_logic::bounds::DAY_SECS == DAY_SECS);
+    assert!(escrow_logic::machine::counter::COUNT == counter::COUNT);
+};

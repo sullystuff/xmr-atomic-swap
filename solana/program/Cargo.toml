@@ -26,6 +26,8 @@ anchor-lang = "=0.32.1"
 anchor-spl = { version = "=0.32.1", default-features = false, features = ["token", "associated_token", "token_2022"] }
 solana-curve25519 = "=2.3.13"
 solana-msg = "2"
+# The pure rules of the escrow machine, shared with the reference model (SPEC 11.4).
+escrow-logic = { path = "../../crates/escrow-logic" }
 solana-sha256-hasher = "2.3"
 
 [profile.release]

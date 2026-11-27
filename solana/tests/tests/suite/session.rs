@@ -13,7 +13,7 @@ fn all_calls(w: &World, m: &mut MakerFx, fx: &SwapFx) -> Vec<Call> {
     let notice = fx.notice.unwrap_or((rand32(), new_view()));
     vec![
         Call::Approve { open, share, pok },
-        Call::Fund { open, share, pok, view: new_view() },
+        Call::Fund { open, share, pok, view: new_view(), watcher: None },
         Call::Reject { open, reason: 0 },
         Call::CancelPending,
         Call::PostNotice { commitment: notice_commitment(&fx.pda, &notice.0, &notice.1), ct: [0; 104] },
@@ -293,7 +293,7 @@ fn session_key_lamport_rules() {
     assert_eq!(w.lamports(&session.pubkey()), 0);
     assert!(w.svm.get_account(&session.pubkey()).is_none_or(|a| a.lamports == 0));
     // lock fee + two session fees; the swap account's rent is still locked until it is closed.
-    assert_eq!(taker_start - w.lamports(&fx.taker.pubkey()), 3 * FEE + w.rent(736));
+    assert_eq!(taker_start - w.lamports(&fx.taker.pubkey()), 3 * FEE + w.rent(SWAP_LEN));
     let op = m.operator.insecure_clone();
     ok(w.call(&m, &fx, &Call::CloseSwap, &op));
     assert_eq!(taker_start - w.lamports(&fx.taker.pubkey()), 3 * FEE);

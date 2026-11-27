@@ -116,7 +116,7 @@ fn attempt(f: &mut Sites, site: Site, make: &dyn Fn(&[u8; 32]) -> ([u8; 32], [u8
         Site::Fund => {
             let (share, pok) = make(&maker_ctx);
             let open = f.w.swap(&f.pending_b.pda).unwrap().open_hash(&f.pending_b.pda);
-            let ix = f.w.call_ix(&f.m, &f.pending_b, &Call::Fund { open, share, pok, view: new_view() }, &op.pubkey());
+            let ix = f.w.call_ix(&f.m, &f.pending_b, &Call::Fund { open, share, pok, view: new_view(), watcher: None }, &op.pubkey());
             f.w.send(&[ix], &[&op])
         }
         Site::Lock | Site::Take => {
@@ -422,11 +422,11 @@ fn view_shares_must_be_canonical_and_nonzero() {
     let open = w.swap(&fx.pda).unwrap().open_hash(&fx.pda);
     for (name, view) in bad {
         let (_, share, pok) = m.new_share();
-        let res = w.call(&m, &fx, &Call::Fund { open, share, pok, view }, &op);
+        let res = w.call(&m, &fx, &Call::Fund { open, share, pok, view, watcher: None }, &op);
         assert!(is_err(&res, "InvalidScalar"), "fund {name}: {}", err_string(&res));
     }
     let (_, share, pok) = m.new_share();
-    ok(w.call(&m, &fx, &Call::Fund { open, share, pok, view: l_minus_1 }, &op));
+    ok(w.call(&m, &fx, &Call::Fund { open, share, pok, view: l_minus_1, watcher: None }, &op));
     assert_eq!(w.swap(&fx.pda).unwrap().locker_view, l_minus_1);
 }
 

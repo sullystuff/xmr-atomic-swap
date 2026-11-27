@@ -45,7 +45,13 @@ pub fn initialize(
     config.split_mode = split_mode;
     config.bump = ctx.bumps.config;
     config.treasury_bump = ctx.bumps.treasury;
-    config.reserved = [0; 117];
+    // SPEC 11.1: fail closed. The switch is on and every cap is zero: nothing can open until
+    // the admin sets caps.
+    config.caps_on = 1;
+    config.max_swap = [0; 2];
+    config.max_open = [0; 2];
+    config.open_value = [0; 2];
+    config.reserved = [0; 68];
     a.treasury.bump = ctx.bumps.treasury;
     a.treasury.reserved = [0; 7];
     emit!(ConfigInitialized {
@@ -100,6 +106,18 @@ pub fn freeze_config(ctx: Context<AdminConfig>) -> Result<()> {
     admin_only(ctx.accounts)?;
     ctx.accounts.config.admin = Pubkey::default();
     changed(&ctx.accounts.config);
+    Ok(())
+}
+
+/// SPEC 11.1: the caps gate only `lock` and `take`. Changing them never touches an open swap;
+/// `open_value` is the program's own accounting and is not an argument.
+pub fn set_caps(ctx: Context<AdminConfig>, caps_on: bool, max_swap: [u64; 2], max_open: [u64; 2]) -> Result<()> {
+    admin_only(ctx.accounts)?;
+    let config = &mut ctx.accounts.config;
+    config.caps_on = caps_on as u8;
+    config.max_swap = max_swap;
+    config.max_open = max_open;
+    emit!(CapsChanged { caps_on, max_swap, max_open });
     Ok(())
 }
 

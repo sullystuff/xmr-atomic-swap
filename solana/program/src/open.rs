@@ -12,8 +12,15 @@ use crate::{
     errors::SwapError,
     events::*,
     state::*,
-    util::{self, asset_amount, bps_of, check_bounds, create_pda_account, is_uninitialized, tier_index, Params, Pending},
+    logic,
+    util::{self, create_pda_account, is_uninitialized, tier_index},
 };
+use escrow_logic::{
+    amounts::{swap_amount, AmountError},
+    bounds::SwapParams,
+    machine as m,
+};
+use solana_curve25519::edwards::validate_edwards;
 
 /// What `lock` and `take` have in common.
 pub struct OpenArgs {
@@ -34,6 +41,10 @@ pub struct OpenArgs {
     pub maker_enc_version: u32,
     pub key_hint: u8,
     pub approval_ix: Option<u8>,
+    /// A: the watcher named at lock. B: none (the maker names its own at `fund`).
+    pub watcher: Option<Pubkey>,
+    /// B: where a claim pays. A: zeros.
+    pub payout: Pubkey,
 }
 
 impl OpenArgs {
@@ -55,6 +66,8 @@ impl OpenArgs {
             maker_enc_version: a.maker_enc_version,
             key_hint: a.key_hint,
             approval_ix: a.approval_ix,
+            watcher: a.watcher,
+            payout: Pubkey::default(),
         })
     }
     #[inline(never)]
@@ -75,6 +88,8 @@ impl OpenArgs {
             maker_enc_version: a.maker_enc_version,
             key_hint: 0,
             approval_ix: a.approval_ix,
+            watcher: None,
+            payout: a.payout,
         })
     }
 }
@@ -84,7 +99,7 @@ struct Terms {
     offer_mode: u8,
     amount: u64,
     price: u64,
-    params: Params,
+    params: SwapParams,
 }
 
 /// Step 2 of SPEC 4.4: everything the taker supplies that the program can check by itself.
@@ -116,14 +131,16 @@ fn terms_from_offer(offer: &Offer, maker_key: &Pubkey, a: &OpenArgs, now: i64) -
     require!(now <= offer.updated_at.saturating_add(offer.valid_secs as i64), SwapError::OfferStale);
     require!(offer.seq >= a.min_seq, SwapError::SeqTooOld);
     require!(offer.terms_hash == a.expected_terms_hash, SwapError::TermsChanged);
-    // SPEC 3.1: a swap of nothing is refused, whatever the offer's limits say.
-    require!(a.xmr > 0, SwapError::AmountOutOfRange);
-    require!(offer.min_xmr <= a.xmr && a.xmr <= offer.max_xmr, SwapError::AmountOutOfRange);
     let tier = tier_index(a.xmr, &offer.price_above, offer.prices_used()).ok_or(SwapError::TiersInvalid)?;
     let price = offer.prices[tier];
-    let amount = asset_amount(a.xmr, price, a.direction == DIR_A)?;
-    // A take of dust XMR whose floor is zero would lock the taker's XMR against nothing.
-    require!(amount > 0, SwapError::AmountOutOfRange);
+    // A: ceil(xmr × price / 10^12), bounded by max_pay. B: floor, bounded by min_receive. A size
+    // of zero, or an amount of zero (a take of dust), is refused (SPEC 3.1).
+    let amount = swap_amount(a.direction == DIR_A, a.xmr, price as u128, u64::MAX as u128).map_err(|e| match e {
+        AmountError::MathOverflow => error!(SwapError::MathOverflow),
+        AmountError::AmountOutOfRange => error!(SwapError::AmountOutOfRange),
+    })?;
+    let amount = logic::amount(amount)?;
+    require!(offer.min_xmr <= a.xmr && a.xmr <= offer.max_xmr, SwapError::AmountOutOfRange);
     if a.direction == DIR_A {
         require!(amount <= a.limit, SwapError::PriceMoved);
     } else {
@@ -135,7 +152,7 @@ fn terms_from_offer(offer: &Offer, maker_key: &Pubkey, a: &OpenArgs, now: i64) -
         offer_mode: offer.mode,
         amount,
         price,
-        params: Params {
+        params: SwapParams {
             w_a: offer.w_a,
             w_n: offer.w_n,
             d_c: offer.d_c,
@@ -143,6 +160,7 @@ fn terms_from_offer(offer: &Offer, maker_key: &Pubkey, a: &OpenArgs, now: i64) -
             w_f: offer.w_f,
             depth,
             dep_bps: offer.dep_bps,
+            w_z: offer.w_z,
         },
     })
 }
@@ -174,7 +192,7 @@ fn terms_from_quote(
         offer_mode: mode::QUOTE,
         amount: quote.amount,
         price: 0,
-        params: Params {
+        params: SwapParams {
             w_a: 0,
             w_n: quote.w_n,
             d_c: quote.d_c,
@@ -182,8 +200,23 @@ fn terms_from_quote(
             w_f: quote.w_f,
             depth: quote.depth,
             dep_bps: quote.dep_bps,
+            w_z: quote.w_z,
         },
     })
+}
+
+/// SPEC 11.2: the payout address of a take. Refused: the default key (which is also the system
+/// program), this program, and any address off the curve. Every program-derived address is off
+/// the curve, so that covers PDAs and every associated token account; a token account created
+/// at an ordinary keypair address cannot be told apart here (`take` is not given the account).
+fn payout_arg(payout: &Pubkey, taker: &Pubkey) -> m::PayoutArg {
+    if payout == taker {
+        m::PayoutArg::Taker
+    } else if *payout == Pubkey::default() || *payout == crate::ID || !validate_edwards(&PodEdwardsPoint(payout.to_bytes())) {
+        m::PayoutArg::Invalid
+    } else {
+        m::PayoutArg::Other
+    }
 }
 
 /// The first pool slot at or after `hint` (wrapping) that is filled and unused; marks it used.
@@ -277,36 +310,42 @@ pub fn open(ctx: Context<OpenSwap>, a: Box<OpenArgs>) -> Result<()> {
         None => false,
     };
 
-    // 5. The start state (SPEC 3.8).
-    require!(terms.offer_mode != mode::ADVANCE || approved, SwapError::ApprovalRequired);
-    let effective = match terms.offer_mode {
-        mode::QUOTE => mode::QUOTE,
-        mode::AUTO => mode::AUTO,
-        _ if approved => mode::ADVANCE,
-        m => m,
+    // 5. The start state, the bounds, the payout address, the watcher, the caps and the pending
+    //    count: `machine::open`, the one place a cap or a pause can refuse anything (SPEC 3.8, 11).
+    let none = Pubkey::default();
+    require!(a.watcher != Some(none), SwapError::WatcherNotAllowed);
+    let open_args = m::OpenArgs {
+        direction: if is_a { m::Direction::A } else { m::Direction::B },
+        offer_mode: terms.offer_mode,
+        approval: approved,
+        xmr: a.xmr,
+        amount: terms.amount as u128,
+        params: terms.params,
+        payout: payout_arg(&a.payout, &taker_key),
+        watcher: a.watcher.is_some(),
     };
-    let window = effective == mode::WINDOW;
-    let pending = match (is_a, window) {
-        (_, true) => Pending::ApprovalWindow,
-        (true, false) => Pending::None,
-        (false, false) => Pending::FundingWindow,
+    let env = m::Env {
+        open_pending: acc.maker.open_pending,
+        caps: logic::caps(&acc.config, a.asset),
+        maker_paused: acc.maker.paused != 0,
+        ..m::Env::OK
     };
-    check_bounds(&terms.params, pending)?;
+    let fx = m::open(&m::Swap::NONE, &open_args, m::Role::TakerWallet, now, &env, logic::CONSTS)
+        .map_err(logic::gate_error)?;
+    let opened = fx.state;
+    let effective = opened.mode;
 
     let mut maker_spend_pub = [0u8; 32];
-    if pending == Pending::None {
+    if matches!(opened.state, m::State::Active) {
         // ACTIVE at lock: the maker's share is fixed now.
         if let Some(offer) = acc.offer.as_mut() {
             maker_spend_pub = take_pool_key(offer, a.key_hint)?;
         } else if let Some(quote) = &acc.quote {
             maker_spend_pub = quote.maker_spend_pub;
         }
-    } else {
-        require!(acc.maker.open_pending < MAX_OPEN_PENDING, SwapError::TooManyPending);
-        acc.maker.pending_opened();
     }
     // Capacity is consumed when a swap starts bound: ACTIVE in A, any take outside window mode.
-    if !window {
+    if effective != mode::WINDOW {
         if let Some(offer) = acc.offer.as_mut() {
             offer.capacity_xmr = offer.capacity_xmr.checked_sub(a.xmr).ok_or(SwapError::CapacityExceeded)?;
         }
@@ -317,8 +356,8 @@ pub fn open(ctx: Context<OpenSwap>, a: Box<OpenArgs>) -> Result<()> {
     require!(a.session_lamports >= rent.minimum_balance(0), SwapError::SessionBudgetTooLow);
 
     // ---- effects
-    let deposit = bps_of(terms.amount, terms.params.dep_bps);
-    let escrow_in = if is_a { terms.amount } else { deposit };
+    let deposit = logic::amount(opened.deposit)?;
+    let escrow_in = logic::amount(fx.escrow_in)?;
     let system = acc.system_program.to_account_info();
     let taker_ai = acc.taker.to_account_info();
     let swap_ai = acc.swap.to_account_info();
@@ -389,13 +428,11 @@ pub fn open(ctx: Context<OpenSwap>, a: Box<OpenArgs>) -> Result<()> {
     )?;
 
     let mut swap = Swap::new_boxed();
+    // State, mode, flags (counted), amounts, windows and every deadline: as the rules computed.
+    logic::store(&mut swap, &opened)?;
     swap.taker = taker_key;
     swap.maker = maker_key;
-    swap.direction = a.direction;
     swap.asset = a.asset;
-    swap.mode = effective;
-    swap.outcome = counter::NONE;
-    swap.depth = terms.params.depth;
     swap.bump = swap_bump;
     swap.vault_bump = vault_bump;
     swap.swap_nonce = a.swap_nonce;
@@ -403,32 +440,22 @@ pub fn open(ctx: Context<OpenSwap>, a: Box<OpenArgs>) -> Result<()> {
     swap.taker_enc_key = a.taker_enc_key;
     swap.maker_enc_version = a.maker_enc_version;
     swap.maker_enc_key = maker_enc_key;
-    swap.amount = terms.amount;
-    swap.deposit = deposit;
     swap.xmr = a.xmr;
     swap.price = terms.price;
     swap.dep_bps = terms.params.dep_bps;
-    swap.fee_bps = FEE_BPS;
-    swap.w_n = terms.params.w_n;
-    swap.d_c = terms.params.d_c;
-    swap.w_c = terms.params.w_c;
     swap.taker_spend_pub = a.taker_spend_pub;
     swap.maker_spend_pub = maker_spend_pub;
     swap.locker_view = a.taker_view;
-    swap.t_lock = now;
-    swap.t_final = now + terms.params.w_f as i64;
-    if pending == Pending::None {
-        swap.state = state::ACTIVE;
-        swap.t_active = now;
-        swap.t_note_deadline = now + terms.params.w_n as i64;
-    } else {
-        swap.state = state::PENDING;
-        swap.t_pending_deadline = now + util::pending_window(&terms.params, pending) as i64;
-    }
+    // B: where a claim pays. A: zeros (the taker receives XMR; refunds return to the wallet).
+    swap.payout = if is_a { none } else { a.payout };
+    // A: the taker's watcher. B: zeros until the maker names its own at `fund`.
+    swap.watcher = a.watcher.unwrap_or(none);
     write_swap(&swap_ai, &swap)?;
 
-    let ctr = if is_a { counter::LOCKS } else { counter::TAKES };
-    acc.maker.bump(ctr);
+    // The maker's record and the asset's open value (SPEC 11.1): the add is exact.
+    logic::record(&mut acc.maker, a.asset, &fx);
+    acc.config.open_value[a.asset as usize] = logic::amount(fx.open_value_after)?;
+    let ctr = fx.counter.unwrap_or(counter::NONE);
     emit!(SwapOpened {
         swap: swap_key,
         maker: maker_key,
@@ -443,6 +470,8 @@ pub fn open(ctx: Context<OpenSwap>, a: Box<OpenArgs>) -> Result<()> {
         deposit,
         xmr: a.xmr,
         depth: swap.depth,
+        payout: swap.payout,
+        watcher: swap.watcher,
     });
 
     // The quote is single-use: consumed and closed, rent to the operator. Last, because moving
@@ -462,6 +491,14 @@ fn check_maker_share(share: &[u8; 32], pok: &[u8; 64], maker_key: &Pubkey) -> Re
     Ok(())
 }
 
+/// The record after `approve` / `fund`, as the rules computed it.
+fn activate(swap: &mut Swap, maker: &mut Maker, row: m::Row, v: &m::Swap, config: &Config, now: i64) -> Result<()> {
+    let fx = m::execute(v, row, now, &logic::env(config, swap.asset, [true; 4]), logic::CONSTS);
+    logic::store(swap, &fx.state)?;
+    logic::record(maker, swap.asset, &fx);
+    Ok(())
+}
+
 /// A2.
 pub fn approve(
     ctx: Context<Approve>,
@@ -473,48 +510,34 @@ pub fn approve(
     let now = util::now()?;
     let swap_key = acc.swap.key();
     let maker_key = acc.maker.key();
-    require!(acc.swap.is_a(), SwapError::WrongDirection);
-    require_keys_eq!(acc.operator.key(), acc.maker.operator, SwapError::Unauthorized);
-    require!(
-        acc.swap.state == state::PENDING && acc.swap.open_hash(&swap_key) == expected_open,
-        SwapError::BadState
-    );
-    require!(now < acc.swap.t_pending_deadline, SwapError::TooLate);
+    let v = logic::view(&acc.swap);
+    let call = m::Call::Approve { open_ok: acc.swap.open_hash(&swap_key) == expected_open };
+    let row = logic::decide(&v, &call, acc.operator.key, &acc.swap, &acc.maker, now)?;
     check_maker_share(&maker_spend_pub, &maker_pok, &maker_key)?;
 
-    let s = &mut acc.swap;
-    s.maker_spend_pub = maker_spend_pub;
-    s.state = state::ACTIVE;
-    s.t_active = now;
-    s.t_note_deadline = now + s.w_n as i64;
-    let response = (now - s.t_lock).max(0) as u64;
-    let m = &mut acc.maker;
-    m.bump(counter::APPROVALS);
-    m.response_secs_sum = m.response_secs_sum.saturating_add(response);
-    m.pending_closed();
+    acc.swap.maker_spend_pub = maker_spend_pub;
+    activate(&mut acc.swap, &mut acc.maker, row, &v, &acc.config, now)?;
     emit!(SwapApproved { swap: swap_key, maker: maker_key, counter: counter::APPROVALS, at: now });
     Ok(())
 }
 
-/// B5.
+/// B5. Never refused by a cap: the whole amount was reserved at `take` (SPEC 11.1).
 pub fn fund(
     ctx: Context<Fund>,
     expected_open: [u8; 32],
     maker_spend_pub: [u8; 32],
     maker_pok: [u8; 64],
     maker_view: [u8; 32],
+    watcher: Option<Pubkey>,
 ) -> Result<()> {
     let acc = ctx.accounts;
     let now = util::now()?;
     let swap_key = acc.swap.key();
     let maker_key = acc.maker.key();
-    require!(!acc.swap.is_a(), SwapError::WrongDirection);
-    require_keys_eq!(acc.operator.key(), acc.maker.operator, SwapError::Unauthorized);
-    require!(
-        acc.swap.state == state::PENDING && acc.swap.open_hash(&swap_key) == expected_open,
-        SwapError::BadState
-    );
-    require!(now < acc.swap.t_pending_deadline, SwapError::TooLate);
+    let v = logic::view(&acc.swap);
+    let call = m::Call::Fund { open_ok: acc.swap.open_hash(&swap_key) == expected_open, watcher: watcher.is_some() };
+    let row = logic::decide(&v, &call, acc.operator.key, &acc.swap, &acc.maker, now)?;
+    require!(watcher != Some(Pubkey::default()), SwapError::WatcherNotAllowed);
     check_maker_share(&maker_spend_pub, &maker_pok, &maker_key)?;
     require!(is_canonical_nonzero_scalar(&maker_view), SwapError::InvalidScalar);
 
@@ -553,17 +576,11 @@ pub fn fund(
         )?;
     }
 
-    let s = &mut acc.swap;
-    s.maker_spend_pub = maker_spend_pub;
-    s.locker_view = maker_view;
-    s.state = state::ACTIVE;
-    s.t_active = now;
-    s.t_note_deadline = now + s.w_n as i64;
-    let response = (now - s.t_lock).max(0) as u64;
-    let m = &mut acc.maker;
-    m.bump(counter::APPROVALS);
-    m.response_secs_sum = m.response_secs_sum.saturating_add(response);
-    m.pending_closed();
+    acc.swap.maker_spend_pub = maker_spend_pub;
+    acc.swap.locker_view = maker_view;
+    // The maker's watcher (SPEC 11.6): a second machine that can pause the taker's claim.
+    acc.swap.watcher = watcher.unwrap_or_default();
+    activate(&mut acc.swap, &mut acc.maker, row, &v, &acc.config, now)?;
     emit!(SwapApproved { swap: swap_key, maker: maker_key, counter: counter::APPROVALS, at: now });
     Ok(())
 }

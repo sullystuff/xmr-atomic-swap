@@ -25,19 +25,41 @@
 //!   executable: there the maker's destination is made unusable by naming another wallet in
 //!   the `maker_wallet` slot, which the program also parks.
 //! * `env.open_pending` and a sequence's `initial_maker` are written into the maker record.
+//! * `env.caps`: the switch and the two caps are set with `set_caps` whenever a step's differ
+//!   from the chain's. The open value is the program's own: it is written once, at the start of
+//!   a scenario (a world is shared by many scenarios, and some rows start from a preset value),
+//!   and from then on every step first **asserts** that the chain's open value is the one the
+//!   vector expects before the call, and compares `open_value_after` after it.
+//! * `env.maker_paused` is both pause bits, set by the owner and the operator.
+//! * `hostile_after_open` (the invariant-3 walk): after the open the caps are zero with the
+//!   switch on and the maker is paused (both come from the steps' `env`), and both epochs are
+//!   bumped; every later step must match exactly as it does without them.
+//! * `payout: other` is a second wallet; `invalid` is the program id. `watcher` is a key of its
+//!   own. A step by `payout` or `watcher` is signed by that key.
+//! * `withdraw_owed` with `who: payout` is `withdraw_owed(0)` with the payout address (and its
+//!   token account) in the payout slots; with `who: taker` the taker names its own wallet there.
+//! * `treasury_can_receive: false` at `split_deposit` is the `treasury` slot of the other
+//!   `split_mode` (SOL: the incinerator; USDC: no treasury vault, as a burn needs none).
+//! * A `multi_sequence` is several swaps of one maker and one asset sharing the open value.
 use crate::common::*;
 use serde_json::Value;
 use solana_instruction::Instruction;
 use solana_keypair::Keypair;
 use solana_signer::Signer;
 
-const STATES: [&str; 10] =
-    ["NONE", "PENDING", "ACTIVE", "NOTICED", "READY", "ABORTED_FREE", "ABORTED_HOLD", "HOLD", "WITHHELD", "DONE"];
+const STATES: [&str; 11] =
+    ["NONE", "PENDING", "ACTIVE", "NOTICED", "READY", "ABORTED_FREE", "ABORTED_HOLD", "HOLD", "WITHHELD", "DONE", "FROZEN"];
 
 struct Sim {
     asset: u8,
     m: MakerFx,
     fx: Option<SwapFx>,
+    /// The key a swap of this scenario names as its watcher (SPEC 11.6).
+    watcher: Keypair,
+    /// The payout address of a take with `payout: other` (SPEC 11.2).
+    dest: Keypair,
+    /// The first step of a scenario writes the open value the vector starts from.
+    started: bool,
 }
 
 /// Lamports and tokens of every account a step can touch.
@@ -57,6 +79,10 @@ struct Snap {
     tok_payout: i128,
     tok_treasury: i128,
     tok_vault: i128,
+    /// The watcher key and the payout address named at take, and the latter's tokens.
+    watcher: i128,
+    dest: i128,
+    tok_dest: i128,
 }
 
 fn snap(w: &World, sim: &Sim) -> Snap {
@@ -69,6 +95,9 @@ fn snap(w: &World, sim: &Sim) -> Snap {
         tok_operator: w.tokens(&w.ata(&sim.m.operator.pubkey())) as i128,
         tok_payout: w.tokens(&w.ata(&sim.m.payout.pubkey())) as i128,
         tok_treasury: w.tokens(&w.treasury_vault) as i128,
+        watcher: w.lamports(&sim.watcher.pubkey()) as i128,
+        dest: w.lamports(&sim.dest.pubkey()) as i128,
+        tok_dest: w.tokens(&w.ata(&sim.dest.pubkey())) as i128,
         ..Snap::default()
     };
     if let Some(fx) = &sim.fx {
@@ -98,6 +127,9 @@ fn diff(a: &Snap, b: &Snap) -> Snap {
         tok_payout: b.tok_payout - a.tok_payout,
         tok_treasury: b.tok_treasury - a.tok_treasury,
         tok_vault: b.tok_vault - a.tok_vault,
+        watcher: b.watcher - a.watcher,
+        dest: b.dest - a.dest,
+        tok_dest: b.tok_dest - a.tok_dest,
     }
 }
 
@@ -108,15 +140,23 @@ fn role_key(w: &World, sim: &Sim, role: &str) -> Keypair {
         "operator" => sim.m.operator.insecure_clone(),
         "owner" => sim.m.owner.insecure_clone(),
         "anyone" => w.stranger.insecure_clone(),
+        "watcher" => sim.watcher.insecure_clone(),
+        "payout" => sim.dest.insecure_clone(),
         other => panic!("unknown caller {other}"),
     }
 }
 
-/// Make each destination able or unable to receive (see the module docs).
-fn apply_env(w: &mut World, sim: &Sim, env: &Value) {
+/// Bring the chain to the step's `env`: which destinations can receive (see the module docs),
+/// the caps and the switch, the maker's pause. The open value is asserted, not written, except
+/// at the first step of a scenario.
+fn apply_env(w: &mut World, sim: &mut Sim, step: &Value) -> Result<(), String> {
+    let env = &step["env"];
+    // At `split_deposit` an unreceiving treasury is the other mode's slot, not a broken account.
+    let split = step["call"] == "split_deposit";
     let can = |k: &str| env[k].as_bool().unwrap();
     let operator = sim.m.operator.pubkey();
     let payout = sim.m.payout.pubkey();
+    let dest = sim.dest.pubkey();
     let taker = sim.fx.as_ref().map(|fx| fx.taker.pubkey());
     if sim.asset == ASSET_USDC {
         if let Some(t) = taker {
@@ -127,17 +167,48 @@ fn apply_env(w: &mut World, sim: &Sim, env: &Value) {
             let ata = w.ata(&wallet);
             w.set_frozen(&ata, !can("maker_can_receive"));
         }
+        let ata = w.ata(&dest);
+        w.set_frozen(&ata, !can("payout_can_receive"));
         let tv = w.treasury_vault;
-        w.set_frozen(&tv, !can("treasury_can_receive"));
+        w.set_frozen(&tv, !can("treasury_can_receive") && !split);
     } else {
         if let Some(t) = taker {
             w.set_can_receive_sol(&t, can("taker_can_receive"));
         }
         // The operator signs; see `wrong_maker_wallet`.
         w.set_can_receive_sol(&payout, can("maker_can_receive"));
+        w.set_can_receive_sol(&dest, can("payout_can_receive"));
         let t = w.treasury;
-        w.set_can_receive_sol(&t, can("treasury_can_receive"));
+        w.set_can_receive_sol(&t, can("treasury_can_receive") || split);
     }
+
+    // Caps (SPEC 11.1): the admin's call, whenever the step's differ from the chain's.
+    let caps = &env["caps"];
+    let want = (caps["on"].as_bool().unwrap(), num(&caps["max_swap"]), num(&caps["max_open"]));
+    let (on, max_swap, max_open, open_value) = w.caps(sim.asset);
+    if (on, max_swap, max_open) != want {
+        ok(w.set_caps(want.0, [want.1; 2], [want.2; 2]));
+    }
+    let want_open = num(&caps["open_value"]);
+    if !sim.started {
+        sim.started = true;
+        let at = 172 + 8 * sim.asset as usize;
+        let config = w.config;
+        w.patch(&config, |d| d[at..at + 8].copy_from_slice(&want_open.to_le_bytes()));
+    } else if open_value != want_open {
+        return Err(format!("the open value before the call is {open_value}, the vector expects {want_open}"));
+    }
+
+    // The maker's pause: both bits.
+    let paused = env["maker_paused"].as_bool().unwrap();
+    if (w.maker(&sim.m.pda).paused != 0) != paused {
+        for signer in [sim.m.owner.insecure_clone(), sim.m.operator.insecure_clone()] {
+            let ix = w.maker_ix(&signer.pubkey(), &sim.m.pda, Enc::ix("set_paused").bool(paused).0);
+            ok(w.send(&[ix], &[&signer]));
+        }
+        assert_eq!(w.maker(&sim.m.pda).paused, if paused { 0b11 } else { 0 });
+    }
+    Ok(())
 }
 
 /// SOL, direction-B refund, "the maker cannot receive": see the module docs.
@@ -159,6 +230,7 @@ fn terms_of(args: &Value) -> Terms {
         d_c: args["d_c"].as_u64().unwrap() as u32,
         w_c: args["w_c"].as_u64().unwrap() as u32,
         w_f: args["w_f"].as_u64().unwrap() as u32,
+        w_z: args["w_z"].as_u64().unwrap() as u32,
         ..Terms::default()
     }
 }
@@ -235,7 +307,7 @@ fn send_open(w: &mut World, sim: &mut Sim, step: &Value) -> Result<Sent, String>
             Ok(_) => {
                 ok(w.refresh(&sim.m, &[(asset, direction, true, [price, 0, 0], 1_000_000 * XMR)]));
                 if direction == DIR_A {
-                    ok(w.refill(&mut sim.m, asset, 0, 2));
+                    refill_free(w, &mut sim.m, asset);
                 }
             }
             Err(e) => {
@@ -251,7 +323,22 @@ fn send_open(w: &mut World, sim: &mut Sim, step: &Value) -> Result<Sent, String>
         source = Source::Offer(w.offer_pda(&sim.m.pda, asset, direction));
     }
 
-    let (fx, mut raw) = w.prepare_open_for(&sim.m, taker, asset, direction, xmr, source, rand16());
+    let (mut fx, mut raw) = w.prepare_open_for(&sim.m, taker, asset, direction, xmr, source, rand16());
+    if direction == DIR_B {
+        match args["payout"].as_str().unwrap() {
+            "taker" => {}
+            "other" => {
+                raw.payout = sim.dest.pubkey();
+                fx.payout = sim.dest.pubkey();
+            }
+            "invalid" => raw.payout = PROGRAM_ID,
+            other => panic!("payout {other}"),
+        }
+    }
+    if args["watcher"].as_bool().unwrap() {
+        assert_eq!(direction, DIR_A, "a take names no watcher: the maker names its own at fund");
+        raw.watcher = Some(sim.watcher.pubkey());
+    }
     if args["approval"].as_bool().unwrap() {
         pre_ixs.push(w.approval_ix(&sim.m, &fx.taker.pubkey(), asset, direction, xmr));
         raw.approval_ix = Some(0);
@@ -259,7 +346,7 @@ fn send_open(w: &mut World, sim: &mut Sim, step: &Value) -> Result<Sent, String>
     }
     let session_lamports = raw.session_lamports as i128;
     sim.fx = Some(fx);
-    apply_env(w, sim, &step["env"]);
+    apply_env(w, sim, step)?;
     let signer = role_key(w, sim, &caller);
     if caller != "taker" {
         // Anyone else can only submit the instruction without the taker's signature.
@@ -299,7 +386,8 @@ fn build_call(w: &World, sim: &mut Sim, step: &Value) -> (Call, Option<([u8; 32]
             let (s, s_pub) = new_share();
             let pok = pok_prove(&s, &sim.m.pda.to_bytes());
             sim.m.shares.insert(s_pub, s);
-            Call::Fund { open: open(args["open_ok"].as_bool().unwrap()), share: s_pub, pok, view: new_view() }
+            let watcher = args["watcher"].as_bool().unwrap().then(|| sim.watcher.pubkey());
+            Call::Fund { open: open(args["open_ok"].as_bool().unwrap()), share: s_pub, pok, view: new_view(), watcher }
         }
         "reject" => Call::Reject { open: open(args["open_ok"].as_bool().unwrap()), reason: args["reason"].as_u64().unwrap() as u8 },
         "cancel_pending" => Call::CancelPending,
@@ -310,6 +398,7 @@ fn build_call(w: &World, sim: &mut Sim, step: &Value) -> (Call, Option<([u8; 32]
             Call::PostNotice { commitment: notice_commitment(&fx.pda, &txid, &view), ct: [7; 104] }
         }
         "set_ready" => Call::SetReady,
+        "freeze" => Call::Freeze,
         "abort" => Call::Abort,
         "refund_unnoticed" => Call::RefundUnnoticed,
         "expire_unnoticed" => Call::ExpireUnnoticed,
@@ -338,7 +427,8 @@ fn build_call(w: &World, sim: &mut Sim, step: &Value) -> (Call, Option<([u8; 32]
             Call::PublishEvidence(txid, view)
         }
         "withdraw_owed" => Call::WithdrawOwed(match args["who"].as_str().unwrap() {
-            "taker" => 0,
+            // Proceeds parked for a payout address are `owed_taker` on chain (SPEC 11.2).
+            "taker" | "payout" => 0,
             "maker" => 1,
             "treasury" => 2,
             other => panic!("who {other}"),
@@ -348,7 +438,7 @@ fn build_call(w: &World, sim: &mut Sim, step: &Value) -> (Call, Option<([u8; 32]
     (call, new_notice)
 }
 
-fn check_swap(got: &SwapAcc, want: &Value, what: &str) -> Result<(), String> {
+fn check_swap(got: &SwapAcc, want: &Value, what: &str, sim: &Sim) -> Result<(), String> {
     let mut errs = vec![];
     let mut cmp = |name: &str, g: i128, w: i128| {
         if g != w {
@@ -383,6 +473,23 @@ fn check_swap(got: &SwapAcc, want: &Value, what: &str) -> Result<(), String> {
     cmp("owed_taker", got.owed_taker as i128, num(&want["owed_taker"]) as i128);
     cmp("owed_maker", got.owed_maker as i128, num(&want["owed_maker"]) as i128);
     cmp("owed_treasury", got.owed_treasury as i128, num(&want["owed_treasury"]) as i128);
+    cmp("w_z", got.w_z as i128, inum(&want["w_z"]) as i128);
+    cmp("t_freeze", got.t_freeze as i128, inum(&want["t_freeze"]) as i128);
+    // The addresses behind the model's `payout` and `watcher`.
+    let none = solana_pubkey::Pubkey::default();
+    let payout = match want["payout"].as_str().unwrap() {
+        "none" => none,
+        "taker" => got.taker,
+        "other" => sim.dest.pubkey(),
+        other => panic!("payout {other}"),
+    };
+    if got.payout != payout {
+        errs.push(format!("payout: got {}, want {} ({payout})", got.payout, want["payout"]));
+    }
+    let watcher = if want["watcher"].as_bool().unwrap() { sim.watcher.pubkey() } else { none };
+    if got.watcher != watcher {
+        errs.push(format!("watcher: got {}, want {}", got.watcher, want["watcher"]));
+    }
     if want["state"].as_str().unwrap() != STATES[got.state as usize] && !errs.iter().any(|e| e.starts_with("state")) {
         errs.push(format!("state name {} vs code {}", want["state"], got.state));
     }
@@ -409,7 +516,7 @@ fn run_step(w: &mut World, sim: &mut Sim, step: &Value) -> Result<(), String> {
     let sent = if is_open {
         send_open(w, sim, step).map_err(|e| format!("{label}: {e}"))?
     } else {
-        apply_env(w, sim, &step["env"]);
+        apply_env(w, sim, step).map_err(|e| format!("{label}: {e}"))?;
         let (call, notice) = build_call(w, sim, step);
         new_notice = notice;
         let signer = role_key(w, sim, step["caller"].as_str().unwrap());
@@ -430,6 +537,24 @@ fn run_step(w: &mut World, sim: &mut Sim, step: &Value) -> Result<(), String> {
         let mut ix = w.call_ix(&sim.m, fx, &call, &signer.pubkey());
         if wrong_maker_wallet(sim, step) {
             ix.accounts[S_MAKER_WALLET].pubkey = sim.m.payout.pubkey();
+        }
+        // `who: taker`: the taker's wallet names itself as the destination, in the payout
+        // slots too. (`who: payout` keeps the payout address there: delivered to it, or pulled
+        // by it.)
+        if call_name == "withdraw_owed" && step["args"]["who"] == "taker" {
+            let taker = fx.taker.pubkey();
+            ix.accounts[S_PAYOUT].pubkey = taker;
+            if sim.asset == ASSET_USDC {
+                ix.accounts[S_PAYOUT_TOKEN].pubkey = w.ata(&taker);
+            }
+        }
+        // The `treasury` slot of the other split mode (SPEC 11.1): the half is parked.
+        if call_name == "split_deposit" && !step["env"]["treasury_can_receive"].as_bool().unwrap() {
+            if sim.asset == ASSET_USDC {
+                ix.accounts[S_TREASURY_VAULT] = opt(None, true);
+            } else {
+                ix.accounts[S_TREASURY].pubkey = INCINERATOR;
+            }
         }
         let res = w.send(&[ix], &[&signer]);
         call_built = Some(call);
@@ -479,6 +604,9 @@ fn run_step(w: &mut World, sim: &mut Sim, step: &Value) -> Result<(), String> {
         if w.maker(&sim.m.pda) != maker_before {
             return Err(format!("{label}: a refused call changed the maker record"));
         }
+        if w.open_value(sim.asset) != num(&step["env"]["caps"]["open_value"]) {
+            return Err(format!("{label}: a refused call changed the open value"));
+        }
         return Ok(());
     }
 
@@ -505,7 +633,7 @@ fn run_step(w: &mut World, sim: &mut Sim, step: &Value) -> Result<(), String> {
         }
     } else {
         let got = on_chain.ok_or_else(|| format!("{label}: the swap account is gone"))?;
-        check_swap(&got, &expect["swap"], &label)?;
+        check_swap(&got, &expect["swap"], &label, sim)?;
         if got.asset != asset || got.taker != fx.taker.pubkey() || got.maker != sim.m.pda {
             return Err(format!("{label}: wrong asset, taker or maker in the swap"));
         }
@@ -562,6 +690,12 @@ fn run_step(w: &mut World, sim: &mut Sim, step: &Value) -> Result<(), String> {
         }
     }
 
+    // ---- the open value (SPEC 11.1)
+    let open_value = w.open_value(asset);
+    if open_value != num(&expect["open_value_after"]) {
+        return Err(format!("{label}: open value {open_value}, want {}", expect["open_value_after"]));
+    }
+
     // ---- funds
     let after = snap(w, sim);
     let got = diff(&before, &after);
@@ -573,10 +707,12 @@ fn run_step(w: &mut World, sim: &mut Sim, step: &Value) -> Result<(), String> {
         "operator" => want.operator -= fee,
         "owner" => want.owner -= fee,
         "anyone" => want.stranger -= fee,
+        "watcher" => want.watcher -= fee,
+        "payout" => want.dest -= fee,
         _ => unreachable!(),
     }
     let escrow_in = num(&expect["escrow_in"]) as i128;
-    let swap_rent = w.rent(736) as i128;
+    let swap_rent = w.rent(SWAP_LEN) as i128;
     let vault_rent = w.rent(165) as i128;
     if is_open {
         want.swap += swap_rent;
@@ -618,6 +754,7 @@ fn run_step(w: &mut World, sim: &mut Sim, step: &Value) -> Result<(), String> {
                 "treasury" => want.tok_treasury += amount,
                 "maker" if maker_at_operator => want.tok_operator += amount,
                 "maker" => want.tok_payout += amount,
+                "payout" => want.tok_dest += amount,
                 other => panic!("payout to {other}"),
             }
         } else {
@@ -627,6 +764,7 @@ fn run_step(w: &mut World, sim: &mut Sim, step: &Value) -> Result<(), String> {
                 "treasury" => want.treasury += amount,
                 "maker" if maker_at_operator => want.operator += amount,
                 "maker" => want.payout += amount,
+                "payout" => want.dest += amount,
                 other => panic!("payout to {other}"),
             }
         }
@@ -672,6 +810,9 @@ fn run_step(w: &mut World, sim: &mut Sim, step: &Value) -> Result<(), String> {
         ("payout tokens", got.tok_payout, want.tok_payout),
         ("treasury tokens", got.tok_treasury, want.tok_treasury),
         ("vault tokens", got.tok_vault, want.tok_vault),
+        ("watcher", got.watcher, want.watcher),
+        ("payout address", got.dest, want.dest),
+        ("payout address tokens", got.tok_dest, want.tok_dest),
     ];
     let wrong: Vec<String> =
         pairs.iter().filter(|(_, g, w)| g != w).map(|(n, g, w)| format!("{n}: moved {g}, want {w}")).collect();
@@ -681,8 +822,29 @@ fn run_step(w: &mut World, sim: &mut Sim, step: &Value) -> Result<(), String> {
     Ok(())
 }
 
+/// Publish fresh pool keys into (up to two) slots that are free: never filled, or used.
+fn refill_free(w: &mut World, m: &mut MakerFx, asset: u8) {
+    let offer = w.offer(&w.offer_pda(&m.pda, asset, DIR_A));
+    let free: Vec<u8> = (0..16u8).filter(|i| offer.pool_filled & (1 << i) == 0 || offer.pool_used & (1 << i) != 0).take(2).collect();
+    let slots: Vec<_> = free
+        .iter()
+        .map(|i| {
+            let (_, s_pub, pok) = m.new_share();
+            (*i, s_pub, pok)
+        })
+        .collect();
+    if !slots.is_empty() {
+        let ix = w.refill_ix(m, asset, &slots);
+        let op = m.operator.insecure_clone();
+        ok(w.send(&[ix], &[&op]));
+    }
+}
+
 fn new_sim(w: &mut World, asset: u8) -> Sim {
-    Sim { asset, m: w.register_maker(), fx: None }
+    let watcher = w.fund(SOL);
+    let dest = w.fund(SOL);
+    w.make_ata(&dest.pubkey());
+    Sim { asset, m: w.register_maker(), fx: None, watcher, dest, started: false }
 }
 
 fn run_row(w: &mut World, asset: u8, row: &Value) -> Result<(), String> {
@@ -696,16 +858,13 @@ fn run_row(w: &mut World, asset: u8, row: &Value) -> Result<(), String> {
     if let Some(from) = row.get("from") {
         let fx = sim.fx.as_ref().unwrap();
         let got = w.swap(&fx.pda).ok_or("the swap is gone before the step")?;
-        check_swap(&got, from, "from")?;
+        check_swap(&got, from, "from", &sim)?;
     }
     run_step(w, &mut sim, &row["step"])
 }
 
-fn run_sequence(w: &mut World, asset: u8, seq: &Value) -> Result<(), String> {
-    let mut sim = new_sim(w, asset);
-    // Start the maker record at `initial_maker`.
-    let init = &seq["initial_maker"];
-    let a = asset as usize;
+fn set_initial_maker(w: &mut World, sim: &Sim, init: &Value) {
+    let a = sim.asset as usize;
     w.patch(&sim.m.pda, |d| {
         for (i, c) in init["counters"].as_array().unwrap().iter().enumerate() {
             d[MAKER_COUNTERS + 4 * i..MAKER_COUNTERS + 4 * i + 4].copy_from_slice(&(c.as_u64().unwrap() as u32).to_le_bytes());
@@ -715,15 +874,10 @@ fn run_sequence(w: &mut World, asset: u8, seq: &Value) -> Result<(), String> {
         d[MAKER_VOLUME + 8 * a..MAKER_VOLUME + 8 * a + 8].copy_from_slice(&num(&init["volume"]).to_le_bytes());
         d[MAKER_WITHHELD + 8 * a..MAKER_WITHHELD + 8 * a + 8].copy_from_slice(&num(&init["withheld_volume"]).to_le_bytes());
     });
-    for (i, s) in seq["steps"].as_array().unwrap().iter().enumerate() {
-        run_step(w, &mut sim, s).map_err(|e| format!("step {i}: {e}"))?;
-    }
-    // The final record.
-    let fin = &seq["final"];
-    let fx = sim.fx.as_ref().unwrap();
-    if let Some(got) = w.swap(&fx.pda) {
-        check_swap(&got, &fin["swap"], "final")?;
-    }
+}
+
+fn check_final(w: &World, sim: &Sim, fin: &Value) -> Result<(), String> {
+    let a = sim.asset as usize;
     let mk = w.maker(&sim.m.pda);
     let counters: Vec<u32> = fin["maker"]["counters"].as_array().unwrap().iter().map(|c| c.as_u64().unwrap() as u32).collect();
     if counters != mk.counters.to_vec()
@@ -734,7 +888,61 @@ fn run_sequence(w: &mut World, asset: u8, seq: &Value) -> Result<(), String> {
     {
         return Err(format!("final maker record: {mk:?} vs {}", fin["maker"]));
     }
+    if w.open_value(sim.asset) != num(&fin["open_value"]) {
+        return Err(format!("final open value {} vs {}", w.open_value(sim.asset), fin["open_value"]));
+    }
     Ok(())
+}
+
+fn run_sequence(w: &mut World, asset: u8, seq: &Value) -> Result<(), String> {
+    let mut sim = new_sim(w, asset);
+    set_initial_maker(w, &sim, &seq["initial_maker"]);
+    let hostile = seq["hostile_after_open"].as_bool().unwrap();
+    for (i, s) in seq["steps"].as_array().unwrap().iter().enumerate() {
+        run_step(w, &mut sim, s).map_err(|e| format!("step {i}: {e}"))?;
+        if hostile && i == 0 {
+            // The invariant-3 walk: the steps' `env` zeroes the caps and pauses the maker from
+            // here on; both epochs are bumped as well. No exit may notice.
+            ok(w.bump_epochs(&sim.m, true, true));
+            let next = &seq["steps"][1]["env"];
+            assert!(next["maker_paused"].as_bool().unwrap() && next["caps"]["max_open"] == "0" && next["caps"]["on"] == true);
+        }
+    }
+    let fin = &seq["final"];
+    let fx = sim.fx.as_ref().unwrap();
+    if let Some(got) = w.swap(&fx.pda) {
+        check_swap(&got, &fin["swap"], "final", &sim)?;
+    }
+    check_final(w, &sim, fin)
+}
+
+/// Several swaps of one maker and one asset: every step names its swap by index.
+fn run_multi_sequence(w: &mut World, asset: u8, seq: &Value) -> Result<(), String> {
+    let mut sim = new_sim(w, asset);
+    set_initial_maker(w, &sim, &seq["initial_maker"]);
+    let n = seq["swaps"].as_u64().unwrap() as usize;
+    let mut swaps: Vec<Option<SwapFx>> = (0..n).map(|_| None).collect();
+    for (i, s) in seq["steps"].as_array().unwrap().iter().enumerate() {
+        let index = s["swap"].as_u64().unwrap() as usize;
+        sim.fx = swaps[index].take();
+        let res = run_step(w, &mut sim, s).map_err(|e| format!("step {i} (swap {index}): {e}"));
+        // A refused open leaves no swap behind: the next attempt at this index starts afresh.
+        swaps[index] = sim.fx.take().filter(|fx| w.swap(&fx.pda).is_some() || s["expect"]["closed"] == true);
+        res?;
+    }
+    let fin = &seq["final"];
+    for (index, want) in fin["swaps"].as_array().unwrap().iter().enumerate() {
+        match (&swaps[index], want.is_null()) {
+            (None, true) => {}
+            (Some(fx), false) => {
+                sim.fx = None;
+                let got = w.swap(&fx.pda).ok_or(format!("final: swap {index} is gone"))?;
+                check_swap(&got, want, &format!("final swap {index}"), &sim)?;
+            }
+            (have, _) => return Err(format!("final: swap {index} opened: {}, the vector says {}", have.is_some(), !want.is_null())),
+        }
+    }
+    check_final(w, &sim, fin)
 }
 
 fn solana<'a>(v: &'a Value, key: &str) -> Vec<&'a Value> {
@@ -766,15 +974,37 @@ fn replay_sequences(asset: u8) {
     assert_eq!(seqs.len() as u64, v["summary"]["solana"]["sequences"].as_u64().unwrap(), "every Solana sequence");
     let mut w = World::new();
     let mut failures = vec![];
-    let mut steps = 0;
+    let (mut steps, mut hostile) = (0, 0);
     for seq in &seqs {
         steps += seq["steps"].as_array().unwrap().len();
+        hostile += seq["hostile_after_open"].as_bool().unwrap() as u32;
         if let Err(e) = run_sequence(&mut w, asset, seq) {
             failures.push(format!("[{}] {e}", seq["name"]));
         }
     }
-    println!("transitions.json sequences, asset {asset}: {} sequences, {steps} steps, {} failed", seqs.len(), failures.len());
+    println!(
+        "transitions.json sequences, asset {asset}: {} sequences ({hostile} under hostile switches), {steps} steps, {} failed",
+        seqs.len(),
+        failures.len()
+    );
     assert!(failures.is_empty(), "{} of {} sequences failed:\n{}", failures.len(), seqs.len(), failures.join("\n"));
+    assert!(hostile >= 41, "the invariant-3 walk is in the vectors");
+}
+
+fn replay_multi_sequences(asset: u8) {
+    let v = vectors("transitions");
+    let seqs = solana(&v, "multi_sequences");
+    assert_eq!(seqs.len() as u64, v["summary"]["solana"]["multi_sequences"].as_u64().unwrap());
+    let mut failures = vec![];
+    for seq in &seqs {
+        // One world each: the swaps of a multi-sequence own the asset's whole open value.
+        let mut w = World::new();
+        if let Err(e) = run_multi_sequence(&mut w, asset, seq) {
+            failures.push(format!("[{}] {e}", seq["name"]));
+        }
+    }
+    println!("transitions.json multi_sequences, asset {asset}: {} run, {} failed", seqs.len(), failures.len());
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 #[test]
@@ -793,20 +1023,27 @@ fn transitions_sequences_sol() {
 fn transitions_sequences_usdc() {
     replay_sequences(ASSET_USDC);
 }
+#[test]
+fn transitions_multi_sequences_sol() {
+    replay_multi_sequences(ASSET_SOL);
+}
+#[test]
+fn transitions_multi_sequences_usdc() {
+    replay_multi_sequences(ASSET_USDC);
+}
 
-/// The vectors themselves: both chains present, nothing marked `both` that this replay would
-/// have to reinterpret, and the row count the generator reports.
+/// The vectors themselves: the counts the generator reports, and the Amendment 1 material.
 #[test]
 fn transitions_file_shape() {
     let v = vectors("transitions");
     assert_eq!(v["format"], "xmrswap-vectors/1");
     assert_eq!(v["t0"].as_i64().unwrap(), T0);
-    assert_eq!(solana(&v, "rows").len() as u64, v["summary"]["solana"]["rows"].as_u64().unwrap());
-    assert_eq!(solana(&v, "sequences").len() as u64, v["summary"]["solana"]["sequences"].as_u64().unwrap());
-    assert!(solana(&v, "rows").len() >= 405 && solana(&v, "sequences").len() >= 182);
-    // Every open carries the XMR size the replay uses.
+    assert_eq!(solana(&v, "rows").len(), 602);
+    assert_eq!(solana(&v, "sequences").len(), 325);
+    assert_eq!(solana(&v, "multi_sequences").len(), 2);
     for row in solana(&v, "rows") {
         let open = row.get("open").unwrap_or(&row["step"]);
         assert!(open["args"]["xmr"].is_string(), "{}", row["case"]);
+        assert!(row["step"]["env"]["caps"]["open_value"].is_string(), "{}", row["case"]);
     }
 }

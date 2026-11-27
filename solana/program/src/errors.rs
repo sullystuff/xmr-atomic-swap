@@ -54,4 +54,14 @@ pub enum SwapError {
     ConfigFrozen,
     /// Amount arithmetic at lock only; never reachable in a secret-bearing instruction.
     MathOverflow,
+    /// Amendment 1 (SPEC 11.1): the swap's amount is above `max_swap`.
+    SwapCapExceeded,
+    /// Amendment 1 (SPEC 11.1): the asset's open value would exceed `max_open`.
+    OpenCapExceeded,
+    /// Amendment 1 (SPEC 11.2): the payout address is the default key, the program or a PDA.
+    PayoutInvalid,
+    /// Amendment 1 (SPEC 11.6): a watcher is named against `w_z == 0`.
+    WatcherNotAllowed,
+    /// Amendment 1 (SPEC 11.6): `w_z` is neither 0 nor inside the freeze bounds.
+    FreezeWindowOutOfRange,
 }

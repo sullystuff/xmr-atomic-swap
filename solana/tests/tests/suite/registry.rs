@@ -395,6 +395,7 @@ fn terms_json_and_the_offer_account() {
             d_c: u("d_c") as u32,
             w_c: u("w_c") as u32,
             w_f: u("w_f") as u32,
+            w_z: u("w_z") as u32,
             ..Terms::default()
         };
         let (asset, direction) = (u("asset") as u8, u("direction") as u8);
@@ -415,7 +416,8 @@ fn terms_json_and_the_offer_account() {
             Err(_) => assert_eq!(case["name"], "extremes"),
         }
     }
-    assert_eq!(on_chain, 6);
+    assert_eq!(on_chain, v["cases"].as_array().unwrap().len() - 1);
+    assert!(on_chain >= 9, "three of them carry a freeze window");
 }
 
 #[test]
@@ -775,7 +777,7 @@ fn eth_board_is_opaque_and_refresh_rewrites_only_the_dynamic_fields() {
     let other = w.register_maker();
     let op = m.operator.insecure_clone();
     let board = w.eth_board(&m.pda);
-    let quote: [u8; 251] = std::array::from_fn(|i| i as u8);
+    let quote: [u8; 255] = std::array::from_fn(|i| i as u8);
     let sig = [0xab; 65];
 
     let ix = w.set_eth_quote_ix(&m, 4, &quote, &sig);
@@ -792,13 +794,13 @@ fn eth_board_is_opaque_and_refresh_rewrites_only_the_dynamic_fields() {
     assert_eq!(data.len(), 1_408);
     assert_eq!(data[..8], account_disc("EthBoard"));
     assert_eq!(data[8..40], m.pda.to_bytes());
-    let slot = |data: &[u8], i: usize| data[41 + i * 325..41 + (i + 1) * 325].to_vec();
+    let slot = |data: &[u8], i: usize| data[41 + i * 329..41 + (i + 1) * 329].to_vec();
     let s2 = slot(&data, 2);
     assert_eq!(s2[0], 1);
     assert_eq!(i64::from_le_bytes(s2[1..9].try_into().unwrap()), w.now());
-    assert_eq!(s2[9..260], quote);
-    assert_eq!(s2[260..325], sig);
-    assert_eq!(slot(&data, 0), vec![0u8; 325]);
+    assert_eq!(s2[9..264], quote, "255 bytes: the compact quote with its freeze window (SPEC 11.6)");
+    assert_eq!(s2[264..329], sig);
+    assert_eq!(slot(&data, 0), vec![0u8; 329]);
 
     // refresh: tierPrice at 102..150, validUntil at 199..207, quoteId at 243..251, and the signature.
     w.warp(30);
@@ -808,7 +810,7 @@ fn eth_board_is_opaque_and_refresh_rewrites_only_the_dynamic_fields() {
     let res = ok(w.send(&[ix], &[&op]));
     assert_eq!(logged_events(&res, "OffersRefreshed")[0][32], 1, "count");
     let s2 = slot(&w.data(&board), 2);
-    let q = &s2[9..260];
+    let q = &s2[9..264];
     let mut want = quote;
     for (i, p) in prices.iter().enumerate() {
         want[102 + 16 * i..118 + 16 * i].copy_from_slice(&p.to_le_bytes());
@@ -816,7 +818,8 @@ fn eth_board_is_opaque_and_refresh_rewrites_only_the_dynamic_fields() {
     want[199..207].copy_from_slice(&1_900_000_000u64.to_le_bytes());
     want[243..251].copy_from_slice(&0xdead_beefu64.to_le_bytes());
     assert_eq!(q, want, "every other byte of the compact quote is untouched");
-    assert_eq!(s2[260..325], new_sig);
+    assert_eq!(s2[264..329], new_sig);
+    assert_eq!(q[251..255], quote[251..255], "the freeze window is not a dynamic field");
     assert_eq!(i64::from_le_bytes(s2[1..9].try_into().unwrap()), w.now());
 
     // An empty slot cannot be refreshed; another maker's board is refused; so is a missing one.
@@ -892,9 +895,9 @@ fn lamports_sent_to_a_swap_or_vault_address_in_advance_cannot_block_the_lock() {
         assert_eq!((s.state, s.amount), (ACTIVE, PRICE));
         if asset == ASSET_USDC {
             assert_eq!(w.tokens(&fx.vault), PRICE);
-            assert_eq!(w.lamports(&fx.pda), w.rent(736));
+            assert_eq!(w.lamports(&fx.pda), w.rent(SWAP_LEN));
         } else {
-            assert_eq!(w.lamports(&fx.pda), w.rent(736) + PRICE);
+            assert_eq!(w.lamports(&fx.pda), w.rent(SWAP_LEN) + PRICE);
         }
         // The swap runs to the end and closes; stray lamports end with the taker.
         let session = fx.session.insecure_clone();

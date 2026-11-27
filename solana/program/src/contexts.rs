@@ -198,7 +198,8 @@ pub struct OpenSwap<'info> {
     pub swap: UncheckedAccount<'info>,
     #[account(mut, seeds = [b"maker", maker.owner.as_ref()], bump = maker.bump)]
     pub maker: Box<Account<'info, Maker>>,
-    #[account(seeds = [b"config"], bump = config.bump)]
+    /// Writable: the open value of SPEC 11.1 lives here.
+    #[account(mut, seeds = [b"config"], bump = config.bump)]
     pub config: Box<Account<'info, Config>>,
     /// CHECK: any address; stored in the swap and funded with `session_lamports`.
     #[account(mut)]
@@ -268,9 +269,8 @@ pub struct Short<'info> {
 }
 
 /// The Settle list (SPEC 4.5): `reject`, `cancel_pending`, `expire_pending`, `abort`,
-/// `refund_unnoticed`, `expire_unnoticed`, `refund`, `claim`, `release_deposit`,
-/// `split_deposit`, `close_swap`, and `withdraw_owed` (where `maker_wallet`/`maker_token` or
-/// `taker`/`taker_token` is the destination the signer names).
+/// `refund_unnoticed`, `expire_unnoticed`, `refund`, `release_deposit`, `split_deposit`,
+/// `close_swap`. (`claim` and `withdraw_owed` use [`SettlePayout`], the same list plus three.)
 ///
 /// `taker`, `maker_wallet` and every destination token account are unchecked and validated by
 /// hand: a typed account would make a missing destination revert the instruction, and a claim
@@ -283,7 +283,8 @@ pub struct Settle<'info> {
     pub swap: Box<Account<'info, Swap>>,
     #[account(mut, seeds = [b"maker", maker.owner.as_ref()], bump = maker.bump)]
     pub maker: Box<Account<'info, Maker>>,
-    #[account(seeds = [b"config"], bump = config.bump)]
+    /// Writable: the swap's counted value leaves `open_value` at its exit (SPEC 11.1).
+    #[account(mut, seeds = [b"config"], bump = config.bump)]
     pub config: Box<Account<'info, Config>>,
     /// CHECK: MUST equal `swap.taker`.
     #[account(mut)]
@@ -311,4 +312,60 @@ pub struct Settle<'info> {
     #[account(mut)]
     pub treasury_vault: Option<UncheckedAccount<'info>>,
     pub token_program: Option<Program<'info, Token>>,
+}
+
+/// `claim` and `withdraw_owed`: the Settle list plus the payout accounts of SPEC 11.2.
+///
+/// `payout` is the address a direction-B claim pays (`swap.payout`; in direction A pass the
+/// taker). For `withdraw_owed` the destination slots are: who 0, `taker` / `taker_token` (named
+/// by the taker's wallet), or, for proceeds parked for a payout address, `payout` /
+/// `payout_token` (pinned to it when anyone delivers; free when the payout address signs);
+/// who 1, `maker_wallet` / `maker_token` (named by the maker's owner); who 2, the treasury.
+#[derive(Accounts)]
+pub struct SettlePayout<'info> {
+    #[account(mut)]
+    pub caller: Signer<'info>,
+    #[account(mut, has_one = maker @ SwapError::Unauthorized)]
+    pub swap: Box<Account<'info, Swap>>,
+    #[account(mut, seeds = [b"maker", maker.owner.as_ref()], bump = maker.bump)]
+    pub maker: Box<Account<'info, Maker>>,
+    /// Writable: the swap's counted value leaves `open_value` at its exit (SPEC 11.1).
+    #[account(mut, seeds = [b"config"], bump = config.bump)]
+    pub config: Box<Account<'info, Config>>,
+    /// CHECK: MUST equal `swap.taker`.
+    #[account(mut)]
+    pub taker: UncheckedAccount<'info>,
+    /// CHECK: `maker.payout` for `claim` in A, `maker.operator` for `refund` in B, otherwise either.
+    #[account(mut)]
+    pub maker_wallet: UncheckedAccount<'info>,
+    /// CHECK: the Treasury PDA, or the incinerator in burn mode.
+    #[account(mut)]
+    pub treasury: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+    /// CHECK: `config.usdc_mint` (writable for the burn in `split_deposit`).
+    #[account(mut)]
+    pub mint: Option<UncheckedAccount<'info>>,
+    /// CHECK: PDA `["vault", swap]`.
+    #[account(mut)]
+    pub vault: Option<UncheckedAccount<'info>>,
+    /// CHECK: the associated token account of `swap.taker`.
+    #[account(mut)]
+    pub taker_token: Option<UncheckedAccount<'info>>,
+    /// CHECK: the associated token account of `maker.payout` or `maker.operator`.
+    #[account(mut)]
+    pub maker_token: Option<UncheckedAccount<'info>>,
+    /// CHECK: PDA `["treasury_vault", mint]`.
+    #[account(mut)]
+    pub treasury_vault: Option<UncheckedAccount<'info>>,
+    pub token_program: Option<Program<'info, Token>>,
+    /// CHECK: `swap.payout` (direction A: the taker). Never signs.
+    #[account(mut)]
+    pub payout: UncheckedAccount<'info>,
+    /// CHECK: the associated token account of `payout`. If it does not exist and
+    /// `associated_token_program` is passed, the caller pays for its creation.
+    #[account(mut)]
+    pub payout_token: Option<UncheckedAccount<'info>>,
+    /// CHECK: the associated-token program; its address is checked by hand (a wrong one only
+    /// means no token account is created).
+    pub associated_token_program: Option<UncheckedAccount<'info>>,
 }

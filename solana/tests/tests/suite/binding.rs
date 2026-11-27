@@ -100,7 +100,7 @@ fn fund_carrying_the_hash_of_a_replaced_take_fails_with_bad_state() {
             let op = m.operator.insecure_clone();
             let operator_before = if asset == ASSET_USDC { w.tokens(&w.ata(&op.pubkey())) } else { w.lamports(&op.pubkey()) };
             let (_, share, pok) = m.new_share();
-            assert_err(w.call(&m, &fx, &Call::Fund { open: stale, share, pok, view: new_view() }, &op), "BadState");
+            assert_err(w.call(&m, &fx, &Call::Fund { open: stale, share, pok, view: new_view(), watcher: None }, &op), "BadState");
             // The maker's money did not move into an escrow whose terms it never saw.
             let operator_after = if asset == ASSET_USDC { w.tokens(&w.ata(&op.pubkey())) } else { w.lamports(&op.pubkey()) + FEE };
             assert_eq!(operator_before, operator_after, "{name}");
@@ -121,18 +121,23 @@ fn the_open_hash_covers_what_the_maker_checked() {
     let op = m.operator.insecure_clone();
     let base = s.open_hash(&fx.pda);
     // Every single-field variation of the hash input is refused.
+    // A direction-A lock with no watcher: payout and watcher are zeros in the hash.
+    let z = [0u8; 32];
     let variants: Vec<[u8; 32]> = vec![
-        open_hash_of(&[1; 32], s.t_lock, 0, 0, s.xmr, s.amount, s.deposit, &s.taker_spend_pub, &s.locker_view, &s.taker_enc_key, &s.maker_enc_key),
-        open_hash_of(&fx.pda.to_bytes(), s.t_lock + 1, 0, 0, s.xmr, s.amount, s.deposit, &s.taker_spend_pub, &s.locker_view, &s.taker_enc_key, &s.maker_enc_key),
-        open_hash_of(&fx.pda.to_bytes(), s.t_lock, 1, 0, s.xmr, s.amount, s.deposit, &s.taker_spend_pub, &s.locker_view, &s.taker_enc_key, &s.maker_enc_key),
-        open_hash_of(&fx.pda.to_bytes(), s.t_lock, 0, 1, s.xmr, s.amount, s.deposit, &s.taker_spend_pub, &s.locker_view, &s.taker_enc_key, &s.maker_enc_key),
-        open_hash_of(&fx.pda.to_bytes(), s.t_lock, 0, 0, s.xmr + 1, s.amount, s.deposit, &s.taker_spend_pub, &s.locker_view, &s.taker_enc_key, &s.maker_enc_key),
-        open_hash_of(&fx.pda.to_bytes(), s.t_lock, 0, 0, s.xmr, s.amount + 1, s.deposit, &s.taker_spend_pub, &s.locker_view, &s.taker_enc_key, &s.maker_enc_key),
-        open_hash_of(&fx.pda.to_bytes(), s.t_lock, 0, 0, s.xmr, s.amount, s.deposit + 1, &s.taker_spend_pub, &s.locker_view, &s.taker_enc_key, &s.maker_enc_key),
-        open_hash_of(&fx.pda.to_bytes(), s.t_lock, 0, 0, s.xmr, s.amount, s.deposit, &[2; 32], &s.locker_view, &s.taker_enc_key, &s.maker_enc_key),
-        open_hash_of(&fx.pda.to_bytes(), s.t_lock, 0, 0, s.xmr, s.amount, s.deposit, &s.taker_spend_pub, &[3; 32], &s.taker_enc_key, &s.maker_enc_key),
-        open_hash_of(&fx.pda.to_bytes(), s.t_lock, 0, 0, s.xmr, s.amount, s.deposit, &s.taker_spend_pub, &s.locker_view, &[4; 32], &s.maker_enc_key),
-        open_hash_of(&fx.pda.to_bytes(), s.t_lock, 0, 0, s.xmr, s.amount, s.deposit, &s.taker_spend_pub, &s.locker_view, &s.taker_enc_key, &[5; 32]),
+        open_hash_of(&[1; 32], s.t_lock, 0, 0, s.xmr, s.amount, s.deposit, &s.taker_spend_pub, &s.locker_view, &s.taker_enc_key, &s.maker_enc_key, &z, &z),
+        open_hash_of(&fx.pda.to_bytes(), s.t_lock + 1, 0, 0, s.xmr, s.amount, s.deposit, &s.taker_spend_pub, &s.locker_view, &s.taker_enc_key, &s.maker_enc_key, &z, &z),
+        open_hash_of(&fx.pda.to_bytes(), s.t_lock, 1, 0, s.xmr, s.amount, s.deposit, &s.taker_spend_pub, &s.locker_view, &s.taker_enc_key, &s.maker_enc_key, &z, &z),
+        open_hash_of(&fx.pda.to_bytes(), s.t_lock, 0, 1, s.xmr, s.amount, s.deposit, &s.taker_spend_pub, &s.locker_view, &s.taker_enc_key, &s.maker_enc_key, &z, &z),
+        open_hash_of(&fx.pda.to_bytes(), s.t_lock, 0, 0, s.xmr + 1, s.amount, s.deposit, &s.taker_spend_pub, &s.locker_view, &s.taker_enc_key, &s.maker_enc_key, &z, &z),
+        open_hash_of(&fx.pda.to_bytes(), s.t_lock, 0, 0, s.xmr, s.amount + 1, s.deposit, &s.taker_spend_pub, &s.locker_view, &s.taker_enc_key, &s.maker_enc_key, &z, &z),
+        open_hash_of(&fx.pda.to_bytes(), s.t_lock, 0, 0, s.xmr, s.amount, s.deposit + 1, &s.taker_spend_pub, &s.locker_view, &s.taker_enc_key, &s.maker_enc_key, &z, &z),
+        open_hash_of(&fx.pda.to_bytes(), s.t_lock, 0, 0, s.xmr, s.amount, s.deposit, &[2; 32], &s.locker_view, &s.taker_enc_key, &s.maker_enc_key, &z, &z),
+        open_hash_of(&fx.pda.to_bytes(), s.t_lock, 0, 0, s.xmr, s.amount, s.deposit, &s.taker_spend_pub, &[3; 32], &s.taker_enc_key, &s.maker_enc_key, &z, &z),
+        open_hash_of(&fx.pda.to_bytes(), s.t_lock, 0, 0, s.xmr, s.amount, s.deposit, &s.taker_spend_pub, &s.locker_view, &[4; 32], &s.maker_enc_key, &z, &z),
+        open_hash_of(&fx.pda.to_bytes(), s.t_lock, 0, 0, s.xmr, s.amount, s.deposit, &s.taker_spend_pub, &s.locker_view, &s.taker_enc_key, &[5; 32], &z, &z),
+        // The payout address and the watcher are covered too (SPEC 11.2, 11.6).
+        open_hash_of(&fx.pda.to_bytes(), s.t_lock, 0, 0, s.xmr, s.amount, s.deposit, &s.taker_spend_pub, &s.locker_view, &s.taker_enc_key, &s.maker_enc_key, &[6; 32], &z),
+        open_hash_of(&fx.pda.to_bytes(), s.t_lock, 0, 0, s.xmr, s.amount, s.deposit, &s.taker_spend_pub, &s.locker_view, &s.taker_enc_key, &s.maker_enc_key, &z, &[7; 32]),
         [0; 32],
     ];
     for (i, open) in variants.iter().enumerate() {

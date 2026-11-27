@@ -1,12 +1,25 @@
-//! Progress, settlement and housekeeping (SPEC 3.4 to 3.6, 4.5).
+//! Progress, settlement and housekeeping (SPEC 3.4 to 3.6, 4.5, 11.1, 11.2, 11.6).
 //!
-//! Check order is the reference model's, which the vectors encode: direction, caller, state
-//! (and open hash), time gate, then secret or evidence. A call refused only because of the time
-//! is `TooLate` if one of its windows in that state has already closed, else `TooEarly`.
+//! **The rules are not here.** Whether a call is allowed, which row it is, who it pays and what
+//! the swap looks like afterwards are decided by `escrow-logic` (`machine::gate`, `plan`,
+//! `execute_plan`), the crate the reference model is built on and the Kani proofs cover. This
+//! file supplies what the rules cannot know and carries out what they decide:
 //!
-//! **Pay or park.** Every payout either moves now or stays in escrow and is added to `owed_*`;
-//! a payout never fails an instruction. `claim` and `refund` publish a secret in their
-//! arguments, so nothing after the secret check may fail.
+//! 1. it works out who signed, whether the secret, the evidence or the open hash matches, and
+//!    asks the gate;
+//! 2. for every payout of the row's plan it works out whether the destination can receive
+//!    **now** (pay or park), creating the payout's token account first where SPEC 11.2 allows;
+//! 3. it lets the rules compute the new record and writes it, with the maker's counters and
+//!    the asset's open value (SPEC 11.1);
+//! 4. it moves the funds the rules said move.
+//!
+//! **Invariant 3.** Nothing in this file reads a cap, a pause bit, an epoch or the caps switch,
+//! and `split_mode` is read only to choose where the treasury's half of a split is *tried*: the
+//! wrong account in that slot parks the half, it never fails the instruction.
+//!
+//! **Pay or park.** A payout either moves now or stays in escrow and is added to `owed_*`; a
+//! payout never fails an instruction. `claim` and `refund` publish a secret in their arguments,
+//! so nothing after the secret check may fail.
 //!
 //! **Order of effects.** Lamports moved by hand (`sub_lamports` / `add_lamports`, closing the
 //! swap account) must come after every CPI in the instruction: the runtime compares the
@@ -14,48 +27,15 @@
 //! not been written back yet. So: token CPIs, then the session-key sweep (a system transfer),
 //! then SOL payouts and the close.
 use anchor_lang::{prelude::*, system_program};
-use anchor_spl::{associated_token::get_associated_token_address, token};
+use anchor_spl::{associated_token, associated_token::get_associated_token_address, token};
+use escrow_logic::machine as m;
 
 use crate::{
-    admin::invalid_arg,
-    args::Evidence,
-    constants::*,
-    contexts::*,
-    curve::scalar_matches,
-    errors::SwapError,
-    events::*,
-    state::*,
-    util,
+    admin::invalid_arg, args::Evidence, constants::*, contexts::*, curve::scalar_matches, errors::SwapError,
+    events::*, logic, state::*, util,
 };
 
 pub const INCINERATOR_ID: Pubkey = pubkey!("1nc1nerator11111111111111111111111111111111");
-
-/// A payout destination. The value is also the `who` byte of `withdraw_owed` and of the
-/// `PayoutParked` / `OwedWithdrawn` events.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Party {
-    Taker = 0,
-    Maker = 1,
-    Treasury = 2,
-}
-
-/// What the tail of a settling instruction does besides paying.
-#[derive(Clone, Copy, Default)]
-pub struct Tail {
-    /// Return a session-key signer's remaining lamports to the taker.
-    pub sweep: bool,
-    /// Close the swap (and its vault) in this instruction when nothing was parked.
-    pub close: bool,
-    /// The close is the purpose of the instruction (`close_swap`): fail instead of skipping.
-    pub must_close: bool,
-    /// The treasury payout is the burned half of a split (`split_mode = 1`).
-    pub burn: bool,
-}
-
-struct Payout {
-    to: Party,
-    amount: u64,
-}
 
 // ------------------------------------------------------------------ token account views
 
@@ -101,72 +81,166 @@ fn sol_can_receive(ai: &AccountInfo, amount: u64, rent: &Rent) -> bool {
     ai.lamports().saturating_add(amount) >= rent.minimum_balance(ai.data_len())
 }
 
-// ------------------------------------------------------------------ the Settle account list
+// ------------------------------------------------------------------ the accounts of a settlement
+
+/// The accounts of the Settle list (and, for `claim` and `withdraw_owed`, the payout accounts),
+/// whichever of the two account structs they came from.
+pub struct Ctx<'a, 'info> {
+    caller: AccountInfo<'info>,
+    swap: &'a mut Box<Account<'info, Swap>>,
+    maker: &'a mut Box<Account<'info, Maker>>,
+    config: &'a mut Box<Account<'info, Config>>,
+    taker: AccountInfo<'info>,
+    maker_wallet: AccountInfo<'info>,
+    treasury: AccountInfo<'info>,
+    system_program: AccountInfo<'info>,
+    mint: Option<AccountInfo<'info>>,
+    vault: Option<AccountInfo<'info>>,
+    taker_token: Option<AccountInfo<'info>>,
+    maker_token: Option<AccountInfo<'info>>,
+    treasury_vault: Option<AccountInfo<'info>>,
+    token_program: Option<AccountInfo<'info>>,
+    payout: Option<AccountInfo<'info>>,
+    payout_token: Option<AccountInfo<'info>>,
+    ata_program: Option<AccountInfo<'info>>,
+}
+
+fn info<'info, T: ToAccountInfo<'info>>(a: &Option<T>) -> Option<AccountInfo<'info>> {
+    a.as_ref().map(|x| x.to_account_info())
+}
 
 impl<'info> Settle<'info> {
+    #[inline(never)]
+    fn ctx<'a>(&'a mut self) -> Ctx<'a, 'info> {
+        Ctx {
+            caller: self.caller.to_account_info(),
+            taker: self.taker.to_account_info(),
+            maker_wallet: self.maker_wallet.to_account_info(),
+            treasury: self.treasury.to_account_info(),
+            system_program: self.system_program.to_account_info(),
+            mint: info(&self.mint),
+            vault: info(&self.vault),
+            taker_token: info(&self.taker_token),
+            maker_token: info(&self.maker_token),
+            treasury_vault: info(&self.treasury_vault),
+            token_program: info(&self.token_program),
+            payout: None,
+            payout_token: None,
+            ata_program: None,
+            swap: &mut self.swap,
+            maker: &mut self.maker,
+            config: &mut self.config,
+        }
+    }
+}
+
+impl<'info> SettlePayout<'info> {
+    #[inline(never)]
+    fn ctx<'a>(&'a mut self) -> Ctx<'a, 'info> {
+        Ctx {
+            caller: self.caller.to_account_info(),
+            taker: self.taker.to_account_info(),
+            maker_wallet: self.maker_wallet.to_account_info(),
+            treasury: self.treasury.to_account_info(),
+            system_program: self.system_program.to_account_info(),
+            mint: info(&self.mint),
+            vault: info(&self.vault),
+            taker_token: info(&self.taker_token),
+            maker_token: info(&self.maker_token),
+            treasury_vault: info(&self.treasury_vault),
+            token_program: info(&self.token_program),
+            payout: Some(self.payout.to_account_info()),
+            payout_token: info(&self.payout_token),
+            // Any other account in this slot simply means "no token account will be created".
+            ata_program: info(&self.associated_token_program).filter(|p| *p.key == associated_token::ID && p.executable),
+            swap: &mut self.swap,
+            maker: &mut self.maker,
+            config: &mut self.config,
+        }
+    }
+}
+
+/// Where one payout goes, once the accounts have been checked.
+enum Target<'info> {
+    /// The destination cannot receive now: park.
+    Park,
+    /// Lamports, moved by hand out of the swap account.
+    Sol(AccountInfo<'info>),
+    /// Tokens, transferred out of the vault.
+    Token(AccountInfo<'info>),
+    /// Tokens, burned out of the vault (`split_mode = 1`).
+    Burn,
+}
+
+/// What the tail of a settling instruction does besides paying.
+#[derive(Clone, Copy, Default)]
+struct Tail {
+    /// Return a session-key signer's remaining lamports to the taker.
+    sweep: bool,
+    /// `split_deposit`: the treasury accounts are tried, never required.
+    split: bool,
+}
+
+impl<'a, 'info> Ctx<'a, 'info> {
+    fn usdc(&self) -> bool {
+        self.swap.asset == ASSET_USDC
+    }
+
     fn treasury_pda(&self) -> Result<Pubkey> {
         Pubkey::create_program_address(&[b"treasury", &[self.config.treasury_bump]], &crate::ID)
             .map_err(|_| error!(ErrorCode::ConstraintSeeds))
     }
 
-    /// Checks every instruction on this list shares: the addresses that can never change are
-    /// hard requirements (a wrong one is the caller's mistake, like naming the wrong swap); a
+    fn treasury_vault_pda(&self) -> Pubkey {
+        let mint = self.mint.as_ref().map(|m| *m.key).unwrap_or_default();
+        Pubkey::find_program_address(&[b"treasury_vault", mint.as_ref()], &crate::ID).0
+    }
+
+    /// Checks every instruction on this list shares. Addresses that can never change are hard
+    /// requirements (a wrong one is the caller's mistake, like naming the wrong swap); a
     /// destination's *state* is never one.
     fn check_accounts(&self, taker_is_pinned: bool) -> Result<()> {
         require_keys_eq!(self.swap.maker, self.maker.key(), SwapError::Unauthorized);
         if taker_is_pinned {
-            require_keys_eq!(self.taker.key(), self.swap.taker, SwapError::Unauthorized);
+            require_keys_eq!(*self.taker.key, self.swap.taker, SwapError::Unauthorized);
         }
-        let treasury = self.treasury.key();
-        require!(
-            treasury == self.treasury_pda()? || treasury == INCINERATOR_ID,
-            SwapError::Unauthorized
-        );
-        if self.swap.asset == ASSET_USDC {
+        if self.usdc() {
             let (Some(mint), Some(vault), Some(_)) = (&self.mint, &self.vault, &self.token_program) else {
                 return err!(SwapError::WrongAsset);
             };
-            require_keys_eq!(mint.key(), self.config.usdc_mint, SwapError::MintNotAllowed);
+            require_keys_eq!(*mint.key, self.config.usdc_mint, SwapError::MintNotAllowed);
             let swap_key = self.swap.key();
             let expected =
                 Pubkey::create_program_address(&[b"vault", swap_key.as_ref(), &[self.swap.vault_bump]], &crate::ID)
                     .map_err(|_| error!(ErrorCode::ConstraintSeeds))?;
-            require_keys_eq!(vault.key(), expected, ErrorCode::ConstraintSeeds);
+            require_keys_eq!(*vault.key, expected, ErrorCode::ConstraintSeeds);
         }
         Ok(())
     }
 
-    fn park(&mut self, to: Party, amount: u64, ctr: u8, now: i64) {
-        let s = &mut self.swap;
-        match to {
-            Party::Taker => s.owed_taker = s.owed_taker.saturating_add(amount),
-            Party::Maker => s.owed_maker = s.owed_maker.saturating_add(amount),
-            Party::Treasury => s.owed_treasury = s.owed_treasury.saturating_add(amount),
-        }
-        emit!(PayoutParked {
-            swap: s.key(),
-            maker: s.maker,
-            counter: ctr,
-            at: now,
-            who: to as u8,
-            amount,
-        });
+    fn vault_state(&self) -> Option<(u64, u8)> {
+        token_view(self.vault.as_ref()?).map(|(_, _, amount, state)| (amount, state))
+    }
+
+    /// A frozen (or missing) escrow can pay nobody.
+    fn vault_usable(&self) -> bool {
+        matches!(self.vault_state(), Some((_, TOKEN_INITIALIZED)))
     }
 
     /// Token transfer out of the vault, signed by the swap PDA.
     fn vault_transfer(&self, to: &AccountInfo<'info>, amount: u64) -> Result<()> {
         let (mint, vault, token_program) = (
-            self.mint.as_ref().unwrap(),
-            self.vault.as_ref().unwrap(),
-            self.token_program.as_ref().unwrap(),
+            self.mint.as_ref().ok_or(SwapError::WrongAsset)?,
+            self.vault.as_ref().ok_or(SwapError::WrongAsset)?,
+            self.token_program.as_ref().ok_or(SwapError::WrongAsset)?,
         );
         let seeds: &[&[u8]] = &[b"swap", self.swap.taker.as_ref(), &self.swap.swap_nonce, &[self.swap.bump]];
         token::transfer_checked(
             CpiContext::new_with_signer(
-                token_program.to_account_info(),
+                token_program.clone(),
                 token::TransferChecked {
-                    from: vault.to_account_info(),
-                    mint: mint.to_account_info(),
+                    from: vault.clone(),
+                    mint: mint.clone(),
                     to: to.clone(),
                     authority: self.swap.to_account_info(),
                 },
@@ -179,126 +253,173 @@ impl<'info> Settle<'info> {
 
     fn vault_burn(&self, amount: u64) -> Result<()> {
         let (mint, vault, token_program) = (
-            self.mint.as_ref().unwrap(),
-            self.vault.as_ref().unwrap(),
-            self.token_program.as_ref().unwrap(),
+            self.mint.as_ref().ok_or(SwapError::WrongAsset)?,
+            self.vault.as_ref().ok_or(SwapError::WrongAsset)?,
+            self.token_program.as_ref().ok_or(SwapError::WrongAsset)?,
         );
         let seeds: &[&[u8]] = &[b"swap", self.swap.taker.as_ref(), &self.swap.swap_nonce, &[self.swap.bump]];
         token::burn(
             CpiContext::new_with_signer(
-                token_program.to_account_info(),
-                token::Burn {
-                    mint: mint.to_account_info(),
-                    from: vault.to_account_info(),
-                    authority: self.swap.to_account_info(),
-                },
+                token_program.clone(),
+                token::Burn { mint: mint.clone(), from: vault.clone(), authority: self.swap.to_account_info() },
                 &[seeds],
             ),
             amount,
         )
     }
 
-    fn vault_state(&self) -> Option<(u64, u8)> {
-        let vault = self.vault.as_ref()?;
-        token_view(vault).map(|(_, _, amount, state)| (amount, state))
-    }
-
-    /// USDC pay-or-park. Returns whether the payout moved.
-    fn pay_token(&self, p: &Payout, maker_wallet: &Pubkey, burn: bool) -> Result<bool> {
-        let mint_key = self.mint.as_ref().unwrap().key();
-        let Some((_, vault_state)) = self.vault_state() else {
+    /// SPEC 11.2: create the payout's associated token account at the caller's cost, when every
+    /// precondition holds, so that the creation cannot fail the instruction. Returns whether the
+    /// account exists and can receive afterwards.
+    fn ensure_payout_token(&self, owner: &Pubkey, rent: &Rent) -> Result<bool> {
+        let (Some(dest), Some(mint), Some(wallet), Some(token_program)) =
+            (&self.payout_token, &self.mint, &self.payout, &self.token_program)
+        else {
             return Ok(false);
         };
-        if vault_state != TOKEN_INITIALIZED {
-            return Ok(false); // a frozen escrow can pay nobody
+        if token_can_receive(dest, mint.key, owner) {
+            return Ok(true);
         }
-        match p.to {
-            Party::Taker => {
+        let Some(ata_program) = &self.ata_program else {
+            return Ok(false);
+        };
+        // Only an address nothing lives at yet; only for the wallet the proceeds belong to; only
+        // if the caller is an ordinary wallet that keeps its own rent after paying this one.
+        let creatable = *dest.owner == system_program::ID
+            && dest.data_is_empty()
+            && dest.is_writable
+            && wallet.key == owner
+            && *self.caller.owner == system_program::ID
+            && self.caller.data_is_empty()
+            && self.caller.lamports()
+                >= rent.minimum_balance(TOKEN_ACCOUNT_LEN).saturating_add(rent.minimum_balance(0));
+        if !creatable {
+            return Ok(false);
+        }
+        associated_token::create_idempotent(CpiContext::new(
+            ata_program.clone(),
+            associated_token::Create {
+                payer: self.caller.clone(),
+                associated_token: dest.clone(),
+                authority: wallet.clone(),
+                mint: mint.clone(),
+                system_program: self.system_program.clone(),
+                token_program: token_program.clone(),
+            },
+        ))?;
+        Ok(token_can_receive(dest, mint.key, owner))
+    }
+
+    /// Where a payout of `row` to `to` goes, and whether it can land now.
+    fn target(&self, row: m::Row, to: m::Party, amount: u64, tail: Tail, rent: &Rent) -> Result<Target<'info>> {
+        let usdc = self.usdc();
+        if usdc && !self.vault_usable() {
+            return Ok(Target::Park);
+        }
+        let is_claim = matches!(row, m::Row::Claim { .. });
+        let mint_key = self.mint.as_ref().map(|a| *a.key).unwrap_or_default();
+        // A direction-B claim pays the payout address named at take, whoever submits it
+        // (SPEC 11.2). Everything else a taker is paid returns to the wallet that opened the swap.
+        if matches!(to, m::Party::Payout) || (is_claim && matches!(to, m::Party::Taker)) {
+            let owner = self.swap.payout;
+            let wallet = self.payout.as_ref().ok_or(SwapError::Unauthorized)?;
+            require_keys_eq!(*wallet.key, owner, SwapError::Unauthorized);
+            if !usdc {
+                return Ok(if sol_can_receive(wallet, amount, rent) { Target::Sol(wallet.clone()) } else { Target::Park });
+            }
+            let Some(dest) = &self.payout_token else {
+                return Ok(Target::Park);
+            };
+            require_keys_eq!(*dest.key, get_associated_token_address(&owner, &mint_key), SwapError::Unauthorized);
+            return Ok(if self.ensure_payout_token(&owner, rent)? { Target::Token(dest.clone()) } else { Target::Park });
+        }
+        match to {
+            m::Party::Taker => {
+                if !usdc {
+                    return Ok(if sol_can_receive(&self.taker, amount, rent) {
+                        Target::Sol(self.taker.clone())
+                    } else {
+                        Target::Park
+                    });
+                }
                 // The address is fixed for the life of the swap: a missing or wrong one is the
                 // caller's mistake and is refused (otherwise any caller of a keyless instruction
                 // could force the taker's money to be parked).
                 let dest = self.taker_token.as_ref().ok_or(SwapError::WrongAsset)?;
                 require_keys_eq!(
-                    dest.key(),
+                    *dest.key,
                     get_associated_token_address(&self.swap.taker, &mint_key),
                     SwapError::Unauthorized
                 );
-                if !token_can_receive(dest, &mint_key, &self.swap.taker) {
-                    return Ok(false);
-                }
-                self.vault_transfer(dest, p.amount)?;
+                Ok(if token_can_receive(dest, &mint_key, &self.swap.taker) { Target::Token(dest.clone()) } else { Target::Park })
             }
-            Party::Maker => {
+            m::Party::Maker => {
+                // A claim pays the payout address the cold owner key set; a refund returns to the
+                // operator that funded. Either can change under a transaction in flight: park,
+                // never fail.
+                let wallet = if is_claim { self.maker.payout } else { self.maker.operator };
+                if !usdc {
+                    let ok = *self.maker_wallet.key == wallet && sol_can_receive(&self.maker_wallet, amount, rent);
+                    return Ok(if ok { Target::Sol(self.maker_wallet.clone()) } else { Target::Park });
+                }
                 let Some(dest) = &self.maker_token else {
-                    return Ok(false);
+                    return Ok(Target::Park);
                 };
-                // The maker's wallet can change under a transaction in flight: park, never fail.
-                if dest.key() != get_associated_token_address(maker_wallet, &mint_key)
-                    || !token_can_receive(dest, &mint_key, maker_wallet)
-                {
-                    return Ok(false);
-                }
-                self.vault_transfer(dest, p.amount)?;
+                let ok = *dest.key == get_associated_token_address(&wallet, &mint_key)
+                    && token_can_receive(dest, &mint_key, &wallet);
+                Ok(if ok { Target::Token(dest.clone()) } else { Target::Park })
             }
-            Party::Treasury if burn => self.vault_burn(p.amount)?,
-            Party::Treasury => {
-                let dest = self.treasury_vault.as_ref().ok_or(SwapError::WrongAsset)?;
-                let (expected, _) =
-                    Pubkey::find_program_address(&[b"treasury_vault", mint_key.as_ref()], &crate::ID);
-                require_keys_eq!(dest.key(), expected, SwapError::Unauthorized);
-                if !token_can_receive(dest, &mint_key, &self.treasury_pda()?) {
-                    return Ok(false);
+            m::Party::Treasury => {
+                let burn = tail.split && self.config.split_mode == 1;
+                if !usdc {
+                    let expected = if burn { INCINERATOR_ID } else { self.treasury_pda()? };
+                    if *self.treasury.key != expected {
+                        // SPEC 11.1: the admin's `split_mode` names the account a split expects.
+                        // Flipping it must not fail a split in flight: the half is parked.
+                        require!(tail.split, SwapError::Unauthorized);
+                        return Ok(Target::Park);
+                    }
+                    return Ok(if sol_can_receive(&self.treasury, amount, rent) {
+                        Target::Sol(self.treasury.clone())
+                    } else {
+                        Target::Park
+                    });
                 }
-                self.vault_transfer(dest, p.amount)?;
+                if burn {
+                    return Ok(Target::Burn);
+                }
+                let expected = self.treasury_vault_pda();
+                let dest = match &self.treasury_vault {
+                    Some(d) if *d.key == expected => d,
+                    _ if tail.split => return Ok(Target::Park),
+                    Some(_) => return err!(SwapError::Unauthorized),
+                    None => return err!(SwapError::WrongAsset),
+                };
+                Ok(if token_can_receive(dest, &mint_key, &self.treasury_pda()?) { Target::Token(dest.clone()) } else { Target::Park })
             }
+            m::Party::Payout => err!(SwapError::Unauthorized), // handled above
         }
-        Ok(true)
-    }
-
-    /// SOL pay-or-park. Returns whether the payout moved.
-    fn pay_sol(&self, p: &Payout, maker_wallet: &Pubkey, burn: bool, rent: &Rent) -> Result<bool> {
-        let dest = match p.to {
-            Party::Taker => self.taker.to_account_info(),
-            Party::Maker => {
-                if self.maker_wallet.key() != *maker_wallet {
-                    return Ok(false);
-                }
-                self.maker_wallet.to_account_info()
-            }
-            Party::Treasury => {
-                let expected = if burn { INCINERATOR_ID } else { self.treasury_pda()? };
-                require_keys_eq!(self.treasury.key(), expected, SwapError::Unauthorized);
-                self.treasury.to_account_info()
-            }
-        };
-        if dest.key() == self.swap.key() || !sol_can_receive(&dest, p.amount, rent) {
-            return Ok(false);
-        }
-        self.swap.sub_lamports(p.amount)?;
-        dest.add_lamports(p.amount)?;
-        Ok(true)
     }
 
     /// Return a session-key signer's remaining lamports to the taker so the throwaway key ends
     /// at exactly zero (the fee was deducted before execution). If the taker cannot hold them
     /// they go to the swap account, which returns every lamport to the taker when it closes.
     fn sweep_session(&self, rent: &Rent) -> Result<()> {
-        let caller = self.caller.to_account_info();
-        if caller.key() != self.swap.session_key || caller.key() == self.swap.taker {
+        let caller = &self.caller;
+        if *caller.key != self.swap.session_key || *caller.key == self.swap.taker {
             return Ok(());
         }
         let left = caller.lamports();
         if left == 0 || *caller.owner != system_program::ID || !caller.data_is_empty() {
             return Ok(());
         }
-        let taker = self.taker.to_account_info();
-        let to = if taker.key() == self.swap.taker && sol_can_receive(&taker, left, rent) {
-            taker
+        let to = if *self.taker.key == self.swap.taker && sol_can_receive(&self.taker, left, rent) {
+            self.taker.clone()
         } else {
             self.swap.to_account_info()
         };
         system_program::transfer(
-            CpiContext::new(self.system_program.to_account_info(), system_program::Transfer { from: caller, to }),
+            CpiContext::new(self.system_program.clone(), system_program::Transfer { from: caller.clone(), to }),
             left,
         )
     }
@@ -313,12 +434,10 @@ impl<'info> Settle<'info> {
             if state != TOKEN_INITIALIZED {
                 return Ok(false);
             }
-            let mint_key = self.mint.as_ref().unwrap().key();
+            let mint_key = self.mint.as_ref().map(|a| *a.key).unwrap_or_default();
             let to_treasury = match &self.treasury_vault {
                 Some(dest) => {
-                    let (expected, _) =
-                        Pubkey::find_program_address(&[b"treasury_vault", mint_key.as_ref()], &crate::ID);
-                    dest.key() == expected && token_can_receive(dest, &mint_key, &self.treasury_pda()?)
+                    *dest.key == self.treasury_vault_pda() && token_can_receive(dest, &mint_key, &self.treasury_pda()?)
                 }
                 None => false,
             };
@@ -330,10 +449,10 @@ impl<'info> Settle<'info> {
         }
         let seeds: &[&[u8]] = &[b"swap", self.swap.taker.as_ref(), &self.swap.swap_nonce, &[self.swap.bump]];
         token::close_account(CpiContext::new_with_signer(
-            self.token_program.as_ref().unwrap().to_account_info(),
+            self.token_program.as_ref().ok_or(SwapError::WrongAsset)?.clone(),
             token::CloseAccount {
-                account: self.vault.as_ref().unwrap().to_account_info(),
-                destination: self.taker.to_account_info(),
+                account: self.vault.as_ref().ok_or(SwapError::WrongAsset)?.clone(),
+                destination: self.taker.clone(),
                 authority: self.swap.to_account_info(),
             },
             &[seeds],
@@ -341,303 +460,250 @@ impl<'info> Settle<'info> {
         Ok(true)
     }
 
-    /// The tail of every settling instruction: pay or park each payout, sweep the session key,
-    /// close the swap if asked and possible. State and counters are already written.
-    fn finish(&mut self, payouts: &[Payout], maker_wallet: Pubkey, tail: Tail, ctr: u8, now: i64) -> Result<()> {
-        let rent = Rent::get()?;
-        let usdc = self.swap.asset == ASSET_USDC;
-        let mut parked_any = false;
+    /// The rent goes to the taker, so the taker must be able to hold lamports.
+    fn taker_holds_lamports(&self) -> bool {
+        *self.taker.key == self.swap.taker && !self.taker.executable && self.taker.is_writable
+    }
 
-        if usdc {
-            for p in payouts.iter().filter(|p| p.amount > 0) {
-                if !self.pay_token(p, &maker_wallet, tail.burn)? {
-                    self.park(p.to, p.amount, ctr, now);
-                    parked_any = true;
-                }
+    /// One call on an existing swap, from the gate to the last lamport. Returns the row and what
+    /// it did, for the caller's own fields (the secret, the evidence) and its event.
+    #[inline(never)]
+    fn run(&mut self, call: &m::Call, tail: Tail, now: i64) -> Result<(m::Row, m::Effects)> {
+        self.check_accounts(true)?;
+        let rent = Rent::get()?;
+        let asset = self.swap.asset;
+        let usdc = self.usdc();
+        let v = logic::view(&self.swap);
+
+        // 1. The gate: the swap, the call, who signed and the time. Nothing else.
+        let row = logic::decide(&v, call, self.caller.key, &self.swap, &self.maker, now)?;
+
+        // 2. The plan, and for each payout whether it can land now.
+        let plan = m::plan(&v, row);
+        let mut targets: [Target<'info>; m::MAX_PAYOUTS] = [Target::Park, Target::Park];
+        let mut can = [true; 4];
+        for (i, line) in plan.pays.iter().enumerate() {
+            if line.amount == 0 || line.park {
+                continue;
+            }
+            targets[i] = self.target(row, line.to, logic::amount(line.amount)?, tail, &rent)?;
+            if matches!(targets[i], Target::Park) {
+                can[logic::party_index(line.to)] = false;
             }
         }
 
-        let nothing_owed = self.swap.owed_taker == 0 && self.swap.owed_maker == 0 && self.swap.owed_treasury == 0;
-        // SOL payouts have not moved yet, so decide them first: a close needs them all to land.
-        let sol_all_land = usdc
-            || payouts.iter().filter(|p| p.amount > 0).all(|p| match p.to {
-                Party::Taker => sol_can_receive(&self.taker, p.amount, &rent),
-                Party::Maker => {
-                    self.maker_wallet.key() == maker_wallet && sol_can_receive(&self.maker_wallet, p.amount, &rent)
-                }
-                Party::Treasury => sol_can_receive(&self.treasury, p.amount, &rent),
+        // 3. The record after the call, the maker's counters, the open value (SPEC 11.1: one
+        //    subtraction, at the transition that leaves the open states; it cannot fail).
+        let fx = m::execute_plan(&v, row, &plan, now, &logic::env(&self.config, asset, can), logic::CONSTS);
+        logic::store(self.swap, &fx.state)?;
+        logic::record(self.maker, asset, &fx);
+        self.config.open_value[(asset as usize).min(1)] = u64::try_from(fx.open_value_after).unwrap_or(u64::MAX);
+        let ctr = fx.counter.unwrap_or(counter::NONE);
+        let (swap_key, maker_key) = (self.swap.key(), self.maker.key());
+        for p in fx.payouts.as_slice().iter().filter(|p| p.parked) {
+            emit!(PayoutParked {
+                swap: swap_key,
+                maker: maker_key,
+                counter: ctr,
+                at: now,
+                who: who_of(p.to),
+                amount: logic::amount(p.amount)?,
             });
-        // The rent goes to the taker, so the taker must be able to hold lamports.
-        let taker_ok = self.taker.key() == self.swap.taker && !self.taker.executable && self.taker.is_writable;
-        let mut closing = tail.close && !parked_any && nothing_owed && sol_all_land && taker_ok;
+        }
+
+        // 4. The funds. Token CPIs first.
+        let paid = fx.payouts.as_slice();
+        if usdc {
+            for (i, p) in paid.iter().enumerate().filter(|(_, p)| !p.parked) {
+                let amount = logic::amount(p.amount)?;
+                match &targets[line_of(&plan, i)] {
+                    Target::Token(dest) => self.vault_transfer(dest, amount)?,
+                    Target::Burn => self.vault_burn(amount)?,
+                    _ => return err!(SwapError::MathOverflow), // unreachable: not parked means a target
+                }
+            }
+        }
+        // A row marked "closed" closes the swap in the same instruction when nothing was parked
+        // (the rules say so) and the accounts allow it; otherwise it stays DONE for `close_swap`.
+        let mut closing = fx.closed && self.taker_holds_lamports();
         if closing && usdc {
             closing = self.close_vault()?;
-            if !closing && tail.must_close {
-                return err!(SwapError::VaultNotEmpty);
-            }
         }
-        if tail.must_close && !closing {
-            return err!(SwapError::NotClosable);
-        }
-
         if tail.sweep {
             self.sweep_session(&rent)?;
         }
-
         if !usdc {
-            for p in payouts.iter().filter(|p| p.amount > 0) {
-                if !self.pay_sol(p, &maker_wallet, tail.burn, &rent)? {
-                    self.park(p.to, p.amount, ctr, now);
+            for (i, p) in paid.iter().enumerate().filter(|(_, p)| !p.parked) {
+                let amount = logic::amount(p.amount)?;
+                match &targets[line_of(&plan, i)] {
+                    Target::Sol(dest) => {
+                        self.swap.sub_lamports(amount)?;
+                        dest.add_lamports(amount)?;
+                    }
+                    _ => return err!(SwapError::MathOverflow), // unreachable
                 }
             }
         }
-
         if closing {
-            emit!(SwapClosed { swap: self.swap.key(), maker: self.swap.maker, counter: counter::NONE, at: now });
-            self.swap.close(self.taker.to_account_info())?;
+            emit!(SwapClosed { swap: swap_key, maker: maker_key, counter: counter::NONE, at: now });
+            self.swap.close(self.taker.clone())?;
         }
-        Ok(())
-    }
-
-    /// DONE, with the counter of the transition as the outcome.
-    fn settle(&mut self, ctr: u8, now: i64) {
-        let s = &mut self.swap;
-        s.state = state::DONE;
-        s.outcome = ctr;
-        s.t_settled = now;
-        self.maker.bump(ctr);
+        Ok((row, fx))
     }
 }
 
-fn gate_before(now: i64, limit: i64) -> Result<()> {
-    require!(now < limit, SwapError::TooLate);
-    Ok(())
-}
-fn gate_from(now: i64, start: i64) -> Result<()> {
-    require!(now >= start, SwapError::TooEarly);
-    Ok(())
-}
-
-/// Who signed, relative to a swap.
-struct Caller {
-    taker_wallet: bool,
-    /// The taker's wallet or the swap's session key.
-    taker: bool,
-    operator: bool,
-    owner: bool,
-}
-
-fn caller_of(key: &Pubkey, swap: &Swap, maker: &Maker) -> Caller {
-    Caller {
-        taker_wallet: *key == swap.taker,
-        taker: *key == swap.taker || *key == swap.session_key,
-        operator: *key == maker.operator,
-        owner: *key == maker.owner,
+/// The `who` byte of `PayoutParked` and `OwedWithdrawn`: 0 taker (or its payout address),
+/// 1 maker, 2 treasury.
+fn who_of(p: m::Party) -> u8 {
+    match p {
+        m::Party::Taker | m::Party::Payout => 0,
+        m::Party::Maker => 1,
+        m::Party::Treasury => 2,
     }
 }
 
-impl Caller {
-    /// The locker escrows the chain asset and can refund it. A: taker. B: maker.
-    fn locker(&self, is_a: bool) -> bool {
-        if is_a {
-            self.taker
-        } else {
-            self.operator
+/// The plan line behind the `i`-th payout of the effects (lines with a zero amount are skipped
+/// by the rules, in order).
+fn line_of(plan: &m::Plan, i: usize) -> usize {
+    let mut seen = 0;
+    for (k, line) in plan.pays.iter().enumerate() {
+        if line.amount == 0 {
+            continue;
         }
-    }
-    /// The claimer locks XMR and can claim. A: maker. B: taker.
-    fn claimer(&self, is_a: bool) -> bool {
-        if is_a {
-            self.operator
-        } else {
-            self.taker
+        if seen == i {
+            return k;
         }
+        seen += 1;
     }
+    0
+}
+
+fn total_for(fx: &m::Effects, to: m::Party) -> u64 {
+    u64::try_from(fx.payouts.total_for(to)).unwrap_or(u64::MAX)
 }
 
 // ------------------------------------------------------------------ pending exits
 
+fn reason_of(reason: u8) -> m::RejectReason {
+    match reason {
+        0 => m::RejectReason::MakerChoice,
+        1 => m::RejectReason::UnusableInput,
+        _ => m::RejectReason::LeafConsumed,
+    }
+}
+
 /// A3, B3.
 pub fn reject(ctx: Context<Settle>, expected_open: [u8; 32], reason: u8) -> Result<()> {
-    let a = ctx.accounts;
-    a.check_accounts(true)?;
     let now = util::now()?;
-    let swap_key = a.swap.key();
-    let who = caller_of(a.caller.key, &a.swap, &a.maker);
-    require!(who.operator, SwapError::Unauthorized);
-    require!(
-        a.swap.state == state::PENDING && a.swap.open_hash(&swap_key) == expected_open,
-        SwapError::BadState
-    );
-    // B3: window mode only.
-    require!(a.swap.is_a() || a.swap.mode == mode::WINDOW, SwapError::BadState);
-    require!(reason <= 2, SwapError::BadState);
-    let ctr = if reason == 0 { counter::REJECTIONS } else { counter::REJECTIONS_NO_FAULT };
-    let stake = if a.swap.is_a() { a.swap.amount } else { a.swap.deposit };
-    a.settle(ctr, now);
-    a.maker.pending_closed();
-    emit!(SwapRejected { swap: swap_key, maker: a.maker.key(), counter: ctr, at: now });
-    let maker_wallet = a.maker.operator;
-    a.finish(
-        &[Payout { to: Party::Taker, amount: stake }],
-        maker_wallet,
-        Tail { close: true, ..Tail::default() },
-        ctr,
-        now,
-    )
+    let mut c = ctx.accounts.ctx();
+    let (swap_key, maker_key) = (c.swap.key(), c.maker.key());
+    // A reason the protocol does not define matches no row.
+    let open_ok = reason <= 2 && c.swap.open_hash(&swap_key) == expected_open;
+    let (_, fx) = c.run(&m::Call::Reject { open_ok, reason: reason_of(reason) }, Tail::default(), now)?;
+    emit!(SwapRejected { swap: swap_key, maker: maker_key, counter: fx.counter.unwrap_or(counter::NONE), at: now });
+    Ok(())
 }
 
 /// A4, B2.
 pub fn cancel_pending(ctx: Context<Settle>) -> Result<()> {
-    let a = ctx.accounts;
-    a.check_accounts(true)?;
     let now = util::now()?;
-    let who = caller_of(a.caller.key, &a.swap, &a.maker);
-    require!(who.taker, SwapError::Unauthorized);
-    require!(a.swap.state == state::PENDING, SwapError::BadState);
-    let ctr = counter::PENDING_CANCELS;
-    let stake = if a.swap.is_a() { a.swap.amount } else { a.swap.deposit };
-    a.settle(ctr, now);
-    a.maker.pending_closed();
-    emit!(PendingCancelled { swap: a.swap.key(), maker: a.maker.key(), counter: ctr, at: now });
-    let maker_wallet = a.maker.operator;
-    a.finish(
-        &[Payout { to: Party::Taker, amount: stake }],
-        maker_wallet,
-        Tail { close: true, sweep: true, ..Tail::default() },
-        ctr,
-        now,
-    )
+    let mut c = ctx.accounts.ctx();
+    let (swap_key, maker_key) = (c.swap.key(), c.maker.key());
+    let (_, fx) = c.run(&m::Call::CancelPending, Tail { sweep: true, ..Tail::default() }, now)?;
+    emit!(PendingCancelled { swap: swap_key, maker: maker_key, counter: fx.counter.unwrap_or(counter::NONE), at: now });
+    Ok(())
 }
 
 /// A5, B4.
 pub fn expire_pending(ctx: Context<Settle>) -> Result<()> {
-    let a = ctx.accounts;
-    a.check_accounts(true)?;
     let now = util::now()?;
-    require!(a.swap.state == state::PENDING, SwapError::BadState);
-    gate_from(now, a.swap.t_pending_deadline)?;
-    // A take outside window mode that the maker never funded is the maker's fault.
-    let fault = !a.swap.is_a() && a.swap.mode != mode::WINDOW;
-    let ctr = if fault { counter::MISSED_FUNDS } else { counter::APPROVAL_TIMEOUTS };
-    let stake = if a.swap.is_a() { a.swap.amount } else { a.swap.deposit };
-    a.settle(ctr, now);
-    a.maker.pending_closed();
-    emit!(PendingExpired { swap: a.swap.key(), maker: a.maker.key(), counter: ctr, at: now });
-    let maker_wallet = a.maker.operator;
-    a.finish(
-        &[Payout { to: Party::Taker, amount: stake }],
-        maker_wallet,
-        Tail { close: true, ..Tail::default() },
-        ctr,
-        now,
-    )
+    let mut c = ctx.accounts.ctx();
+    let (swap_key, maker_key) = (c.swap.key(), c.maker.key());
+    let (_, fx) = c.run(&m::Call::ExpirePending, Tail::default(), now)?;
+    emit!(PendingExpired { swap: swap_key, maker: maker_key, counter: fx.counter.unwrap_or(counter::NONE), at: now });
+    Ok(())
 }
 
 // ------------------------------------------------------------------ progress (Short list)
 
-fn check_short(a: &Short) -> Result<()> {
+/// A call on the Short list: no funds move and the open value does not change (none of these
+/// rows leaves the open states), so `config` is only read.
+#[inline(never)]
+fn short(a: &mut Short, call: &m::Call, now: i64) -> Result<(m::Row, m::Effects)> {
     require_keys_eq!(a.swap.maker, a.maker.key(), SwapError::Unauthorized);
-    Ok(())
+    let v = logic::view(&a.swap);
+    let row = logic::decide(&v, call, a.caller.key, &a.swap, &a.maker, now)?;
+    let fx = m::execute(&v, row, now, &logic::env(&a.config, a.swap.asset, [true; 4]), logic::CONSTS);
+    logic::store(&mut a.swap, &fx.state)?;
+    logic::record(&mut a.maker, a.swap.asset, &fx);
+    Ok((row, fx))
 }
 
 /// A6, B6.
 pub fn post_notice(ctx: Context<Short>, commitment: [u8; 32], ciphertext: [u8; 104]) -> Result<()> {
     let a = ctx.accounts;
-    check_short(a)?;
     let now = util::now()?;
-    let is_a = a.swap.is_a();
-    let who = caller_of(a.caller.key, &a.swap, &a.maker);
-    require!(who.claimer(is_a), SwapError::Unauthorized);
-    require!(a.swap.state == state::ACTIVE, SwapError::BadState);
-    let s = &mut a.swap;
-    if is_a {
-        gate_before(now, s.t_note_deadline.min(s.t_final))?;
-    } else {
-        // A late notice is still accepted until T_nl; it only costs the taker its protection
-        // against a withheld deposit.
-        gate_before(now, s.t_nl().min(s.t_final))?;
-        if now >= s.t_note_deadline {
-            s.flags |= flag::LATE_NOTICE;
-        }
-    }
-    s.state = state::NOTICED;
-    s.flags |= flag::NOTICE;
-    s.notice_commitment = commitment;
-    s.notice_ct = ciphertext;
-    s.t_notice = now;
-    s.t_cut = now + util::delta_cut(s.depth);
-    s.t_claim_open = now + s.d_c as i64;
-    a.maker.bump(counter::NOTICES);
-    emit!(NoticePosted { swap: s.key(), maker: s.maker, counter: counter::NOTICES, at: now, commitment });
+    short(a, &m::Call::PostNotice, now)?;
+    a.swap.notice_commitment = commitment;
+    a.swap.notice_ct = ciphertext;
+    emit!(NoticePosted { swap: a.swap.key(), maker: a.maker.key(), counter: counter::NOTICES, at: now, commitment });
     Ok(())
 }
 
-/// A9, B7.
+/// A9, B7, Z2 (unfreezing).
 pub fn set_ready(ctx: Context<Short>) -> Result<()> {
     let a = ctx.accounts;
-    check_short(a)?;
     let now = util::now()?;
-    let is_a = a.swap.is_a();
-    let who = caller_of(a.caller.key, &a.swap, &a.maker);
-    require!(who.locker(is_a), SwapError::Unauthorized);
-    require!(a.swap.state == state::NOTICED, SwapError::BadState);
-    let s = &mut a.swap;
-    gate_from(now, s.t_ready_min())?;
-    gate_before(now, s.t_claim_open.min(s.t_final))?;
-    s.state = state::READY;
-    s.t_ready = now;
-    s.t_claim_deadline = now + s.w_c as i64;
-    a.maker.bump(counter::READIES);
-    emit!(ReadySet { swap: s.key(), maker: s.maker, counter: counter::READIES, at: now });
+    short(a, &m::Call::SetReady, now)?;
+    emit!(ReadySet { swap: a.swap.key(), maker: a.maker.key(), counter: counter::READIES, at: now });
+    Ok(())
+}
+
+/// Z1 (SPEC 11.6): the watcher the swap names, or the locker, pauses the claimer's
+/// claim-without-ready until `T_ff = max(t_Z + W_z, T_co)`. It reveals nothing and moves nothing.
+pub fn freeze(ctx: Context<Short>) -> Result<()> {
+    let a = ctx.accounts;
+    let now = util::now()?;
+    let (_, fx) = short(a, &m::Call::Freeze, now)?;
+    emit!(Frozen {
+        swap: a.swap.key(),
+        maker: a.maker.key(),
+        counter: counter::FREEZES,
+        at: now,
+        taker: a.swap.taker,
+        watcher: a.swap.watcher,
+        frozen_until: fx.state.t_ff(),
+    });
     Ok(())
 }
 
 /// SPEC 3.6: the maker keeps the deposit in escrow past the hold.
 pub fn withhold(ctx: Context<Short>, evidence: Option<Evidence>) -> Result<()> {
     let a = ctx.accounts;
-    check_short(a)?;
     let now = util::now()?;
     let swap_key = a.swap.key();
-    let who = caller_of(a.caller.key, &a.swap, &a.maker);
-    require!(who.operator, SwapError::Unauthorized);
-    require!(a.swap.state == state::HOLD, SwapError::BadState);
-    // Refused at or after T_hold even if nobody has cranked release_deposit.
-    gate_before(now, a.swap.t_hold())?;
-    let s = &mut a.swap;
+    let opens = match &evidence {
+        None => m::Evidence::Absent,
+        Some(e) if Swap::notice_opening(&swap_key, &e.txid, &e.view) == a.swap.notice_commitment => m::Evidence::Opens,
+        Some(_) => m::Evidence::Mismatch,
+    };
+    let (row, _) = short(a, &m::Call::Withhold(opens), now)?;
     let mut txid = [0u8; 32];
     let mut view = [0u8; 32];
-    // Direction A with a notice on record: the maker must open its own notice. Anywhere else no
-    // evidence exists to demand, and any supplied is ignored.
-    if s.is_a() && s.has(flag::NOTICE) {
-        let Some(e) = evidence else {
-            return err!(SwapError::EvidenceRequired);
-        };
-        require!(
-            Swap::notice_opening(&swap_key, &e.txid, &e.view) == s.notice_commitment,
-            SwapError::EvidenceMismatch
-        );
-        s.evidence_txid = e.txid;
-        s.evidence_view = e.view;
-        s.flags |= flag::EVIDENCE;
+    // Direction A with a notice on record: the maker opened its own notice and the opening is
+    // kept. Anywhere else no evidence exists to demand, and any supplied is ignored.
+    if let (m::Row::Withhold { evidence: true }, Some(e)) = (row, evidence) {
+        a.swap.evidence_txid = e.txid;
+        a.swap.evidence_view = e.view;
         txid = e.txid;
         view = e.view;
     }
-    s.state = state::WITHHELD;
-    s.deposit_state = deposit_state::WITHHELD;
-    let amount = s.deposit;
-    let asset = s.asset as usize;
-    let m = &mut a.maker;
-    m.bump(counter::WITHHOLDS);
-    if let Some(v) = m.withheld_volume.get_mut(asset) {
-        *v = v.saturating_add(amount);
-    }
     emit!(DepositWithheld {
         swap: swap_key,
-        maker: m.key(),
+        maker: a.maker.key(),
         counter: counter::WITHHOLDS,
         at: now,
-        amount,
+        amount: a.swap.deposit,
         txid,
         view,
     });
@@ -647,424 +713,245 @@ pub fn withhold(ctx: Context<Short>, evidence: Option<Evidence>) -> Result<()> {
 /// SPEC 3.6: the claimer posts the opening of its notice in clear.
 pub fn publish_evidence(ctx: Context<Short>, txid: [u8; 32], view: [u8; 32]) -> Result<()> {
     let a = ctx.accounts;
-    check_short(a)?;
     let now = util::now()?;
     let swap_key = a.swap.key();
-    let who = caller_of(a.caller.key, &a.swap, &a.maker);
-    require!(who.claimer(a.swap.is_a()), SwapError::Unauthorized);
-    // "NOTICED or later, any state including DONE": a notice is on record.
-    require!(a.swap.has(flag::NOTICE), SwapError::BadState);
-    require!(
-        Swap::notice_opening(&swap_key, &txid, &view) == a.swap.notice_commitment,
-        SwapError::EvidenceMismatch
-    );
-    let s = &mut a.swap;
-    s.evidence_txid = txid;
-    s.evidence_view = view;
-    s.flags |= flag::EVIDENCE;
-    emit!(EvidencePublished { swap: swap_key, maker: s.maker, counter: counter::NONE, at: now, txid, view });
+    let opens = Swap::notice_opening(&swap_key, &txid, &view) == a.swap.notice_commitment;
+    short(a, &m::Call::PublishEvidence { opens }, now)?;
+    a.swap.evidence_txid = txid;
+    a.swap.evidence_view = view;
+    emit!(EvidencePublished { swap: swap_key, maker: a.maker.key(), counter: counter::NONE, at: now, txid, view });
     Ok(())
 }
 
 // ------------------------------------------------------------------ aborts and keyless exits
 
-/// A7a-d, B8.
+/// A7a-d, B8, Z5.
 pub fn abort(ctx: Context<Settle>) -> Result<()> {
-    let a = ctx.accounts;
-    a.check_accounts(true)?;
     let now = util::now()?;
-    let is_a = a.swap.is_a();
-    let who = caller_of(a.caller.key, &a.swap, &a.maker);
-    require!(who.claimer(is_a), SwapError::Unauthorized);
-    let swap_key = a.swap.key();
-    let maker_key = a.maker.key();
-    let maker_wallet = a.maker.operator;
-    let s = &mut a.swap;
-    if is_a {
-        match s.state {
-            state::ACTIVE => {
-                // A7a: no notice was ever accepted, so the XMR was never locked: a keyless,
-                // full refund at once.
-                gate_before(now, s.t_note_deadline.min(s.t_final))?;
-                let ctr = counter::ABORTS_PRE_NOTICE;
-                let amount = s.amount;
-                a.settle(ctr, now);
-                emit!(Aborted { swap: swap_key, maker: maker_key, counter: ctr, at: now, new_state: state::DONE });
-                return a.finish(
-                    &[Payout { to: Party::Taker, amount }],
-                    maker_wallet,
-                    Tail { close: true, ..Tail::default() },
-                    ctr,
-                    now,
-                );
-            }
-            state::NOTICED => {
-                gate_before(now, s.t_final)?;
-                let (new_state, ctr) = if now < s.t_claim_open {
-                    (state::ABORTED_FREE, counter::ABORTS_EARLY) // A7b
-                } else {
-                    (state::ABORTED_HOLD, counter::ABORTS_LATE) // A7c
-                };
-                s.state = new_state;
-                a.maker.bump(ctr);
-                emit!(Aborted { swap: swap_key, maker: maker_key, counter: ctr, at: now, new_state });
-            }
-            state::READY => {
-                // A7d: the maker gives up a claim it was entitled to.
-                gate_before(now, s.t_final)?;
-                s.state = state::ABORTED_FREE;
-                a.maker.bump(counter::MISSED_CLAIMS);
-                emit!(Aborted {
-                    swap: swap_key,
-                    maker: maker_key,
-                    counter: counter::MISSED_CLAIMS,
-                    at: now,
-                    new_state: state::ABORTED_FREE,
-                });
-            }
-            _ => return err!(SwapError::BadState),
-        }
-    } else {
-        // B8.
-        require!(matches!(s.state, state::NOTICED | state::READY), SwapError::BadState);
-        gate_before(now, s.t_final)?;
-        s.state = state::ABORTED_HOLD;
-        a.maker.bump(counter::TAKER_ABORTS);
-        emit!(Aborted {
-            swap: swap_key,
-            maker: maker_key,
-            counter: counter::TAKER_ABORTS,
-            at: now,
-            new_state: state::ABORTED_HOLD,
-        });
-    }
+    let mut c = ctx.accounts.ctx();
+    let (swap_key, maker_key) = (c.swap.key(), c.maker.key());
+    let (_, fx) = c.run(&m::Call::Abort, Tail::default(), now)?;
+    emit!(Aborted {
+        swap: swap_key,
+        maker: maker_key,
+        counter: fx.counter.unwrap_or(counter::NONE),
+        at: now,
+        new_state: fx.state.state as u8,
+    });
     Ok(())
 }
 
 /// A8.
 pub fn refund_unnoticed(ctx: Context<Settle>) -> Result<()> {
-    let a = ctx.accounts;
-    a.check_accounts(true)?;
     let now = util::now()?;
-    require!(a.swap.is_a(), SwapError::WrongDirection);
-    require!(a.swap.state == state::ACTIVE, SwapError::BadState);
-    gate_from(now, a.swap.t_note_deadline)?;
-    let ctr = counter::MISSED_NOTICES;
-    let amount = a.swap.amount;
-    a.settle(ctr, now);
-    emit!(RefundedKeyless { swap: a.swap.key(), maker: a.maker.key(), counter: ctr, at: now });
-    let maker_wallet = a.maker.operator;
-    a.finish(
-        &[Payout { to: Party::Taker, amount }],
-        maker_wallet,
-        Tail { close: true, ..Tail::default() },
-        ctr,
-        now,
-    )
+    let mut c = ctx.accounts.ctx();
+    let (swap_key, maker_key) = (c.swap.key(), c.maker.key());
+    let (_, fx) = c.run(&m::Call::RefundUnnoticed, Tail::default(), now)?;
+    emit!(RefundedKeyless { swap: swap_key, maker: maker_key, counter: fx.counter.unwrap_or(counter::NONE), at: now });
+    Ok(())
 }
 
 /// B11.
 pub fn expire_unnoticed(ctx: Context<Settle>) -> Result<()> {
-    let a = ctx.accounts;
-    a.check_accounts(true)?;
     let now = util::now()?;
-    require!(!a.swap.is_a(), SwapError::WrongDirection);
-    require!(a.swap.state == state::ACTIVE, SwapError::BadState);
-    gate_from(now, a.swap.t_exp())?;
-    let ctr = counter::EXPIRED_REFUNDS;
-    let (deposit, amount) = (a.swap.deposit, a.swap.amount);
-    a.settle(ctr, now);
-    // The maker's escrow is parked, never pushed: nobody with authority over it is present.
-    if amount > 0 {
-        a.park(Party::Maker, amount, ctr, now);
-    }
-    emit!(ExpiredUnnoticed { swap: a.swap.key(), maker: a.maker.key(), counter: ctr, at: now });
-    let maker_wallet = a.maker.operator;
-    a.finish(&[Payout { to: Party::Taker, amount: deposit }], maker_wallet, Tail::default(), ctr, now)
+    let mut c = ctx.accounts.ctx();
+    let (swap_key, maker_key) = (c.swap.key(), c.maker.key());
+    let (_, fx) = c.run(&m::Call::ExpireUnnoticed, Tail::default(), now)?;
+    emit!(ExpiredUnnoticed { swap: swap_key, maker: maker_key, counter: fx.counter.unwrap_or(counter::NONE), at: now });
+    Ok(())
 }
 
 // ------------------------------------------------------------------ secret-bearing calls
 
-/// How a refund treats the deposit.
-#[derive(PartialEq, Eq)]
-enum RefundKind {
-    /// The deposit stays in escrow (HOLD), unless it is zero.
-    Held,
-    /// Everything is returned at once.
-    Free,
-}
-
-/// A10a-g, B9a-h.
+/// A10a-g, B9a-h, Z3.
 pub fn refund(ctx: Context<Settle>, secret: [u8; 32]) -> Result<()> {
-    use RefundKind::*;
-    let a = ctx.accounts;
-    a.check_accounts(true)?;
     let now = util::now()?;
-    let is_a = a.swap.is_a();
-    let who = caller_of(a.caller.key, &a.swap, &a.maker);
-    require!(who.locker(is_a), SwapError::Unauthorized);
-    let s = &a.swap;
-    let t_final = s.t_final;
-    let (kind, ctr) = if is_a {
-        match s.state {
-            // A keyed refund is valid in ACTIVE at every instant.
-            state::ACTIVE if now < s.t_note_deadline => (Held, counter::TAKER_CANCELS_APPROVED), // A10a
-            state::ACTIVE => (Free, counter::MISSED_NOTICES),                                    // A10g
-            state::NOTICED if now < s.t_claim_open.min(t_final) => (Held, counter::TAKER_REFUNDS_NOTICED), // A10b
-            state::READY if now < s.t_claim_deadline => return err!(SwapError::TooEarly),
-            state::READY if now < t_final => (Free, counter::MISSED_CLAIMS), // A10e
-            state::ABORTED_HOLD if now < t_final => (Held, counter::REFUNDS_AFTER_ABORT), // A10c
-            state::ABORTED_FREE if now < t_final => (Free, counter::REFUNDS_AFTER_ABORT), // A10d
-            state::NOTICED | state::READY | state::ABORTED_HOLD | state::ABORTED_FREE => {
-                // Between the last pre-expiry window and T_exp the claimer alone may move.
-                require!(now >= s.t_exp(), SwapError::TooLate);
-                (Free, counter::EXPIRED_REFUNDS) // A10f
-            }
-            _ => return err!(SwapError::BadState),
-        }
-    } else {
-        match s.state {
-            state::ACTIVE if now < s.t_note_deadline => (Free, counter::BACKOUTS_PRE_NOTICE), // B9a
-            state::ACTIVE => (Held, counter::TAKER_NO_NOTICE),                                // B9b
-            state::NOTICED if now < s.t_cut.min(t_final) => {
-                if s.has(flag::LATE_NOTICE) {
-                    (Held, counter::TAKER_NO_NOTICE) // B9h
-                } else {
-                    (Free, counter::BACKOUTS_POST_NOTICE) // B9c
-                }
-            }
-            state::NOTICED if now < s.t_claim_open.min(t_final) => (Held, counter::REFUNDS_UNCONFIRMED), // B9d
-            state::READY if now < s.t_claim_deadline => return err!(SwapError::TooEarly),
-            state::READY if now < t_final => (Held, counter::TAKER_MISSED_CLAIMS), // B9e
-            state::ABORTED_HOLD if now < t_final => (Held, counter::REFUNDS_AFTER_ABORT), // B9f
-            state::NOTICED | state::READY | state::ABORTED_HOLD => {
-                require!(now >= s.t_exp(), SwapError::TooLate);
-                (Free, counter::EXPIRED_REFUNDS) // B9g
-            }
-            _ => return err!(SwapError::BadState),
-        }
-    };
-    let commitment = if is_a { &s.taker_spend_pub } else { &s.maker_spend_pub };
-    require!(scalar_matches(&secret, commitment), SwapError::ScalarMismatch);
-
-    // ---- nothing below may fail: the secret is public.
-    let held = kind == Held && s.deposit > 0;
-    let (amount, deposit) = (s.amount, s.deposit);
-    let maker_wallet = a.maker.operator;
-    let swap_key = a.swap.key();
-    let maker_key = a.maker.key();
-    {
-        let s = &mut a.swap;
-        s.revealed = secret;
-        s.flags |= flag::REVEALED | flag::REVEALER_LOCKER;
-        s.t_refund = now;
-    }
-    let mut payouts = [Payout { to: Party::Taker, amount: 0 }, Payout { to: Party::Taker, amount: 0 }];
-    if is_a {
-        // D is part of amount.
-        payouts[0] = Payout { to: Party::Taker, amount: if held { amount - deposit } else { amount } };
-    } else {
-        payouts[0] = Payout { to: Party::Maker, amount };
-        if !held {
-            payouts[1] = Payout { to: Party::Taker, amount: deposit };
-        }
-    }
-    if held {
-        a.swap.state = state::HOLD;
-        a.swap.deposit_state = deposit_state::HELD;
-        a.maker.bump(ctr);
-    } else {
-        a.settle(ctr, now);
-    }
-    emit!(Refunded { swap: swap_key, maker: maker_key, counter: ctr, at: now, secret, deposit_held: held });
-    a.finish(&payouts, maker_wallet, Tail { sweep: is_a, ..Tail::default() }, ctr, now)
+    let mut c = ctx.accounts.ctx();
+    let (swap_key, maker_key) = (c.swap.key(), c.maker.key());
+    let is_a = c.swap.is_a();
+    // The locker's commitment: A the taker's, B the maker's.
+    let secret_ok = scalar_matches(&secret, if is_a { &c.swap.taker_spend_pub } else { &c.swap.maker_spend_pub });
+    let (row, fx) = c.run(&m::Call::Refund { secret_ok }, Tail { sweep: is_a, ..Tail::default() }, now)?;
+    // The other side recovers its XMR with this scalar: it is account state, not only an event.
+    c.swap.revealed = secret;
+    emit!(Refunded {
+        swap: swap_key,
+        maker: maker_key,
+        counter: fx.counter.unwrap_or(counter::NONE),
+        at: now,
+        secret,
+        deposit_held: matches!(row, m::Row::Refund { held: true, .. }),
+    });
+    Ok(())
 }
 
-/// A11a-c, B10a-c.
-pub fn claim(ctx: Context<Settle>, secret: [u8; 32]) -> Result<()> {
-    let a = ctx.accounts;
-    a.check_accounts(true)?;
+/// A11a-c, B10a-c, Z4. In direction B the proceeds go to the payout address named at `take`
+/// and to no other, whoever submits the claim (SPEC 11.2).
+pub fn claim(ctx: Context<SettlePayout>, secret: [u8; 32]) -> Result<()> {
     let now = util::now()?;
-    let is_a = a.swap.is_a();
-    let who = caller_of(a.caller.key, &a.swap, &a.maker);
-    require!(who.claimer(is_a), SwapError::Unauthorized);
-    let s = &a.swap;
-    let ctr = match s.state {
-        state::READY if now < s.t_claim_deadline.min(s.t_final) => counter::COMPLETED, // A11a, B10a
-        state::READY if now < s.t_final => return err!(SwapError::TooLate),
-        state::NOTICED if now < s.t_claim_open => return err!(SwapError::TooEarly),
-        state::NOTICED if now < s.t_final => {
-            if is_a {
-                counter::CLAIMS_WITHOUT_READY // A11b
-            } else {
-                counter::TAKER_CLAIMS_WITHOUT_READY // B10b
-            }
-        }
-        state::ABORTED_FREE | state::ABORTED_HOLD if now < s.t_final => return err!(SwapError::TooEarly),
-        state::NOTICED | state::READY | state::ABORTED_FREE | state::ABORTED_HOLD => {
-            // [T_final, T_exp): the claimer may claim in any post-notice state.
-            gate_before(now, s.t_exp())?;
-            counter::CLAIMS_AFTER_FINAL // A11c, B10c
-        }
-        _ => return err!(SwapError::BadState),
-    };
-    let commitment = if is_a { &s.maker_spend_pub } else { &s.taker_spend_pub };
-    require!(scalar_matches(&secret, commitment), SwapError::ScalarMismatch);
-
-    // ---- nothing below may fail: the secret is public.
-    let (amount, deposit, asset) = (s.amount, s.deposit, s.asset as usize);
-    let fee = util::bps_of(amount, s.fee_bps);
-    let paid = if is_a { amount - fee } else { (amount - fee).saturating_add(deposit) };
-    // A: the payout address set by the cold owner key, never the operator.
-    let maker_wallet = a.maker.payout;
-    let swap_key = a.swap.key();
-    let maker_key = a.maker.key();
-    {
-        let s = &mut a.swap;
-        s.revealed = secret;
-        s.flags |= flag::REVEALED;
+    let mut c = ctx.accounts.ctx();
+    let (swap_key, maker_key) = (c.swap.key(), c.maker.key());
+    let is_a = c.swap.is_a();
+    if is_a {
+        require_keys_eq!(c.payout.as_ref().map(|p| *p.key).unwrap_or_default(), c.swap.taker, SwapError::Unauthorized);
     }
-    a.settle(ctr, now);
-    if let Some(v) = a.maker.volume.get_mut(asset) {
-        *v = v.saturating_add(amount);
-    }
-    emit!(Claimed { swap: swap_key, maker: maker_key, counter: ctr, at: now, secret, paid, fee });
-    let payouts = [
-        Payout { to: if is_a { Party::Maker } else { Party::Taker }, amount: paid },
-        Payout { to: Party::Treasury, amount: fee },
-    ];
-    a.finish(&payouts, maker_wallet, Tail { sweep: !is_a, ..Tail::default() }, ctr, now)
+    // The claimer's commitment: A the maker's, B the taker's.
+    let secret_ok = scalar_matches(&secret, if is_a { &c.swap.maker_spend_pub } else { &c.swap.taker_spend_pub });
+    let (_, fx) = c.run(&m::Call::Claim { secret_ok }, Tail { sweep: !is_a, ..Tail::default() }, now)?;
+    c.swap.revealed = secret;
+    let fee = total_for(&fx, m::Party::Treasury);
+    let paid = total_for(&fx, m::Party::Maker)
+        .saturating_add(total_for(&fx, m::Party::Taker))
+        .saturating_add(total_for(&fx, m::Party::Payout));
+    emit!(Claimed { swap: swap_key, maker: maker_key, counter: fx.counter.unwrap_or(counter::NONE), at: now, secret, paid, fee });
+    Ok(())
 }
 
 // ------------------------------------------------------------------ deposit sub-machine
 
 pub fn release_deposit(ctx: Context<Settle>) -> Result<()> {
-    let a = ctx.accounts;
-    a.check_accounts(true)?;
     let now = util::now()?;
-    let who = caller_of(a.caller.key, &a.swap, &a.maker);
-    let (ctr, deposit_state) = match a.swap.state {
-        state::HOLD => {
-            // Anyone once the hold is over; the operator at any time.
-            if !who.operator {
-                gate_from(now, a.swap.t_hold())?;
-            }
-            (counter::DEPOSITS_RETURNED, deposit_state::RETURNED)
-        }
-        state::WITHHELD => {
-            require!(who.operator, SwapError::Unauthorized);
-            (counter::RELEASES, deposit_state::RELEASED)
-        }
-        _ => return err!(SwapError::BadState),
-    };
-    let amount = a.swap.deposit;
-    a.swap.deposit_state = deposit_state;
-    a.settle(ctr, now);
-    emit!(DepositReleased { swap: a.swap.key(), maker: a.maker.key(), counter: ctr, at: now, amount });
-    let maker_wallet = a.maker.operator;
-    a.finish(&[Payout { to: Party::Taker, amount }], maker_wallet, Tail::default(), ctr, now)
+    let mut c = ctx.accounts.ctx();
+    let (swap_key, maker_key) = (c.swap.key(), c.maker.key());
+    let (_, fx) = c.run(&m::Call::ReleaseDeposit, Tail::default(), now)?;
+    emit!(DepositReleased {
+        swap: swap_key,
+        maker: maker_key,
+        counter: fx.counter.unwrap_or(counter::NONE),
+        at: now,
+        amount: total_for(&fx, m::Party::Taker),
+    });
+    Ok(())
 }
 
+/// `ceil(D / 2)` to the taker, `floor(D / 2)` to the treasury, or burned when `split_mode` is 1.
+/// The treasury's half is parked if the account given for it is not the one the current mode
+/// names: an admin flipping the mode cannot fail a split in flight (SPEC 11.1).
 pub fn split_deposit(ctx: Context<Settle>) -> Result<()> {
-    let a = ctx.accounts;
-    a.check_accounts(true)?;
     let now = util::now()?;
-    require!(a.swap.state == state::WITHHELD, SwapError::BadState);
-    gate_from(now, a.swap.t_split())?;
-    let ctr = counter::SPLITS;
-    let d = a.swap.deposit;
-    // ceil(D / 2) to the taker, floor(D / 2) to the treasury (or burned).
-    let to_treasury = d / 2;
-    let to_taker = d - to_treasury;
-    a.swap.deposit_state = deposit_state::SPLIT;
-    a.settle(ctr, now);
-    emit!(DepositSplit { swap: a.swap.key(), maker: a.maker.key(), counter: ctr, at: now, to_taker, to_treasury });
-    let maker_wallet = a.maker.operator;
-    let burn = a.config.split_mode == 1;
-    a.finish(
-        &[Payout { to: Party::Taker, amount: to_taker }, Payout { to: Party::Treasury, amount: to_treasury }],
-        maker_wallet,
-        Tail { burn, ..Tail::default() },
-        ctr,
-        now,
-    )
+    let mut c = ctx.accounts.ctx();
+    let (swap_key, maker_key) = (c.swap.key(), c.maker.key());
+    let (_, fx) = c.run(&m::Call::SplitDeposit, Tail { split: true, ..Tail::default() }, now)?;
+    emit!(DepositSplit {
+        swap: swap_key,
+        maker: maker_key,
+        counter: fx.counter.unwrap_or(counter::NONE),
+        at: now,
+        to_taker: total_for(&fx, m::Party::Taker),
+        to_treasury: total_for(&fx, m::Party::Treasury),
+    });
+    Ok(())
 }
 
 // ------------------------------------------------------------------ housekeeping
 
-/// Pull a parked payout. `who`: 0 taker (signer: the taker's wallet; any destination), 1 maker
-/// (signer: the maker's owner; any destination), 2 treasury (anyone; destination pinned).
-/// Carries no secret, so it may fail.
-pub fn withdraw_owed(ctx: Context<Settle>, who: u8) -> Result<()> {
-    let a = ctx.accounts;
-    a.check_accounts(false)?;
+/// Pull a parked payout. It carries no secret, so it may fail.
+///
+/// * `who = 0`: the taker's wallet, to the destination it names in `taker` / `taker_token`.
+///   On a direction-B swap that ended in a claim with a payout address other than the taker's,
+///   the balance belongs to that address (SPEC 11.2): the payout address signs and names any
+///   destination in `payout` / `payout_token`, or **anyone** delivers it with `payout` /
+///   `payout_token` being the payout address and its associated token account (created at the
+///   caller's cost when the associated-token program is passed). The taking wallet cannot
+///   redirect it.
+/// * `who = 1`: the maker's owner, to `maker_wallet` / `maker_token`.
+/// * `who = 2`: anyone, to the treasury and nowhere else.
+pub fn withdraw_owed(ctx: Context<SettlePayout>, who: u8) -> Result<()> {
     let now = util::now()?;
-    let caller = caller_of(a.caller.key, &a.swap, &a.maker);
-    let (party, authorised, owed) = match who {
-        0 => (Party::Taker, caller.taker_wallet, a.swap.owed_taker),
-        1 => (Party::Maker, caller.owner, a.swap.owed_maker),
-        2 => (Party::Treasury, true, a.swap.owed_treasury),
+    let c = ctx.accounts.ctx();
+    c.check_accounts(false)?;
+    let rent = Rent::get()?;
+    let usdc = c.usdc();
+    let v = logic::view(&c.swap);
+    let payout_slot = c.payout.as_ref().map(|p| *p.key).unwrap_or_default();
+    let pinned = payout_slot == c.swap.payout;
+    let party = match who {
+        // Proceeds parked for a payout address: delivered to it, or pulled by it.
+        0 if v.payout_owed() && (pinned || *c.caller.key == c.swap.payout) => m::Party::Payout,
+        0 => m::Party::Taker,
+        1 => m::Party::Maker,
+        2 => m::Party::Treasury,
         _ => return Err(invalid_arg()),
     };
-    require!(authorised, SwapError::Unauthorized);
-    require!(owed > 0, SwapError::NothingOwed);
+    let row = logic::decide(&v, &m::Call::WithdrawOwed(party), c.caller.key, &c.swap, &c.maker, now)?;
+    let plan = m::plan(&v, row);
+    let owed = logic::amount(plan.pays[0].amount)?;
 
-    if a.swap.asset == ASSET_USDC {
+    let mint_key = c.mint.as_ref().map(|a| *a.key).unwrap_or_default();
+    if usdc {
         let dest = match party {
-            Party::Taker => a.taker_token.as_ref(),
-            Party::Maker => a.maker_token.as_ref(),
-            Party::Treasury => a.treasury_vault.as_ref(),
+            m::Party::Taker => c.taker_token.clone(),
+            m::Party::Maker => c.maker_token.clone(),
+            m::Party::Treasury => {
+                let dest = c.treasury_vault.clone().ok_or(SwapError::WrongAsset)?;
+                require_keys_eq!(*dest.key, c.treasury_vault_pda(), SwapError::Unauthorized);
+                Some(dest)
+            }
+            m::Party::Payout => {
+                let dest = c.payout_token.clone().ok_or(SwapError::WrongAsset)?;
+                // The payout address itself may name any token account; anyone else delivers to
+                // its associated token account and nowhere else.
+                if *c.caller.key != c.swap.payout {
+                    require_keys_eq!(
+                        *dest.key,
+                        get_associated_token_address(&c.swap.payout, &mint_key),
+                        SwapError::Unauthorized
+                    );
+                    c.ensure_payout_token(&c.swap.payout, &rent)?;
+                }
+                Some(dest)
+            }
         }
         .ok_or(SwapError::WrongAsset)?;
-        if party == Party::Treasury {
-            let mint_key = a.mint.as_ref().unwrap().key();
-            let (expected, _) = Pubkey::find_program_address(&[b"treasury_vault", mint_key.as_ref()], &crate::ID);
-            require_keys_eq!(dest.key(), expected, SwapError::Unauthorized);
-        }
-        a.vault_transfer(dest, owed)?;
+        c.vault_transfer(&dest, owed)?;
     } else {
         let dest = match party {
-            Party::Taker => a.taker.to_account_info(),
-            Party::Maker => a.maker_wallet.to_account_info(),
-            Party::Treasury => {
-                require_keys_eq!(a.treasury.key(), a.treasury_pda()?, SwapError::Unauthorized);
-                a.treasury.to_account_info()
+            m::Party::Taker => c.taker.clone(),
+            m::Party::Maker => c.maker_wallet.clone(),
+            m::Party::Treasury => {
+                require_keys_eq!(*c.treasury.key, c.treasury_pda()?, SwapError::Unauthorized);
+                c.treasury.clone()
             }
+            // Pinned to the payout address unless the payout address itself signed.
+            m::Party::Payout => c.payout.clone().ok_or(SwapError::Unauthorized)?,
         };
-        require_keys_neq!(dest.key(), a.swap.key(), SwapError::Unauthorized);
-        a.swap.sub_lamports(owed)?;
+        require_keys_neq!(*dest.key, c.swap.key(), SwapError::Unauthorized);
+        c.swap.sub_lamports(owed)?;
         dest.add_lamports(owed)?;
     }
-    let s = &mut a.swap;
-    match party {
-        Party::Taker => s.owed_taker = 0,
-        Party::Maker => s.owed_maker = 0,
-        Party::Treasury => s.owed_treasury = 0,
-    }
-    emit!(OwedWithdrawn { swap: s.key(), maker: s.maker, counter: counter::NONE, at: now, who, amount: owed });
+    let fx = m::execute_plan(&v, row, &plan, now, &logic::env(&c.config, c.swap.asset, [true; 4]), logic::CONSTS);
+    logic::store(c.swap, &fx.state)?;
+    emit!(OwedWithdrawn { swap: c.swap.key(), maker: c.swap.maker, counter: counter::NONE, at: now, who, amount: owed });
     Ok(())
 }
 
 /// Close a settled swap, all rent to the taker. A stranger can never close an account that
 /// holds a revealed scalar: the party that did not reveal still has to read it.
 pub fn close_swap(ctx: Context<Settle>) -> Result<()> {
-    let a = ctx.accounts;
-    a.check_accounts(true)?;
     let now = util::now()?;
-    let s = &a.swap;
+    let c = ctx.accounts.ctx();
+    c.check_accounts(true)?;
+    let s = &**c.swap;
     require!(
         s.state == state::DONE && s.owed_taker == 0 && s.owed_maker == 0 && s.owed_treasury == 0,
         SwapError::NotClosable
     );
     if s.has(flag::REVEALED) {
-        let who = caller_of(a.caller.key, s, &a.maker);
-        let is_a = s.is_a();
+        let key = c.caller.key;
+        let taker = *key == s.taker || *key == s.session_key;
+        let operator = *key == c.maker.operator;
+        let (locker, claimer) = if s.is_a() { (taker, operator) } else { (operator, taker) };
         // The party that needs the revealed scalar: the claimer after a refund, the locker
         // after a claim.
-        let reader = if s.has(flag::REVEALER_LOCKER) { who.claimer(is_a) } else { who.locker(is_a) };
+        let reader = if s.has(flag::REVEALER_LOCKER) { claimer } else { locker };
         let grace_over = now >= s.t_settled.saturating_add(CLOSE_GRACE_SECS);
-        require!(reader || (who.taker && grace_over), SwapError::Unauthorized);
+        require!(reader || (taker && grace_over), SwapError::Unauthorized);
     }
-    let maker_wallet = a.maker.operator;
-    a.finish(&[], maker_wallet, Tail { sweep: true, close: true, must_close: true, burn: false }, counter::NONE, now)
+    require!(c.taker_holds_lamports(), SwapError::NotClosable);
+    if c.usdc() && !c.close_vault()? {
+        return err!(SwapError::VaultNotEmpty);
+    }
+    c.sweep_session(&Rent::get()?)?;
+    emit!(SwapClosed { swap: c.swap.key(), maker: c.swap.maker, counter: counter::NONE, at: now });
+    c.swap.close(c.taker.clone())
 }

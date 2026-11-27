@@ -11,7 +11,12 @@ use crate::{
     errors::SwapError,
     events::*,
     state::*,
-    util::{self, check_bounds, create_pda_account, is_uninitialized, tiers_well_formed, Params, Pending},
+    logic,
+    util::{self, create_pda_account, is_uninitialized},
+};
+use escrow_logic::{
+    amounts::tiers_well_formed,
+    bounds::{check_bounds, Pending, SwapParams},
 };
 use solana_curve25519::edwards::PodEdwardsPoint;
 
@@ -239,7 +244,8 @@ fn blank_offer() -> Box<Offer> {
         pool_filled: 0,
         pool_used: 0,
         pool: [[0; 32]; 16],
-        reserved: [0; 34],
+        w_z: 0,
+        reserved: [0; 30],
     })
 }
 
@@ -251,21 +257,32 @@ fn check_offer_terms(direction: u8, t: &OfferTerms) -> Result<()> {
     require!(t.price_above[0] == 0, SwapError::TiersInvalid);
     let used = [t.depths[0] != 0, t.depths[1] != 0, t.depths[2] != 0];
     require!(used != [false; 3], SwapError::DepthInvalid);
-    require!(tiers_well_formed(&t.depth_above, used), SwapError::TiersInvalid);
+    require!(tiers_well_formed(&t.depth_above, &t.depths), SwapError::TiersInvalid);
     let deepest = t.depths.iter().copied().max().unwrap_or(0);
     let window = t.mode == mode::WINDOW;
     // The deepest tier has the largest claim-delay floor; nothing else depends on the depth.
-    let p = Params { w_a: t.w_a, w_n: t.w_n, d_c: t.d_c, w_c: t.w_c, w_f: t.w_f, depth: deepest, dep_bps: t.dep_bps };
-    // Every pending kind a swap from this offer can start in must satisfy the bounds: window
-    // mode waits W_a; a take outside window mode (or with an advance approval) waits W_n.
-    if window {
-        check_bounds(&p, Pending::ApprovalWindow)?;
-    }
-    if direction == DIR_B {
-        check_bounds(&p, Pending::FundingWindow)?;
+    let p = SwapParams {
+        w_a: t.w_a,
+        w_n: t.w_n,
+        d_c: t.d_c,
+        w_c: t.w_c,
+        w_f: t.w_f,
+        depth: deepest,
+        dep_bps: t.dep_bps,
+        w_z: t.w_z,
+    };
+    // The bounds for the way a swap from this offer starts when no approval is presented: a
+    // window offer waits W_a; otherwise a lock starts ACTIVE and a take waits W_n. (`lock` and
+    // `take` check the bounds again for the pending window the swap really uses: an advance
+    // approval on a window offer changes it.)
+    let pending = if window {
+        Pending::ApprovalWindow
+    } else if direction == DIR_B {
+        Pending::FundingWindow
     } else {
-        check_bounds(&p, Pending::None)?;
-    }
+        Pending::None
+    };
+    check_bounds(&p, pending, logic::CONSTS).map_err(logic::bound_error)?;
     Ok(())
 }
 
@@ -314,6 +331,7 @@ pub fn set_offer(ctx: Context<SetOffer>, asset: u8, direction: u8, terms: OfferT
     offer.d_c = terms.d_c;
     offer.w_c = terms.w_c;
     offer.w_f = terms.w_f;
+    offer.w_z = terms.w_z;
     offer.terms_hash = offer.compute_terms_hash();
     offer.seq = offer.seq.saturating_add(1);
     // The offer is live only after the next refresh.
@@ -326,10 +344,10 @@ pub fn set_offer(ctx: Context<SetOffer>, asset: u8, direction: u8, terms: OfferT
 
 /// Byte offsets inside the `EthBoard` account.
 const BOARD_HEADER: usize = 8 + 32 + 1;
-const BOARD_SLOT_LEN: usize = 1 + 8 + 251 + 65;
+const BOARD_SLOT_LEN: usize = 1 + 8 + 255 + 65;
 const SLOT_UPDATED_AT: usize = 1;
 const SLOT_QUOTE: usize = 9;
-const SLOT_SIG: usize = 9 + 251;
+const SLOT_SIG: usize = 9 + 255;
 
 fn check_board(ai: &AccountInfo, maker: &Pubkey) -> Result<()> {
     require_keys_eq!(*ai.owner, crate::ID, ErrorCode::AccountOwnedByWrongProgram);
@@ -357,8 +375,7 @@ pub fn refresh_offers(
         require!(offer.asset == r.asset, SwapError::WrongAsset);
         require!(offer.direction == r.direction, SwapError::WrongDirection);
         if r.enabled {
-            let used = [r.prices[0] != 0, r.prices[1] != 0, r.prices[2] != 0];
-            require!(tiers_well_formed(&offer.price_above, used), SwapError::TiersInvalid);
+            require!(tiers_well_formed(&offer.price_above, &r.prices), SwapError::TiersInvalid);
         }
         offer.prices = r.prices;
         offer.capacity_xmr = r.capacity_xmr;
@@ -419,7 +436,7 @@ pub fn refill_keys(ctx: Context<RefillKeys>, asset: u8, slots: Vec<KeySlot>) -> 
     Ok(())
 }
 
-pub fn set_eth_quote(ctx: Context<SetEthQuote>, slot: u8, quote: [u8; 251], sig: [u8; 65]) -> Result<()> {
+pub fn set_eth_quote(ctx: Context<SetEthQuote>, slot: u8, quote: [u8; 255], sig: [u8; 65]) -> Result<()> {
     let a = ctx.accounts;
     require_keys_eq!(a.operator.key(), a.maker.operator, SwapError::Unauthorized);
     ensure_arg((slot as usize) < ETH_BOARD_SLOTS)?;
@@ -448,7 +465,7 @@ pub fn set_eth_quote(ctx: Context<SetEthQuote>, slot: u8, quote: [u8; 251], sig:
     let base = BOARD_HEADER + slot as usize * BOARD_SLOT_LEN;
     data[base] = 1;
     data[base + SLOT_UPDATED_AT..base + SLOT_UPDATED_AT + 8].copy_from_slice(&now.to_le_bytes());
-    data[base + SLOT_QUOTE..base + SLOT_QUOTE + 251].copy_from_slice(&quote);
+    data[base + SLOT_QUOTE..base + SLOT_QUOTE + 255].copy_from_slice(&quote);
     data[base + SLOT_SIG..base + SLOT_SIG + 65].copy_from_slice(&sig);
     emit!(EthQuoteSet { maker: maker_key, slot });
     Ok(())
@@ -463,7 +480,7 @@ pub fn post_quote(ctx: Context<PostQuote>, terms: QuoteTerms) -> Result<()> {
     require!(terms.direction <= DIR_B, SwapError::WrongDirection);
     // SPEC 3.1: neither side of a swap may be zero.
     require!(terms.xmr > 0 && terms.amount > 0, SwapError::AmountOutOfRange);
-    let p = Params {
+    let p = SwapParams {
         w_a: 0,
         w_n: terms.w_n,
         d_c: terms.d_c,
@@ -471,9 +488,11 @@ pub fn post_quote(ctx: Context<PostQuote>, terms: QuoteTerms) -> Result<()> {
         w_f: terms.w_f,
         depth: terms.depth,
         dep_bps: terms.dep_bps,
+        w_z: terms.w_z,
     };
     // A quote is treated as AUTO: W_p = 0 in A, W_n in B.
-    check_bounds(&p, if terms.direction == DIR_A { Pending::None } else { Pending::FundingWindow })?;
+    let pending = if terms.direction == DIR_A { Pending::None } else { Pending::FundingWindow };
+    check_bounds(&p, pending, logic::CONSTS).map_err(logic::bound_error)?;
     let now = util::now()?;
     require!(terms.expires_at >= now, SwapError::QuoteExpired);
     require!(terms.expires_at <= now + MAX_QUOTE_SECS, SwapError::QuoteMismatch);
@@ -508,7 +527,8 @@ pub fn post_quote(ctx: Context<PostQuote>, terms: QuoteTerms) -> Result<()> {
     q.expires_at = terms.expires_at;
     q.epoch = a.maker.quote_epoch;
     q.quote_id = terms.quote_id;
-    q.reserved = [0; 30];
+    q.w_z = terms.w_z;
+    q.reserved = [0; 26];
     emit!(QuotePosted { maker: maker_key, quote_id: terms.quote_id, taker: terms.taker });
     Ok(())
 }
