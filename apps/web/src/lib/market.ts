@@ -5,7 +5,7 @@
  * 10); and the reference price the rate is compared with.
  */
 import type { EthQuote } from '@xmrswap/core-wasm';
-import { type Address, type ChainName, ETH_NATIVE, MARKET_CHAIN, type Market, type Offer, PICONERO_PER_XMR, takerDepthFor } from '@xmrswap/protocol';
+import { type Address, type AssetCaps, CHAIN_CONSTS, type ChainName, ETH_NATIVE, MARKET_CHAIN, type Market, type Offer, PICONERO_PER_XMR, takerDepthFor } from '@xmrswap/protocol';
 import { type EthereumClient, type LinkMemory, type MakerProfile, type Pricing, type RouterOffer, type SolanaClient, hex, hex0x, listMakerProfiles, listOffers, priceEthQuote, priceOffer, rememberPastLinks, tierValue, verifiedBoardQuotes } from '@xmrswap/sdk';
 import { ASSET_LABEL, bpsPercent, formatAsset, formatDuration, formatTime } from './format.js';
 import type { Settings } from './settings.js';
@@ -39,7 +39,10 @@ export interface OfferRow {
   volume: bigint;
   /** Why a lock would be refused right now, or `null`. */
   problem: string | null;
-  price(xmr: bigint): Pricing;
+  /** `W_z`: how long a watcher's (or the locker's own) pause can hold the claim back. 0 = this offer accepts no watcher. */
+  freezeWindow: number;
+  /** With `caps`, a size the deployment's beta caps refuse throws `CapReached` (not a maker limit). */
+  price(xmr: bigint, caps?: AssetCaps): Pricing;
   depthFor(xmr: bigint): number;
   source: { offer: Offer } | { quote: EthQuote; sig: Uint8Array; slot: number };
 }
@@ -82,7 +85,8 @@ export function solanaRow(pubkey: string, offer: Offer, maker: MakerProfile, pro
     basePrice: offer.prices[0] ?? 0n,
     volume: maker.solana.volume[offer.asset] ?? 0n,
     problem: problem ? (PROBLEM_TEXT[problem] ?? problem) : null,
-    price: (xmr) => priceOffer(offer, xmr),
+    freezeWindow: offer.wZ,
+    price: (xmr, caps) => priceOffer(offer, xmr, caps),
     depthFor: (xmr) => Number(tierValue(offer.depthAbove, [...offer.depths].map(BigInt), xmr)),
     source: { offer },
   };
@@ -113,7 +117,8 @@ export function ethereumRow(maker: MakerProfile, slot: number, quote: EthQuote, 
     basePrice: quote.tierPrice[0],
     volume,
     problem: token !== ETH_NATIVE && usdc !== null && token.toLowerCase() !== usdc.toLowerCase() ? 'This quote names a token the contract does not accept.' : left < 36 ? 'This quote is about to expire.' : null,
-    price: (xmr) => priceEthQuote(quote, xmr),
+    freezeWindow: quote.freezeWindow,
+    price: (xmr, caps) => priceEthQuote(quote, xmr, caps),
     depthFor: (xmr) => priceEthQuote(quote, xmr).depth,
     source: { quote, sig, slot },
   };
@@ -124,6 +129,8 @@ export interface RegistrySnapshot {
   rows: OfferRow[];
   /** Board slots that were not shown, and why (for the status page). */
   discarded: { maker: string; slot: number; reason: string }[];
+  /** The protocol's beta caps per market, read with the offers (SPEC 11.1). Absent = could not be read. */
+  caps: Partial<Record<Market, AssetCaps>>;
   now: { solana: bigint; ethereum: bigint | null };
 }
 
@@ -178,7 +185,22 @@ export async function readRegistry(solana: SolanaClient, ethereum: EthereumClien
       }
     }
   }
-  return { makers, rows, discarded, now: { solana: nowSol, ethereum: nowEth } };
+  const caps: Partial<Record<Market, AssetCaps>> = {};
+  try {
+    caps.sol = await solana.getCaps(0);
+    caps.usdc_sol = await solana.getCaps(1);
+  } catch {
+    // Unreadable caps are shown as unknown; the open itself reads them again.
+  }
+  if (eth) {
+    try {
+      caps.eth = await eth.capsOf(ETH_NATIVE as Address, 'latest');
+      caps.usdc_eth = await eth.capsOf(await eth.usdc('latest'), 'latest');
+    } catch {
+      // as above
+    }
+  }
+  return { makers, rows, discarded, caps, now: { solana: nowSol, ethereum: nowEth } };
 }
 
 export interface OfferFilter {
@@ -242,7 +264,7 @@ export const vsReferenceBps = (price: bigint, ref: bigint): number => (ref === 0
 
 // ------------------------------------------------------------------ router input
 
-export function routerOffer(r: OfferRow): RouterOffer {
+export function routerOffer(r: OfferRow, caps?: AssetCaps): RouterOffer {
   const rep = r.maker.identity.reputation;
   return {
     id: r.id,
@@ -257,13 +279,14 @@ export function routerOffer(r: OfferRow): RouterOffer {
     depBps: r.depBps,
     withholdRate: rep.withholdRate,
     faultRate: rep.perCompleted.faults,
-    price: r.price,
+    price: (xmr) => r.price(xmr),
+    ...(caps ? { caps, capsKey: r.market } : {}),
   };
 }
 
 // ------------------------------------------------------------------ warnings before locking (SPEC 8.5 item 10)
 
-export type OfferWarningId = 'eth-finality' | 'approval-window' | 'claim-delay' | 'deposit' | 'usdc-freeze' | 'upgradable' | 'upgrade-unknown' | 'depth' | 'sell-terms';
+export type OfferWarningId = 'freeze-sell' | 'freeze-buy' | 'eth-finality' | 'approval-window' | 'claim-delay' | 'deposit' | 'usdc-freeze' | 'upgradable' | 'upgrade-unknown' | 'depth' | 'sell-terms';
 export interface OfferWarning {
   id: OfferWarningId;
   title: string;
@@ -277,7 +300,7 @@ export interface UpgradeStatus {
 }
 
 export interface WarningInput {
-  row: Pick<OfferRow, 'chain' | 'market' | 'direction' | 'mode' | 'approvalWindow' | 'startsPending' | 'claimDelay' | 'depBps' | 'noticeWindow'>;
+  row: Pick<OfferRow, 'chain' | 'market' | 'direction' | 'mode' | 'approvalWindow' | 'startsPending' | 'claimDelay' | 'depBps' | 'noticeWindow'> & Partial<Pick<OfferRow, 'freezeWindow'>>;
   pricing: Pick<Pricing, 'amount' | 'deposit' | 'depth'>;
   xmr: bigint;
   /** The user's own minimum depth from Settings (0 = none). */
@@ -332,6 +355,19 @@ export function offerWarnings(i: WarningInput): OfferWarning[] {
       text: `You post a deposit of ${formatAsset(i.pricing.deposit, i.row.market)} ${asset} now. Once the maker has funded the swap you will be shown one address: send one transaction for at least the exact amount to exactly that address before the time shown, from a wallet you control, not an exchange withdrawal. If you close this tab the swap unwinds when the maker refunds; your XMR is recoverable with the recovery file, and your deposit can be withheld for up to 60 days and half of it lost.`,
     });
   }
+  const wz = i.row.freezeWindow ?? 0;
+  if (wz > 0 && i.row.direction === 1)
+    out.push({
+      id: 'freeze-sell',
+      title: `This maker can pause the swap for up to ${formatDuration(wz)}`,
+      text: `If the maker's own check of your XMR payment fails while its software is down, a watcher it runs can pause the swap. This maker can pause the swap for up to ${formatDuration(wz)}; your XMR stays locked meanwhile, and you cannot claim your ${asset} until the pause ends. If the maker then takes its escrow back, your deposit is returned at once and your XMR is recovered to your refund address. Choose an offer without a pause window if you cannot wait that long.`,
+    });
+  if (wz > 0 && i.row.direction === 0)
+    out.push({
+      id: 'freeze-buy',
+      title: `This offer allows one pause of up to ${formatDuration(wz)}`,
+      text: `After the maker announces its lock, you, or a watcher you name before locking, can pause the swap once. For you: the maker cannot take your payment without your confirmation until the pause ends, which gives a closed tab longer to come back; a refund after a pause always leaves your deposit withholdable. For the maker: its XMR stays tied up for that long with no payment, which it prices into this offer. A pause moves no funds, and without one the swap runs exactly as any other.`,
+    });
   if (i.row.market === 'usdc_sol' || i.row.market === 'usdc_eth')
     out.push({ id: 'usdc-freeze', title: 'USDC can be frozen by its issuer', text: 'The issuer can freeze USDC mid-swap; a freeze can strand funds. Nobody in this swap can undo a freeze: you could lose what you locked, a risk SOL and ETH swaps do not carry.' });
   if (i.upgrade.frozen === false)

@@ -21,6 +21,7 @@ import {
   type SolanaSigner,
   type SwapView,
   buildNotice,
+  deadlinesOf,
   connectionTransport,
   hex,
   init,
@@ -28,6 +29,10 @@ import {
   lockReport,
   makerShareKeys,
   makerStep,
+  openWatchRequest,
+  signWatchAck,
+  watcherFacts,
+  watcherStep,
   openNotice,
   seedSigner,
   solanaInstruction,
@@ -112,7 +117,7 @@ export class TestMaker {
   async publish(asset: number, direction: number, price: bigint): Promise<void> {
     const c = this.w.client;
     const o = this.opts;
-    const terms: OfferTerms = { mode: o.mode ?? 0, minXmr: XMR / 100n, maxXmr: o.maxXmr ?? 1000n * XMR, validSecs: 3600, priceAbove: [0n, 0n, 0n], depthAbove: [0n, 0n, 0n], depths: Uint8Array.of(2, 0, 0), depBps: o.depBps ?? 100, wA: 60, wN: 600, dC: 3600, wC: 1800, wF: 604_800, ...o.terms };
+    const terms: OfferTerms = { mode: o.mode ?? 0, minXmr: XMR / 100n, maxXmr: o.maxXmr ?? 1000n * XMR, validSecs: 3600, priceAbove: [0n, 0n, 0n], depthAbove: [0n, 0n, 0n], depths: Uint8Array.of(2, 0, 0), depBps: o.depBps ?? 100, wA: 60, wN: 600, dC: 3600, wC: 1800, wF: 604_800, wZ: 0, ...o.terms };
     await this.w.send([c.program.setOffer(this.operator.publicKey, this.pda, asset, direction, terms)], [this.operator]);
     await this.refresh(asset, direction, price);
   }
@@ -240,16 +245,117 @@ export interface Stack {
   balance(pubkey: string): Promise<bigint>;
   /** One pass of every maker's daemon. */
   stepMakers(): Promise<string[]>;
+  /** Set the protocol's beta caps (admin), per asset: index 0 SOL, 1 USDC. */
+  setCaps(maxSwap: [bigint, bigint], maxOpen: [bigint, bigint], capsOn?: boolean): Promise<void>;
+  /** The in-test watcher: an HTTP endpoint plus `watcherStep`, stepped by the test. */
+  watcher: TestWatcher;
   stop(): Promise<void>;
 }
 
 const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.wasm': 'application/wasm', '.svg': 'image/svg+xml', '.json': 'application/json' };
 
 /** Serve the built UI and its `config.json` on a free loopback port. */
+/**
+ * The watcher of SPEC 11.6, in the test: the two HTTP routes a page talks to, and the whole
+ * behaviour as the SDK's pure `watcherStep` (the real service in packages/watcher is not used).
+ * It holds one key and the notice keys it was handed; it can only freeze.
+ */
+export class TestWatcher {
+  readonly seed = new Uint8Array(32).fill(61);
+  readonly key: SolanaSigner = seedSigner(this.seed);
+  /** Notice keys by swap PDA. */
+  readonly watched = new Map<string, Uint8Array>();
+  /** Answer registrations with an acknowledgement (false: refuse, like a watcher that is full). */
+  accept = true;
+  url = '';
+  private server: http.Server | null = null;
+  constructor(private readonly w: Stack) {}
+
+  async start(): Promise<void> {
+    const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'content-type', 'access-control-allow-methods': 'GET, POST, OPTIONS' };
+    this.server = http.createServer((req, res) => {
+      const send = (status: number, body: unknown) => {
+        res.writeHead(status, { 'content-type': 'application/json', ...cors });
+        res.end(JSON.stringify(body));
+      };
+      if (req.method === 'OPTIONS') return send(204, {});
+      if (req.method === 'GET' && req.url === '/watch/v1/info') return send(200, { solana: this.key.publicKey, ethereum: '0x00000000000000000000000000000000000000aa', max_swaps: 100, monero_nodes: 2 });
+      if (req.method === 'POST' && req.url === '/watch/v1/swaps') {
+        const chunks: Buffer[] = [];
+        req.on('data', (c: Buffer) => chunks.push(c));
+        req.on('end', () => {
+          void (async () => {
+            try {
+              if (!this.accept) return send(503, { error: 'full' });
+              const r = openWatchRequest(JSON.parse(Buffer.concat(chunks).toString('utf8')), this.seed);
+              const ref = base58(r.swapRef);
+              // Accepted only if the swap exists, names this watcher and is not settled.
+              const s = await this.w.client.getSwap(ref);
+              if (!s || s.watcherAddress !== this.key.publicKey) return send(404, { error: 'not_named' });
+              this.watched.set(ref, r.noticeKey);
+              const d = deadlinesOf('solana', s);
+              send(200, signWatchAck({ chain: 'solana', swapRef: r.swapRef, watchingUntil: Number((d.tNote ?? s.tLock + 3600n) + BigInt(s.dC)), watcherSeed: this.seed }));
+            } catch (e) {
+              send(400, { error: e instanceof Error ? e.message : String(e) });
+            }
+          })();
+        });
+        return;
+      }
+      send(404, { error: 'not_found' });
+    });
+    await new Promise<void>((r) => this.server!.listen(0, '127.0.0.1', r));
+    this.url = `http://127.0.0.1:${(this.server.address() as AddressInfo).port}`;
+  }
+  stop(): Promise<void> {
+    return new Promise((r) => (this.server ? this.server.close(() => r()) : r()));
+  }
+
+  /** One pass over every watched swap: read it, gather the facts with view data only, do what `watcherStep` says. */
+  async step(): Promise<string[]> {
+    const done: string[] = [];
+    for (const [ref, noticeKey] of this.watched) {
+      const swap = await this.w.client.getSwap(ref);
+      const now = await this.w.client.chainTime();
+      let facts: { noticeOpens?: boolean; lock?: NonNullable<Parameters<typeof watcherStep>[0]['lock']> } = {};
+      for (let i = 0; i < 4; i++) {
+        const d = watcherStep({ swap, now, watcher: this.key.publicKey, ...facts });
+        if (d.do === 'need' && swap) {
+          const f = await watcherFacts({ swap, noticeKey, nodes: [xmr.NODE_A, xmr.NODE_B], network: 'regtest' });
+          facts = { noticeOpens: f.noticeOpens, ...(f.lock ? { lock: f.lock } : {}) };
+          continue;
+        }
+        if (d.do === 'call' && swap) {
+          await this.w.send([this.w.client.program.freeze({ caller: this.key.publicKey, swap: ref, maker: swap.maker })], [this.key]);
+          done.push(`watcher: froze ${ref.slice(0, 6)} (${d.why})`);
+        } else if (d.do === 'stop') {
+          this.watched.delete(ref);
+          done.push(`watcher: stopped ${ref.slice(0, 6)} (${d.why})`);
+        }
+        break;
+      }
+    }
+    return done;
+  }
+}
+
+/** What the bundle would serve at `/release.json` (deploy's E11): the test stack plays a development snapshot. */
+export const TEST_RELEASE = {
+  format: 'xmrswap-served/1',
+  ui: { tree_hash: 'ab'.repeat(32), files: 5, bytes: 2_900_000 },
+  recorded: true,
+  release: { version: 'dev-snapshot', status: 'development-snapshot', commit: '0123456789abcdef0123456789abcdef01234567', commit_time: '2026-11-27T18:01:38Z', program_id: DEV_PROGRAM_ID, contract: null, chain_id: null, web_tree_hash: 'ab'.repeat(32), program_executable_hash: 'cd'.repeat(32), program_hash_source: 'local', onchain_deployed: false },
+};
+
 export async function serveUi(config: Record<string, unknown>): Promise<{ url: string; close(): Promise<void> }> {
   if (!existsSync(path.join(DIST, 'index.html'))) throw new Error('apps/web/dist is missing; run `pnpm --filter @xmrswap/web build`');
   const server = http.createServer(async (req, res) => {
     const p = path.normalize(decodeURIComponent(new URL(req.url ?? '/', 'http://x').pathname)).replace(/^\/+/, '') || 'index.html';
+    if (p === 'release.json') {
+      res.writeHead(200, { 'content-type': MIME['.json']!, 'cache-control': 'no-store' });
+      res.end(JSON.stringify(TEST_RELEASE));
+      return;
+    }
     if (p === 'config.json') {
       res.writeHead(200, { 'content-type': MIME['.json']!, 'cache-control': 'no-store' });
       res.end(JSON.stringify(config));
@@ -302,7 +408,11 @@ export async function startStack(makers: MakerOpts[] = [{ price: (150n * SOL) / 
   const send = (ixs: TransactionInstruction[], signers: SolanaSigner[]) => client.sendAndConfirm(ixs, signers, { intervalMs: 20 });
   await send([client.program.initialize({ authority: admin.publicKey, usdcMint: usdc, clusterTag: base58Decode(await transport.getGenesisHash()), treasuryAuthority: admin.publicKey, splitMode: 0 })], [admin]);
 
+  // A fresh deployment opens nothing: the switch is on and every cap is zero until the admin sets them.
+  const setCaps = async (maxSwap: [bigint, bigint], maxOpen: [bigint, bigint], capsOn = true) => void (await send([client.program.setCaps(admin.publicKey, { capsOn, maxSwap, maxOpen })], [admin]));
+  await setCaps([100n * SOL, 100_000_000_000n], [10_000n * SOL, 10_000_000_000_000n]);
   const w = { svm, client, usdc, admin, taker, makers: [] as TestMaker[], url: '' } as Stack;
+  w.setCaps = setCaps;
   w.now = () => client.chainTime();
   w.warpTo = async (t) => {
     const now = await client.chainTime();
@@ -330,6 +440,10 @@ export async function startStack(makers: MakerOpts[] = [{ price: (150n * SOL) / 
     w.makers.push(m);
   }
 
+  w.watcher = new TestWatcher(w);
+  await svm.airdrop(w.watcher.key.publicKey, 1_000_000_000n);
+  await w.watcher.start();
+
   const ui = await serveUi({
     solanaRpc: svm.url,
     moneroNodes: [xmr.NODE_A, xmr.NODE_B],
@@ -338,10 +452,14 @@ export async function startStack(makers: MakerOpts[] = [{ price: (150n * SOL) / 
     mode: 'onchain',
     pollMs: 700,
     sweepMaxFee: xmr.REGTEST_MAX_FEE.toString(),
+    // The release's site name for the wallet-derived key: set by the bundle's config, here by the test.
+    walletKeySite: 'xmrswap.test',
+    hostedWatcherUrl: w.watcher.url,
   });
   w.url = ui.url;
   w.stop = async () => {
     await ui.close();
+    await w.watcher.stop();
     await svm.stop();
   };
   return w;

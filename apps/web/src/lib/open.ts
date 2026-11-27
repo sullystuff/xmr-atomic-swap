@@ -4,7 +4,7 @@
  * needs a wallet prompt; everything after it is signed by the per-swap session key.
  */
 import { PublicKey, type TransactionInstruction } from '@solana/web3.js';
-import type { Address, ChainName } from '@xmrswap/protocol';
+import type { Address, AssetCaps, ChainName } from '@xmrswap/protocol';
 import {
   type EthereumClient,
   MakerHttp,
@@ -13,6 +13,7 @@ import {
   type SwapView,
   TransportUnavailable,
   blobRouteAvailable,
+  capsAfterOpen,
   directEndpoint,
   ethQuoteProblem,
   ethSessionBudget,
@@ -32,6 +33,7 @@ import {
   verifyFundedShare,
 } from '@xmrswap/sdk';
 import { encodeFunctionData, erc20Abi } from 'viem';
+import { capErrorText } from './caps.js';
 import type { OfferRow, UpgradeStatus } from './market.js';
 import type { EthereumPort, SolanaPort } from './ports.js';
 import { type Settings, relayUrlOf } from './settings.js';
@@ -49,12 +51,20 @@ const PROBLEM: Readonly<Record<string, string>> = {
 export interface SolanaLeg {
   row: OfferRow;
   xmr: bigint;
+  /** Direction B: where the claim pays (default: the taker's own wallet). Checked with `payoutProblem` by the caller. */
+  payout?: string;
+  /** Direction B, USDC, the payout has no token account: its rent, added to the session budget so the claim creates it. */
+  payoutTokenRent?: bigint;
+  /** Direction A: the watcher key to name. */
+  watcher?: string | null;
 }
 
-/** Build the open plans of a set of Solana legs against the offers as they stand now, refusing any whose terms changed since review. */
+/** Build the open plans of a set of Solana legs against the offers and the caps as they stand now, refusing any whose terms changed since review. */
 export async function planSolanaLegs(client: SolanaClient, taker: string, seed: Uint8Array, legs: readonly SolanaLeg[], slippageBps: number, approvals: (makerPda: string) => SignedSolApproval | undefined) {
   const now = await client.chainTime();
   const rent0 = await client.transport.getMinimumBalanceForRentExemption(0);
+  // The caps are read at the state the open executes on, and shared by the legs of this wave.
+  const caps = new Map<number, AssetCaps>();
   const plans = [];
   for (const leg of legs) {
     if (!('offer' in leg.row.source)) throw new OpenRefused('Not a Solana offer.');
@@ -67,7 +77,32 @@ export async function planSolanaLegs(client: SolanaClient, taker: string, seed: 
     if (problem) throw new OpenRefused(PROBLEM[problem] ?? `The offer cannot be locked against (${problem}). Nothing was locked.`);
     const approval = approvals(makerPda);
     if (offer.mode === 2 && !approval) throw new OpenRefused('This maker only accepts takers it approved in advance. Ask for an approval on the maker page first. Nothing was locked.');
-    plans.push(planSolanaOpen({ program: client.program, taker, makerPda, maker, seed, xmr: leg.xmr, source: { offer }, slippageBps, rentExemptMinimum: rent0, ...(approval ? { approval } : {}) }));
+    if (!caps.has(offer.asset)) caps.set(offer.asset, await client.getCaps(offer.asset, 'confirmed'));
+    let plan;
+    try {
+      plan = planSolanaOpen({
+        program: client.program,
+        taker,
+        makerPda,
+        maker,
+        seed,
+        xmr: leg.xmr,
+        source: { offer },
+        slippageBps,
+        rentExemptMinimum: rent0,
+        caps: caps.get(offer.asset)!,
+        ...(approval ? { approval } : {}),
+        ...(leg.payout ? { payout: leg.payout } : {}),
+        ...(leg.payoutTokenRent ? { payoutTokenRent: leg.payoutTokenRent } : {}),
+        ...(leg.watcher ? { watcher: leg.watcher } : {}),
+      });
+    } catch (e) {
+      const text = capErrorText(e, caps.get(offer.asset), leg.row.market, leg.row.direction);
+      if (text) throw new OpenRefused(text);
+      throw e;
+    }
+    caps.set(offer.asset, capsAfterOpen(caps.get(offer.asset)!, plan.direction, plan.amount, plan.deposit));
+    plans.push(plan);
   }
   return plans;
 }
@@ -87,17 +122,11 @@ export async function openSolanaWave(port: SolanaPort, taker: string, seed: Uint
       await port.sendWithWallet(ixs);
       for (const i of group) opened[i] = await port.client.getSwap(plans[i]!.swapPda);
     } catch (e) {
-      for (const i of group) errors[i] = e instanceof Error ? e.message : String(e);
+      // The chain's own cap refusal (the caps moved between the plan and the transaction) is said as what it is.
+      for (const i of group) errors[i] = capErrorText(e, undefined, legs[i]!.row.market, legs[i]!.row.direction) ?? (e instanceof Error ? e.message : String(e));
     }
   }
   return { opened, errors };
-}
-
-export async function openSolana(port: SolanaPort, taker: string, seed: Uint8Array, row: OfferRow, xmr: bigint, slippageBps: number, approval?: SignedSolApproval): Promise<SwapView> {
-  const r = await openSolanaWave(port, taker, seed, [{ row, xmr }], [[0]], slippageBps, () => approval);
-  if (r.errors[0]) throw new OpenRefused(r.errors[0]);
-  if (!r.opened[0]) throw new Error('The lock was sent but the swap account cannot be read yet. Open Activity: it will appear there.');
-  return r.opened[0];
 }
 
 // ------------------------------------------------------------------ Ethereum
@@ -114,7 +143,7 @@ export function makerHttp(maker: OfferRow['maker'], settings: Settings): MakerHt
 
 export const NO_BLOB_ROUTE = 'Ethereum swaps need the maker\'s key proofs, which are too large for any chain. Neither the relay nor a direct route to this maker\'s endpoint is available in the current connection mode, so nothing can be locked. Switch to a relay mode in Settings.';
 
-export async function openEthereum(port: EthereumPort, taker: Address, seed: Uint8Array, row: OfferRow, xmr: bigint, slippageBps: number, settings: Settings): Promise<SwapView> {
+export async function openEthereum(port: EthereumPort, taker: Address, seed: Uint8Array, row: OfferRow, xmr: bigint, slippageBps: number, settings: Settings, extra: { payout?: string; watcher?: string | null } = {}): Promise<SwapView> {
   if (!('quote' in row.source)) throw new OpenRefused('Not an Ethereum quote.');
   const { quote, sig } = row.source;
   const client: EthereumClient = port.client;
@@ -141,7 +170,16 @@ export async function openEthereum(port: EthereumPort, taker: Address, seed: Uin
     leaf = leafArgument(pool, picked);
   }
   const sessionBudget = await ethereumSessionBudget(client);
-  const plan = planEthereumOpen({ contract: client.contract, taker, quote, sig, maker: { encKeyVersion: row.maker.solana.encKeyVersion, encKey: row.maker.solana.encKey }, seed, swapNonce, xmr, slippageBps, sessionBudget, ...(leaf ? { leaf } : {}) });
+  const token0 = hex0x(quote.token) as Address;
+  const caps = await client.capsOf(token0, 'latest');
+  let plan;
+  try {
+    plan = planEthereumOpen({ contract: client.contract, taker, quote, sig, maker: { encKeyVersion: row.maker.solana.encKeyVersion, encKey: row.maker.solana.encKey }, seed, swapNonce, xmr, slippageBps, sessionBudget, caps, ...(leaf ? { leaf } : {}), ...(extra.payout ? { payout: extra.payout as Address } : {}), ...(extra.watcher ? { watcher: extra.watcher as Address } : {}) });
+  } catch (e) {
+    const text = capErrorText(e, caps, row.market, row.direction);
+    if (text) throw new OpenRefused(text);
+    throw e;
+  }
   const token = hex0x(quote.token) as Address;
   if (row.market === 'usdc_eth') {
     const need = row.direction === 0 ? plan.limit : plan.deposit;

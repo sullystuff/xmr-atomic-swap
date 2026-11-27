@@ -13,11 +13,12 @@ import { useApp, useObs } from './hooks.js';
 
 function SolanaBridge() {
   const app = useApp();
-  const { publicKey, signTransaction, connected } = useWallet();
+  const { publicKey, signTransaction, signMessage, connected } = useWallet();
   useEffect(() => {
-    if (connected && publicKey && signTransaction) app.setWallet('solana', { address: publicKey.toBase58(), signTransaction: (tx: Transaction) => signTransaction(tx) });
+    // `signMessage` exists only when the wallet has the Wallet Standard feature `solana:signMessage`.
+    if (connected && publicKey && signTransaction) app.setWallet('solana', { address: publicKey.toBase58(), signTransaction: (tx: Transaction) => signTransaction(tx), ...(signMessage ? { signMessage: (m: Uint8Array) => signMessage(m) } : {}) });
     else app.setWallet('solana', null);
-  }, [app, connected, publicKey, signTransaction]);
+  }, [app, connected, publicKey, signTransaction, signMessage]);
   return null;
 }
 

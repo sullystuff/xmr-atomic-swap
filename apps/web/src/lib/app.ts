@@ -4,12 +4,18 @@
  * `useSyncExternalStore`; nothing in here imports React, so the whole thing runs in unit tests
  * with a model-backed chain and scripted Monero nodes.
  */
-import { Connection } from '@solana/web3.js';
+import { Connection, PublicKey } from '@solana/web3.js';
 import type { Address, ChainName, Market } from '@xmrswap/protocol';
-import { type ApprovalResponseSolana, type Message, SESSION_BUDGET_LAMPORTS } from '@xmrswap/protocol';
+import type { DerivedKeys } from '@xmrswap/core-wasm';
+import { type ApprovalResponseSolana, type Message, PROGRAM_HASH, SESSION_BUDGET_LAMPORTS } from '@xmrswap/protocol';
 import {
   EthereumClient,
+  type KnownSwap,
   LinkMemory,
+  type WalletKeyContext,
+  type WatchInfo,
+  unlockWalletSeed,
+  walletKeySolanaRequest,
   type MakerProfile,
   type PlannedWave,
   type SignedSolApproval,
@@ -30,12 +36,16 @@ import {
   toBase64,
   torMessageTransport,
 } from '@xmrswap/sdk';
+import { capErrorText } from './caps.js';
+import { type ServedRelease, fetchServedRelease } from './release.js';
+import { UNAVAILABLE_TEXT, walletKeyUnavailable } from './walletkey.js';
+import { type WatcherNote, registerWithWatcher, watcherInfo } from './watcher.js';
 import { Engine, type EngineState, type SwapNote, type Tracked } from './engine.js';
 import { Guard, type GuardEnv } from './guard.js';
 import { Inbox, type ReplyKey, type Thread } from './inbox.js';
 import { type OfferRow, type RegistrySnapshot, type UpgradeStatus, marketOf, readRegistry } from './market.js';
 import { OpenRefused, type ProofResult, checkFundedShare, ethereumSessionBudget, ethereumUpgradeStatus, makerHttp, openEthereum, openSolanaWave, solanaUpgradeStatus } from './open.js';
-import { type Order, type OrderLeg, nextWave, stalledMakers } from './orders.js';
+import { type Order, type OrderLeg, nextWave, orderProgress, planOrder, stalledMakers } from './orders.js';
 import { type ChainPort, EthereumPort, type EthereumWallet, type MoneroPort, SolanaPort, type SolanaWallet, httpEthTransport, moneroPort, swapRefOf } from './ports.js';
 import { type Safety, safetyOf } from './safety.js';
 import { SealedStore } from './sealed.js';
@@ -73,6 +83,27 @@ export interface RegistryState {
   at: number | null;
 }
 
+/** One leg to open: the offer, the size, and what Amendment 1 lets the taker name. */
+export interface LegRequest {
+  row: OfferRow;
+  xmr: bigint;
+  payout?: string;
+  payoutTokenRent?: bigint;
+  watcher?: string | null;
+}
+
+/** The page's verdict on a payout address (SPEC 11.2). */
+export interface PayoutVerdict {
+  verdict: 'ok' | 'warn' | 'refuse';
+  reason: string | null;
+  /** USDC on Solana: the address has no token account yet; the claim creates it if the claiming key holds this much more. */
+  tokenAccountMissing: boolean;
+  tokenAccountRent: bigint;
+}
+
+/** The deployed program's executable hash against the build this page expects (SPEC 11.5). `unread` = could not be read. */
+export type ProgramBuild = { status: 'match' | 'mismatch' | 'unpublished'; hash: string; published: string | null } | { status: 'unread'; hash: null; published: string | null };
+
 export interface OpenResult {
   opened: (SwapView | null)[];
   errors: (string | null)[];
@@ -87,12 +118,20 @@ export interface AppDeps {
   ports?: () => Partial<Record<ChainName, ChainPort>>;
   monero?: MoneroPort;
   readRegistry?: () => Promise<RegistrySnapshot>;
-  openLegs?: (legs: { row: OfferRow; xmr: bigint }[], groups: number[][]) => Promise<OpenResult>;
+  openLegs?: (legs: LegRequest[], groups: number[][]) => Promise<OpenResult>;
+  payoutCheck?: (row: OfferRow, payout: string) => Promise<PayoutVerdict>;
+  watcherInfo?: (url: string) => Promise<WatchInfo>;
+  registerWatcher?: (w: WatcherNote, s: SwapView, keys: DerivedKeys) => Promise<{ watching_until: number; sig: string; swap_ref: string }>;
+  /** What the wallet-key message needs from the chain: the cluster's genesis hash and the wallet's swaps. */
+  walletKeyChain?: (wallet: string) => Promise<{ genesisHash: string; swaps: KnownSwap[] }>;
+  fetchRelease?: () => Promise<ServedRelease | null>;
+  programBuild?: () => Promise<ProgramBuild>;
   upgrade?: () => Promise<{ solana: UpgradeStatus; ethereum: UpgradeStatus }>;
   makerProof?: (s: SwapView) => Promise<ProofResult>;
   proofTimeoutMs?: number;
 }
 
+export const PROGRAM_MISMATCH = 'The program deployed on-chain is not the build this page expects. The page and the chain disagree, so locking is disabled: funds sent to a program you cannot check could be lost. See the Status page.';
 const UNKNOWN: UpgradeStatus = { frozen: null, authority: null };
 const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 const ORDER_PREFIX = 'order.';
@@ -103,6 +142,8 @@ export class App {
   readonly wallets = new Observable<Wallets>({ solana: null, ethereum: null });
   readonly registry = new Observable<RegistryState>({ snapshot: null, loading: false, error: null, at: null });
   readonly upgrade = new Observable<{ solana: UpgradeStatus; ethereum: UpgradeStatus }>({ solana: UNKNOWN, ethereum: UNKNOWN });
+  readonly release = new Observable<{ loaded: boolean; record: ServedRelease | null }>({ loaded: false, record: null });
+  readonly programBuild = new Observable<ProgramBuild | null>(null);
   readonly orders = new Observable<Order[]>([]);
   /** A wave is being opened for this order (a wallet prompt is up). */
   readonly orderBusy = new Observable<Record<string, string | null>>({});
@@ -135,6 +176,7 @@ export class App {
       takers: () => this.takers(),
       network: () => this.settings.get().moneroNetwork,
       sweepMaxFee: () => (/^\d+$/.test(this.settings.get().sweepMaxFee) ? BigInt(this.settings.get().sweepMaxFee) : null),
+      registerWatcher: (w, sw, keys) => (deps.registerWatcher ? deps.registerWatcher(w, sw, keys) : registerWithWatcher(w, sw, keys)),
       makerProof: (s) => (deps.makerProof ? deps.makerProof(s) : this.makerProof(s)),
       ...(deps.proofTimeoutMs !== undefined ? { proofTimeoutMs: deps.proofTimeoutMs } : {}),
     });
@@ -282,7 +324,8 @@ export class App {
   setWallet(chain: 'ethereum', w: EthereumWallet | null): void;
   setWallet(chain: ChainName, w: SolanaWallet | EthereumWallet | null): void {
     const cur = this.wallets.get();
-    if ((cur[chain]?.address ?? null) === (w?.address ?? null) && (cur[chain] === null) === (w === null)) {
+    const sameFeatures = chain !== 'solana' || typeof (cur.solana as SolanaWallet | null)?.signMessage === typeof (w as SolanaWallet | null)?.signMessage;
+    if (sameFeatures && (cur[chain]?.address ?? null) === (w?.address ?? null) && (cur[chain] === null) === (w === null)) {
       // Same account: keep the newest signer object without waking every subscriber.
       (cur as unknown as Record<string, unknown>)[chain] = w;
       return;
@@ -320,7 +363,23 @@ export class App {
     }
   }
 
+  /** The served release record and the deployed program's hash against the expected build. */
+  async refreshRelease(): Promise<void> {
+    const record = await (this.deps.fetchRelease ? this.deps.fetchRelease() : fetchServedRelease()).catch(() => null);
+    this.release.set({ loaded: true, record });
+    try {
+      if (this.deps.programBuild) this.programBuild.set(await this.deps.programBuild());
+      else {
+        const sol = this.solana();
+        this.programBuild.set(sol ? await sol.programBuild() : null);
+      }
+    } catch {
+      this.programBuild.set({ status: 'unread', hash: null, published: PROGRAM_HASH });
+    }
+  }
+
   async refreshUpgrade(): Promise<void> {
+    void this.refreshRelease();
     if (this.deps.upgrade) {
       this.upgrade.set(await this.deps.upgrade());
       return;
@@ -339,7 +398,7 @@ export class App {
     return this.vault.requireSeed();
   }
 
-  private async openLegs(legs: { row: OfferRow; xmr: bigint }[], groups: number[][], slippageBps: number): Promise<OpenResult> {
+  private async openLegs(legs: LegRequest[], groups: number[][], slippageBps: number): Promise<OpenResult> {
     if (this.deps.openLegs) return this.deps.openLegs(legs, groups);
     const seed = this.vault.requireSeed();
     const w = this.wallets.get();
@@ -355,7 +414,7 @@ export class App {
     const errors: (string | null)[] = [];
     for (const leg of legs) {
       try {
-        opened.push(await openEthereum(port, w.ethereum.address, seed, leg.row, leg.xmr, slippageBps, this.settings.get()));
+        opened.push(await openEthereum(port, w.ethereum.address, seed, leg.row, leg.xmr, slippageBps, this.settings.get(), { ...(leg.payout ? { payout: leg.payout } : {}), ...(leg.watcher ? { watcher: leg.watcher } : {}) }));
         errors.push(null);
       } catch (e) {
         opened.push(null);
@@ -365,14 +424,82 @@ export class App {
     return { opened, errors };
   }
 
-  /** Open one swap. `acknowledged` is the checkbox of the confirmation screen. Returns the swap's reference. */
-  async openSwap(a: { row: OfferRow; xmr: bigint; destination: string; acknowledged: boolean; slippageBps?: number }): Promise<string> {
+  /**
+   * Open one swap. `acknowledged` is the checkbox of the confirmation screen. Selling XMR, `payout`
+   * names where the proceeds go (default: the taking wallet); buying, `watcher` names a watcher the
+   * user chose. Returns the swap's reference.
+   */
+  async openSwap(a: { row: OfferRow; xmr: bigint; destination: string; acknowledged: boolean; slippageBps?: number; payout?: string; payoutTokenRent?: bigint; watcher?: WatcherNote }): Promise<string> {
     this.assertMayLock(a.acknowledged);
-    const r = await this.openLegs([{ row: a.row, xmr: a.xmr }], [[0]], a.slippageBps ?? 0);
+    if (this.programBuild.get()?.status === 'mismatch') throw new OpenRefused(PROGRAM_MISMATCH);
+    if (a.watcher && a.row.freezeWindow === 0) throw new OpenRefused('This offer accepts no watcher. Nothing was locked.');
+    const leg: LegRequest = { row: a.row, xmr: a.xmr, ...(a.row.direction === 1 && a.payout ? { payout: a.payout } : {}), ...(a.payoutTokenRent ? { payoutTokenRent: a.payoutTokenRent } : {}), ...(a.row.direction === 0 && a.watcher ? { watcher: a.watcher.address } : {}) };
+    let r: OpenResult;
+    try {
+      r = await this.openLegs([leg], [[0]], a.slippageBps ?? 0);
+    } catch (e) {
+      const cap = capErrorText(e, this.registry.get().snapshot?.caps[a.row.market], a.row.market, a.row.direction);
+      throw cap ? new OpenRefused(cap) : e;
+    }
     const view = r.opened[0];
     if (!view) throw new OpenRefused(r.errors[0] ?? 'The swap did not open. Nothing was locked.');
-    this.adopt(view, { market: a.row.market, destination: a.destination });
+    this.adopt(view, { market: a.row.market, destination: a.destination, ...(view.payoutAddress && view.payoutAddress !== view.taker ? { payout: view.payoutAddress } : {}), ...(a.watcher && view.watcherAddress ? { watcher: { url: a.watcher.url, solana: a.watcher.solana, address: a.watcher.address } } : {}) });
+    void this.refreshRegistry();
     return swapRefOf(view);
+  }
+
+  /** Check a payout address before a take: refuse what would strand the proceeds, warn where they would follow another program's rules. */
+  async checkPayout(row: OfferRow, payout: string): Promise<PayoutVerdict> {
+    if (this.deps.payoutCheck) return this.deps.payoutCheck(row, payout);
+    if (row.chain === 'solana') {
+      const sol = this.solana();
+      if (!sol || !('offer' in row.source)) throw new Error('The Solana RPC is not configured.');
+      try {
+        new PublicKey(payout);
+      } catch {
+        return { verdict: 'refuse', reason: 'invalid-address', tokenAccountMissing: false, tokenAccountRent: 0n };
+      }
+      const c = await sol.payoutProblem(payout, row.source.offer.asset);
+      return { verdict: c.verdict, reason: c.reason, tokenAccountMissing: c.tokenAccountMissing, tokenAccountRent: c.tokenAccountRent };
+    }
+    const eth = this.ethereum();
+    if (!eth) throw new Error('The Ethereum RPC is not configured.');
+    if (!/^0x[0-9a-fA-F]{40}$/.test(payout)) return { verdict: 'refuse', reason: 'invalid-address', tokenAccountMissing: false, tokenAccountRent: 0n };
+    const c = await eth.payoutProblem(payout as Address);
+    return { verdict: c.verdict, reason: c.reason ?? null, tokenAccountMissing: false, tokenAccountRent: 0n };
+  }
+
+  /** Ask a watcher who it is. With a pinned key in Settings, a watcher that answers with another key is refused. */
+  async watcherFor(url: string): Promise<WatchInfo> {
+    const info = await (this.deps.watcherInfo ? this.deps.watcherInfo(url) : watcherInfo(url));
+    const s = this.settings.get();
+    if (url === s.watcherUrl && s.watcherKey && info.solana !== s.watcherKey) throw new Error(`This watcher answers with the key ${info.solana}, not the one you pinned in Settings (${s.watcherKey}). It was not used.`);
+    return info;
+  }
+
+  /**
+   * Unlock the wallet-derived key (SPEC 11.3): the connected Solana wallet signs the fixed
+   * message (twice for a wallet with no swaps, to prove it signs deterministically; once for a
+   * returning wallet, proved against the swaps it has on-chain). The signature goes to the core
+   * and is dropped. Throws with the SDK's code when the wallet cannot be used this way.
+   */
+  async unlockWalletKey(): Promise<{ provedBy: 'two-signatures' | 'swap-commitments'; swapsChecked: number }> {
+    const s = this.settings.get();
+    const w = this.wallets.get().solana;
+    const why = walletKeyUnavailable(s.walletKeySite, w);
+    if (why) throw new Error(UNAVAILABLE_TEXT[why]);
+    const wallet = w!;
+    let chain: { genesisHash: string; swaps: KnownSwap[] };
+    if (this.deps.walletKeyChain) chain = await this.deps.walletKeyChain(wallet.address);
+    else {
+      const sol = this.solana();
+      if (!sol) throw new Error('Set a Solana RPC first: the message names the cluster and the program.');
+      chain = { genesisHash: await sol.transport.getGenesisHash(), swaps: (await sol.listSwapsByTaker(wallet.address)).map((v) => ({ swapNonce: v.swapNonce, takerSpendPub: v.takerSpendPub })) };
+    }
+    const context: WalletKeyContext = { chain: 'solana', wallet: wallet.address, genesisHash: chain.genesisHash, programId: s.programId, site: s.walletKeySite };
+    const u = await unlockWalletSeed(context, () => wallet.signMessage!(walletKeySolanaRequest(context).bytes), chain.swaps);
+    this.vault.adoptWalletSeed(u.seed, context);
+    return { provedBy: u.provedBy, swapsChecked: u.swapsChecked };
   }
 
   /**
@@ -380,12 +507,12 @@ export class App {
    * the chain's native unit. Shown before locking; whatever the session key does not spend is
    * swept back to the taker.
    */
-  async sessionFunding(chain: ChainName, approval = false): Promise<{ budget: bigint; fee: bigint | null } | null> {
+  async sessionFunding(chain: ChainName, approval = false, payoutTokenRent = 0n): Promise<{ budget: bigint; fee: bigint | null } | null> {
     try {
       if (chain === 'solana') {
         const sol = this.solana();
         if (!sol) return null;
-        return { budget: (await sol.transport.getMinimumBalanceForRentExemption(0)) + SESSION_BUDGET_LAMPORTS, fee: approval ? 10_000n : 5_000n };
+        return { budget: (await sol.transport.getMinimumBalanceForRentExemption(0)) + SESSION_BUDGET_LAMPORTS + payoutTokenRent, fee: approval ? 10_000n : 5_000n };
       }
       const eth = this.ethereum();
       return eth ? { budget: await ethereumSessionBudget(eth), fee: null } : null;
@@ -566,7 +693,17 @@ export class App {
   nextWaveOf(o: Order): PlannedWave | null {
     const rows = this.registry.get().snapshot?.rows ?? [];
     const now = this.engine.getState().clock[rows.find((r) => r.market === o.market)?.chain ?? 'solana']?.chain;
-    return now === undefined ? null : nextWave(o, rows, this.legStateOf, now);
+    return now === undefined ? null : nextWave(o, rows, this.legStateOf, now, this.registry.get().snapshot?.caps[o.market]);
+  }
+
+  /** Whether what keeps an order's remainder from being placed is the protocol's beta cap rather than the makers. */
+  capLimited(o: Order): boolean {
+    const snap = this.registry.get().snapshot;
+    const caps = snap?.caps[o.market];
+    if (!snap || !caps) return false;
+    const p = orderProgress(o, this.legStateOf, 0n, null);
+    if (p.remainder <= 0n) return false;
+    return planOrder(o, snap.rows, p.remainder, p.room > 0n ? p.room : p.remainder, new Set(), caps).capReached;
   }
 
   private orderPass = false;

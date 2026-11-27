@@ -36,6 +36,8 @@ export type CallDecision = Extract<Decision, { do: 'call' }>;
 export interface SolanaWallet {
   address: string;
   signTransaction(tx: Transaction): Promise<Transaction>;
+  /** The Wallet Standard `solana:signMessage` feature, when the wallet has it (needed only for the wallet-derived key). */
+  signMessage?(message: Uint8Array): Promise<Uint8Array>;
 }
 /** The user's Ethereum wallet (an injected EIP-1193 provider): it signs and sends. */
 export interface EthereumWallet {

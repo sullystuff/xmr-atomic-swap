@@ -4,6 +4,7 @@ import type { LegState, RoutePlan } from '@xmrswap/sdk';
 import { useMemo, useState } from 'react';
 import { ASSET_LABEL, bpsPercent, formatAsset, formatDuration, formatPrice, formatTime, formatXmrAmount, looksLikeXmrAddress, parseUnits, parseXmr } from '../lib/format.js';
 import { lockBlockers } from '../lib/gates.js';
+import { NOT_OPEN_TITLE, capsLine, capsState, notOpenText } from '../lib/caps.js';
 import { type OfferWarning, offerWarnings, referenceFor, worstCaseClaimOpen } from '../lib/market.js';
 import { LEG_LABEL, LEG_ORDER, type Order, orderProgress, planOrder } from '../lib/orders.js';
 import { BackupStep } from '../ui/Backup.js';
@@ -20,6 +21,7 @@ const DROP_TEXT: Readonly<Record<string, string>> = {
   depth: 'too few confirmations for the total in flight',
   'worse-than-limit': 'worse than your worst acceptable rate',
   'below-minimum': 'what is left is below its minimum size',
+  'cap-reached': 'the protocol\'s beta limit leaves no room for it (not the maker\'s limit)',
 };
 const MARKETS: readonly { value: Market; label: string }[] = [
   { value: 'sol', label: 'SOL' },
@@ -82,7 +84,8 @@ function OrderEntry() {
     return { market, worstPrice: worstPrice.toString(), deadline: (now + BigInt(Math.max(5, mins || 0) * 60)).toString(), referencePrice: ref ? ref.price.toString() : null, minDepth: settings.minDepth, excluded, caps };
     // `now` moves every second; the plan only needs it to the minute.
   }, [market, totalPay, worstPrice, maxInFlight, now === null ? null : now / 60n, mins, ref?.price, settings.minDepth, excluded, caps]);
-  const plan: RoutePlan | null = useMemo(() => (draft && totalPay && maxInFlight ? planOrder(draft, rows, totalPay, maxInFlight) : null), [draft, rows, totalPay, maxInFlight]);
+  const protoCaps = registry.snapshot?.caps[market];
+  const plan: RoutePlan | null = useMemo(() => (draft && totalPay && maxInFlight ? planOrder(draft, rows, totalPay, maxInFlight, new Set(), protoCaps) : null), [draft, rows, totalPay, maxInFlight, protoCaps]);
   const first = plan?.waves[0] ?? null;
   const rowOf = (id: string) => rows.find((r) => r.id === id);
 
@@ -151,6 +154,14 @@ function OrderEntry() {
             <Spinner label="Reading offers" />
           ) : !plan ? (
             <p className="muted">Fill in the order to see how it would be split.</p>
+          ) : capsState(protoCaps) === 'closed' ? (
+            <Notice kind="info" title={NOT_OPEN_TITLE} role="status">
+              {notOpenText(market)}
+            </Notice>
+          ) : plan.waves.length === 0 && plan.capReached ? (
+            <Notice kind="info" title="The protocol's beta limit leaves no room right now" id="plan-cap">
+              {capsLine(protoCaps, market)} This is a limit of the protocol, not of the makers: no maker can take a leg until open value is freed. Nothing will be locked.
+            </Notice>
           ) : plan.waves.length === 0 ? (
             <Notice kind="warn" title="No offer fits this order">
               {plan.dropped.length > 0 ? `Left out: ${plan.dropped.map((d) => `${rowOf(d.offerId)?.maker.pda.slice(0, 6) ?? d.offerId.slice(0, 6)}… (${DROP_TEXT[d.reason] ?? d.reason})`).join('; ')}.` : 'There are no live offers in this market.'} Nothing will be locked.
@@ -179,6 +190,11 @@ function OrderEntry() {
                   <dd className="m-0 text-sm muted">{asset} with these offers</dd>
                 </div>
               </dl>
+              {plan.capReached ? (
+                <Notice kind="info" title="The protocol's beta limit shapes this plan" id="plan-cap">
+                  {capsLine(protoCaps, market)} Legs were made smaller or left out because of that limit, not because makers lack XMR. {plan.unfilledPay > 0n ? `Of the ${formatAsset(plan.unfilledPay, market, 2)} ${asset} that cannot be placed, some or all is due to it; ` : ''}room returns as swaps complete, and later waves are planned again then.
+                </Notice>
+              ) : null}
               {plan.waves.map((w, wi) => (
                 <div key={wi} className="panel overflow-x-auto">
                   <table className="table" aria-label={`Wave ${wi + 1}`}>
@@ -304,7 +320,7 @@ function Board({ order }: { order: Order }) {
   const asset = ASSET_LABEL[order.market];
   const stateOf = (r: string) => engine.swaps.find((t) => t.ref === r)?.leg;
   const next = now === null ? null : app.nextWaveOf(order);
-  const p = orderProgress(order, stateOf, now ?? 0n, next);
+  const p = orderProgress(order, stateOf, now ?? 0n, next, next === null && app.capLimited(order));
   const counts = new Map<LegState, number>();
   for (const l of p.legs) counts.set(l.state, (counts.get(l.state) ?? 0) + 1);
 
@@ -447,7 +463,7 @@ function Board({ order }: { order: Order }) {
           <Notice kind={p.report.unfilledPay > 0n ? 'warn' : 'safe'} title={p.report.unfilledPay > 0n ? 'Partly filled' : 'Filled'} role="status">
             Filled {formatAsset(p.report.filledPay, order.market)} {asset} for {formatXmrAmount(p.report.filledXmr, 6)} XMR. Unfilled {formatAsset(p.report.unfilledPay, order.market)} {asset}
             {p.report.refundedPay > 0n ? `, of which ${formatAsset(p.report.refundedPay, order.market)} ${asset} was locked and refunded` : ''}.
-            {p.stoppedBecause === 'deadline' ? ' The order deadline passed, so no further wave was opened.' : p.stoppedBecause === 'no-offers' ? ' No remaining offer met your worst rate and limits.' : p.stoppedBecause === 'stopped' ? ' You stopped the order.' : ''}
+            {p.stoppedBecause === 'deadline' ? ' The order deadline passed, so no further wave was opened.' : p.stoppedBecause === 'protocol-cap' ? ' The remainder is unfilled because of the protocol\'s beta limit on open value, not because makers lacked XMR.' : p.stoppedBecause === 'no-offers' ? ' No remaining offer met your worst rate and limits.' : p.stoppedBecause === 'stopped' ? ' You stopped the order.' : ''}
           </Notice>
         </section>
       ) : !order.stopped ? (

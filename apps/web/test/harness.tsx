@@ -1,9 +1,10 @@
 // A whole `App` over the test doubles, and the real React tree rendered on top of it.
 import { act, render } from '@testing-library/react';
 import { afterEach } from 'vitest';
-import { App } from '../src/lib/app.js';
+import { App, type LegRequest, type ProgramBuild } from '../src/lib/app.js';
+import type { ServedRelease } from '../src/lib/release.js';
 import { Root } from '../src/App.js';
-import type { OfferRow, UpgradeStatus } from '../src/lib/market.js';
+import type { OfferRow, RegistrySnapshot, UpgradeStatus } from '../src/lib/market.js';
 import type { Settings } from '../src/lib/settings.js';
 import { MemoryKV } from '../src/lib/storage.js';
 import { createRecoveryFile, hex, writeRecoveryFile } from '@xmrswap/sdk';
@@ -28,7 +29,9 @@ export interface Rig {
   kv: MemoryKV;
   rows: OfferRow[];
   /** Legs the opener was asked to open, in order. */
-  opened: { offer: string; xmr: bigint }[];
+  opened: { offer: string; xmr: bigint; payout?: string; watcher?: string | null }[];
+  /** The requests exactly as the opener received them. */
+  requests: LegRequest[];
   /** Make the next open fail with this message (the wallet refused, the offer changed). */
   failOpen: { message: string | null };
   /** One engine pass plus a guard update, inside `act`. */
@@ -38,13 +41,14 @@ export interface Rig {
   backup(): void;
 }
 
-export function makeRig(o: { rows?: OfferRow[]; chain?: ModelChain; kv?: MemoryKV; upgrade?: UpgradeStatus; settings?: Partial<Settings>; wakeLock?: boolean; makerProof?: NonNullable<ConstructorParameters<typeof App>[0]['makerProof']> } = {}): Rig {
+export function makeRig(o: { rows?: OfferRow[]; chain?: ModelChain; kv?: MemoryKV; upgrade?: UpgradeStatus; settings?: Partial<Settings>; wakeLock?: boolean; makerProof?: NonNullable<ConstructorParameters<typeof App>[0]['makerProof']>; caps?: RegistrySnapshot['caps']; release?: ServedRelease; programBuild?: ProgramBuild; extra?: Partial<ConstructorParameters<typeof App>[0]> } = {}): Rig {
   const chain = o.chain ?? new ModelChain();
   const monero = new FakeMonero();
   const env = fakeGuardEnv(o.wakeLock === false ? { wakeLock: false } : {});
   const kv = o.kv ?? new MemoryKV();
   const rows = o.rows ?? [row(1)];
   const opened: Rig['opened'] = [];
+  const requests: LegRequest[] = [];
   const failOpen: Rig['failOpen'] = { message: null };
   const app = new App({
     kv,
@@ -53,7 +57,10 @@ export function makeRig(o: { rows?: OfferRow[]; chain?: ModelChain; kv?: MemoryK
     ports: () => ({ [chain.chain]: chain }),
     ...(o.makerProof ? { makerProof: o.makerProof } : {}),
     monero,
-    readRegistry: async () => ({ makers: rows.map((r) => r.maker), rows, discarded: [], now: { solana: chain.now_, ethereum: null } }),
+    readRegistry: async () => ({ makers: rows.map((r) => r.maker), rows, discarded: [], caps: o.caps ?? {}, now: { solana: chain.now_, ethereum: null } }),
+    fetchRelease: async () => o.release ?? null,
+    programBuild: async () => o.programBuild ?? { status: 'unpublished', hash: 'ab'.repeat(32), published: null },
+    ...(o.extra ?? {}),
     upgrade: async () => ({ solana: o.upgrade ?? { frozen: false, authority: 'UpgradeAuthority1111' }, ethereum: { frozen: null, authority: null } }),
     openLegs: async (legs) => {
       if (failOpen.message) {
@@ -64,7 +71,8 @@ export function makeRig(o: { rows?: OfferRow[]; chain?: ModelChain; kv?: MemoryK
       return {
         opened: legs.map((l) => {
           opened.push({ offer: l.row.id, xmr: l.xmr });
-          return chain.open({ xmr: l.xmr, price: l.row.basePrice, makerPda: l.row.maker.pda, mode: l.row.mode, direction: l.row.direction, depBps: l.row.depBps }).view;
+          requests.push(l);
+          return chain.open({ xmr: l.xmr, price: l.row.basePrice, makerPda: l.row.maker.pda, mode: l.row.mode, direction: l.row.direction, depBps: l.row.depBps, wZ: l.row.freezeWindow, dC: l.row.claimDelay, ...(l.payout ? { payout: l.payout } : {}), ...(l.watcher ? { watcher: l.watcher } : {}) }).view;
         }),
         errors: legs.map(() => null),
       };
@@ -79,6 +87,7 @@ export function makeRig(o: { rows?: OfferRow[]; chain?: ModelChain; kv?: MemoryK
     kv,
     rows,
     opened,
+    requests,
     failOpen,
     async pass() {
       await act(async () => {

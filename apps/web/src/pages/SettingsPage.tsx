@@ -2,6 +2,7 @@
 import type { MoneroNetwork } from '@xmrswap/protocol';
 import { useState } from 'react';
 import { type ConnectionMode, MODE_INFO, type Settings, type ThemeChoice, overriddenKeys, settingsProblems } from '../lib/settings.js';
+import { WATCHER_CAN, WATCHER_SEES } from '../lib/watcher.js';
 import { BackupStep, LoadFile, VaultSettings } from '../ui/Backup.js';
 import { href, useApp, useObs, useVault } from '../ui/hooks.js';
 import { Field, Notice, Segmented } from '../ui/kit.js';
@@ -155,6 +156,29 @@ export function SettingsPage() {
               </Field>
             </div>
           ) : null}
+        </section>
+
+        <section className="grid max-w-2xl gap-5" aria-labelledby="watch-h">
+          <div className="grid gap-1">
+            <h2 id="watch-h">Watcher (optional)</h2>
+            <p className="muted">
+              Off by default: your tab is your watcher. A watcher is a small service that can pause one swap for you if the maker's lock does not check out while your tab is closed. It is offered at the review step, only on offers that allow a pause and only where a pause adds
+              time. {WATCHER_SEES} {WATCHER_CAN}
+            </p>
+          </div>
+          {draft.hostedWatcherUrl ? (
+            <p className="text-sm">
+              This site runs one at <code className="break-all">{draft.hostedWatcherUrl}</code>. Whoever runs it learns what is listed above about each swap you hand it.
+            </p>
+          ) : (
+            <p className="text-sm muted">This site does not run a watcher.</p>
+          )}
+          <Field label="My own watcher's URL" hint={hint('watcherUrl', 'A watcher you run yourself (the self-hosting bundle documents how). Reached directly over HTTPS, never through the relay.')} error={err('watcherUrl')}>
+            {(p) => <input {...p} className="input mono" type="url" inputMode="url" spellCheck={false} value={draft.watcherUrl} onChange={(e) => set('watcherUrl', e.target.value.trim())} />}
+          </Field>
+          <Field label="Its public key (optional)" hint={hint('watcherKey', 'The Solana key your watcher reports. If you fill this in, a watcher at that URL answering with any other key is refused; left empty, the key it reports is shown to you before you lock.')}>
+            {(p) => <input {...p} className="input mono" spellCheck={false} value={draft.watcherKey} onChange={(e) => set('watcherKey', e.target.value.trim())} />}
+          </Field>
         </section>
 
         <section className="grid max-w-2xl gap-5" aria-labelledby="pin-h">

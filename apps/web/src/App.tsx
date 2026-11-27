@@ -8,7 +8,7 @@ import { OffersPage } from './pages/OffersPage.js';
 import { SettingsPage } from './pages/SettingsPage.js';
 import { StatusPage } from './pages/StatusPage.js';
 import { SwapPage } from './pages/SwapPage.js';
-import { RiskBanner, SafeBanner, SystemNotices } from './ui/Banners.js';
+import { RiskBanner, SafeBanner, SystemNotices, WatchedBanner } from './ui/Banners.js';
 import { AppContext, href, useObs, useRoute, useSafety } from './ui/hooks.js';
 import { EthereumWalletButton, SolanaWalletButton, Wallets } from './ui/wallets.js';
 
@@ -57,6 +57,7 @@ function Shell({ app }: { app: AppObject }) {
       </a>
       <RiskBanner />
       <SafeBanner />
+      <WatchedBanner />
       <header className="topbar">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-x-6 gap-y-2 px-4 pt-3">
           <a href={href()} className="flex items-center gap-2 font-bold text-ink no-underline" aria-label="XMR atomic swaps, home">

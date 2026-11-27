@@ -3,8 +3,9 @@
  * confirmed it is saved, every lock button on the site stays disabled.
  */
 import { useRef, useState } from 'react';
+import { UNAVAILABLE_TEXT, siteProblem, unlockErrorText, walletKeyUnavailable, walletKeyWarnings } from '../lib/walletkey.js';
 import { downloadText } from '../lib/vault.js';
-import { useApp, useVault } from './hooks.js';
+import { useApp, useObs, useVault } from './hooks.js';
 import { Field, Icon, Notice } from './kit.js';
 
 export const BACKUP_REASON = 'Save your recovery file first. Without it, a closed tab or a lost browser means the refund and the XMR are both out of reach and your funds are lost.';
@@ -103,6 +104,88 @@ function Unlock() {
   );
 }
 
+/**
+ * The wallet-derived key (SPEC 11.3): a separate, opt-in choice. The recovery file stays the
+ * default. The three warnings are shown with a checkbox before the first signature.
+ */
+export function WalletKeyChoice({ onDone }: { onDone?: () => void }) {
+  const app = useApp();
+  const settings = useObs(app.settings);
+  const wallets = useObs(app.wallets);
+  const [ticked, setTicked] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const site = settings.walletKeySite.trim();
+  const why = walletKeyUnavailable(site, wallets.solana);
+  const elsewhere = site && typeof location !== 'undefined' ? siteProblem(location.hostname, site) : null;
+  return (
+    <div className="panel grid gap-4 p-4" data-testid="wallet-key">
+      <div className="grid gap-1">
+        <h3>Use my wallet as the key instead</h3>
+        <p className="muted text-sm prose-w">
+          Your wallet signs one fixed message and the swap keys are derived from that signature, so any device with the wallet can resume your swaps and collect your XMR, with no file to keep. The signature is used in this page and dropped; it is never stored or sent. Solana swaps
+          only.
+        </p>
+      </div>
+      {why === 'no-site' ? (
+        <Notice kind="info" title="Not available yet" id="wallet-key-unavailable">
+          {UNAVAILABLE_TEXT['no-site']}
+        </Notice>
+      ) : (
+        <>
+          <Notice kind="danger" title="Read this before you sign">
+            <ul className="grid list-disc gap-2 pl-5" data-testid="wallet-key-warnings">
+              {walletKeyWarnings(site).map((w) => (
+                <li key={w}>{w}</li>
+              ))}
+            </ul>
+          </Notice>
+          {elsewhere ? (
+            <Notice kind="warn" title={`This page is not ${site}`} id="wallet-key-site">
+              {elsewhere}
+            </Notice>
+          ) : null}
+          {why ? <p className="text-sm font-semibold" id="wallet-key-unavailable">{UNAVAILABLE_TEXT[why]}</p> : null}
+          <label className="check">
+            <input type="checkbox" checked={ticked} disabled={why !== null} onChange={(e) => setTicked(e.target.checked)} />
+            <span>
+              <strong>I understand: whoever gets this signature gets my uncollected XMR and my open swaps, and without this wallet they are gone.</strong>
+              <span className="block muted text-sm">I will only sign this message on {site}.</span>
+            </span>
+          </label>
+          {error ? (
+            <Notice kind="danger" title="The wallet key was not set up" role="alert">
+              {error}
+            </Notice>
+          ) : null}
+          <button
+            type="button"
+            className="btn justify-self-start"
+            disabled={!ticked || why !== null || busy}
+            onClick={() => {
+              setBusy(true);
+              setError(null);
+              app.unlockWalletKey().then(
+                () => {
+                  setBusy(false);
+                  onDone?.();
+                },
+                (e: unknown) => {
+                  setBusy(false);
+                  setError(unlockErrorText(e));
+                },
+              );
+            }}
+          >
+            {busy ? 'Waiting for your wallet…' : 'Sign with my wallet to unlock'}
+          </button>
+          <p className="muted text-sm">A wallet that is new here is asked to sign twice: the two signatures must be identical, or the key could never be made again. A wallet with swaps on-chain signs once and the page proves the key against them.</p>
+        </>
+      )}
+    </div>
+  );
+}
+
 export function BackupStep({ heading = 'Save your recovery file' }: { heading?: string }) {
   const app = useApp();
   const vault = useVault();
@@ -132,13 +215,13 @@ export function BackupStep({ heading = 'Save your recovery file' }: { heading?: 
         <h2 id="backup-h">{heading}</h2>
         <p className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <span className="pill pill-safe">
-            <Icon name="check" size={14} /> Saved
+            <Icon name="check" size={14} /> {vault.mode === 'wallet' ? 'Wallet key' : 'Saved'}
           </span>
           <span className="muted">
-            One file covers every swap. Fingerprint <code>{vault.tag}</code>.
+            {vault.mode === 'wallet' ? 'Your wallet is the key: sign the same message on any device to resume. Exporting a recovery file as well protects you if you lose the wallet.' : 'One file covers every swap.'} Fingerprint <code>{vault.tag}</code>.
           </span>
           <button type="button" className="btn btn-quiet btn-sm" onClick={download} disabled={busy}>
-            Download again
+            {vault.mode === 'wallet' ? 'Export recovery file' : 'Download again'}
           </button>
         </p>
       </section>
@@ -169,13 +252,21 @@ export function BackupStep({ heading = 'Save your recovery file' }: { heading?: 
             </button>
           </div>
         ) : (
-          <div className="flex flex-wrap gap-3">
-            <button type="button" className="btn btn-primary" onClick={() => app.vault.create()}>
-              Create a recovery file
-            </button>
-            <button type="button" className="btn" onClick={() => setMode('load')}>
-              I already have one
-            </button>
+          <div className="grid gap-4">
+            <div className="flex flex-wrap gap-3">
+              <button type="button" className="btn btn-primary" onClick={() => app.vault.create()}>
+                Create a recovery file
+              </button>
+              <button type="button" className="btn" onClick={() => setMode('load')}>
+                I already have one
+              </button>
+            </div>
+            <details data-testid="wallet-key-details">
+              <summary className="cursor-pointer text-sm font-semibold">Another way: use my wallet key (advanced, off by default)</summary>
+              <div className="mt-3 max-w-2xl">
+                <WalletKeyChoice />
+              </div>
+            </details>
           </div>
         )
       ) : (

@@ -15,7 +15,7 @@
  */
 import { deriveKeys, passphraseOpen, passphraseSeal } from '@xmrswap/core-wasm';
 import type { ChainName, RecoveryFile, RecoveryFilePlain } from '@xmrswap/protocol';
-import { createRecoveryFile, encryptRecoveryFile, fromBase64, hex, isEncrypted, matchesDeployment, readRecoveryFile, recoverySeed, toBase64, unhex, withWallet, writeRecoveryFile } from '@xmrswap/sdk';
+import { type WalletKeyContext, walletKeyRecoveryFile, createRecoveryFile, encryptRecoveryFile, fromBase64, hex, isEncrypted, matchesDeployment, readRecoveryFile, recoverySeed, toBase64, unhex, withWallet, writeRecoveryFile } from '@xmrswap/sdk';
 import { type KV, local } from './storage.js';
 
 const SESSION_KEY = 'xmrswap.seed';
@@ -29,6 +29,8 @@ interface Meta {
   confirmed: boolean;
   createdAt: string;
   wallets: { solana: string[]; ethereum: string[] };
+  /** Set when the seed is derived from a wallet signature (SPEC 11.3): which wallet and deployment. Never the signature. */
+  walletKey?: WalletKeyContext;
 }
 
 export interface VaultState {
@@ -42,6 +44,8 @@ export interface VaultState {
   backedUp: boolean;
   /** Short public fingerprint of the seed, to tell files apart. */
   tag: string | null;
+  /** How the seed is backed up: by the recovery file (the default), or by the wallet whose signature derives it. */
+  mode: 'file' | 'wallet' | null;
 }
 
 /** A public fingerprint of a seed: part of a derived public key, never the seed itself. */
@@ -52,7 +56,7 @@ export class Vault {
   private meta: Meta | null = null;
   private sealed = false;
   private listeners = new Set<() => void>();
-  private snapshot: VaultState = { unlocked: false, sealedOnDevice: false, downloaded: false, backedUp: false, tag: null };
+  private snapshot: VaultState = { unlocked: false, sealedOnDevice: false, downloaded: false, backedUp: false, tag: null, mode: null };
 
   constructor(
     private readonly kv: KV,
@@ -71,6 +75,7 @@ export class Vault {
       downloaded: this.meta?.downloaded ?? false,
       backedUp: this.seed !== null && (this.meta?.confirmed ?? false),
       tag: this.meta?.tag ?? null,
+      mode: this.seed === null ? null : this.meta?.walletKey ? 'wallet' : 'file',
     };
     for (const f of this.listeners) f();
   }
@@ -107,6 +112,20 @@ export class Vault {
     }
   }
 
+  /**
+   * Adopt a seed derived from a wallet signature (SPEC 11.3). The wallet is the backup: the seed
+   * can be made again from it on any device, so locking is allowed without a file. The signature
+   * itself never reaches this class.
+   */
+  adoptWalletSeed(seed: Uint8Array, context: WalletKeyContext): void {
+    this.adopt(seed, false);
+    this.meta!.walletKey = context;
+    this.meta!.confirmed = true;
+    if (!this.meta!.wallets[context.chain].includes(context.wallet)) this.meta!.wallets[context.chain].push(context.wallet);
+    local.set(META_KEY, this.meta);
+    this.emit();
+  }
+
   /** The seed, for key derivation. Throws when the vault is locked. */
   requireSeed(): Uint8Array {
     if (!this.seed) throw new Error('The recovery seed is not loaded.');
@@ -137,6 +156,8 @@ export class Vault {
   fileText(passphrase?: string): string {
     const seed = this.requireSeed();
     const d = this.deployment();
+    if (this.meta?.walletKey && !passphrase) return writeRecoveryFile(walletKeyRecoveryFile(this.meta.walletKey, seed, d, new Date(this.meta.createdAt)));
+    if (this.meta?.walletKey) return writeRecoveryFile(encryptRecoveryFile(walletKeyRecoveryFile(this.meta.walletKey, seed, d, new Date(this.meta.createdAt)), passphrase!));
     let file: RecoveryFilePlain = createRecoveryFile({ seed, programId: d.programId, contract: d.contract, createdAt: new Date(this.meta?.createdAt ?? Date.now()) });
     for (const a of this.meta?.wallets.solana ?? []) file = withWallet(file, 'solana', a);
     for (const a of this.meta?.wallets.ethereum ?? []) file = withWallet(file, 'ethereum', a);
@@ -173,6 +194,10 @@ export class Vault {
       throw new Error('That passphrase does not open this recovery file.');
     }
     this.adopt(seed, true, file);
+    if (this.meta?.walletKey) {
+      delete this.meta.walletKey;
+      local.set(META_KEY, this.meta);
+    }
     this.emit();
     const d = this.deployment();
     return { warning: matchesDeployment(file, d.programId, d.contract) ? null : 'This recovery file was made for a different program or contract than this site uses. Your swaps may be on the other deployment.' };

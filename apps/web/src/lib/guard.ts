@@ -81,7 +81,8 @@ export class Guard {
 
   /** Bring the protections in line with the current safety picture. Call on every state change and once a second. */
   update(engine: EngineState, safety: Safety, nowMs: number = Date.now()): void {
-    const risky = safety.atRisk.length > 0;
+    // A leg a watcher has acknowledged no longer needs this tab to stay (SPEC 11.6); every other at-risk leg does.
+    const risky = safety.uncovered.length > 0;
     const left = secondsLeft(engine, safety, nowMs);
     if (risky && !this.armed) {
       this.armed = true;
@@ -94,11 +95,11 @@ export class Guard {
       this.sentinel = null;
       this.set({ wakeLock: 'idle' });
     }
-    const title = risky ? riskTitle(left) : safety.safeToClose ? `Safe to close · ${BASE_TITLE}` : BASE_TITLE;
+    const title = risky ? riskTitle(left) : safety.safeToClose ? `Safe to close · ${BASE_TITLE}` : safety.watchedSafe ? `Safe to close, with a watcher · ${BASE_TITLE}` : BASE_TITLE;
     if (this.env.document.title !== title) this.env.document.title = title;
 
     // Connection alarm: a chain or Monero connection dropped while a leg is at risk.
-    const down = risky ? (['solana', 'ethereum', 'monero'] as const).filter((k) => !engine.health[k].ok && (k === 'monero' || safety.atRisk.some((t) => t.chain === k))) : [];
+    const down = risky ? (['solana', 'ethereum', 'monero'] as const).filter((k) => !engine.health[k].ok && (k === 'monero' || safety.uncovered.some((t) => t.chain === k))) : [];
     if (down.length === 0) {
       if (this.alarmKey !== null) {
         this.alarmKey = null;

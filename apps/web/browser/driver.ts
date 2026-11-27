@@ -29,11 +29,13 @@ export interface TestWallet {
   signed: number;
   /** Refuse the next request, like a user clicking "Reject". */
   rejectNext: boolean;
+  /** How many messages (not transactions) it was asked to sign: the wallet-derived key. */
+  messages: number;
 }
 
 /** Register a Wallet Standard wallet in every page of the context, signing with `key` in Node. */
 export async function injectWallet(context: BrowserContext, key: SolanaSigner): Promise<TestWallet> {
-  const state: TestWallet = { signed: 0, rejectNext: false };
+  const state: TestWallet = { signed: 0, rejectNext: false, messages: 0 };
   await context.exposeFunction('__testWalletSign', async (messageB64: string): Promise<string> => {
     if (state.rejectNext) {
       state.rejectNext = false;
@@ -43,11 +45,15 @@ export async function injectWallet(context: BrowserContext, key: SolanaSigner): 
     const sig = await key.sign(Uint8Array.from(Buffer.from(messageB64, 'base64')));
     return Buffer.from(sig).toString('base64');
   });
+  await context.exposeFunction('__testWalletSignMessage', async (messageB64: string): Promise<string> => {
+    state.messages++;
+    return Buffer.from(await key.sign(Uint8Array.from(Buffer.from(messageB64, 'base64')))).toString('base64');
+  });
   await context.addInitScript(
     ({ address, publicKey }) => {
       const b64 = (u: Uint8Array) => btoa(String.fromCharCode(...u));
       const unb64 = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
-      const account = { address, publicKey: new Uint8Array(publicKey), chains: ['solana:mainnet', 'solana:devnet', 'solana:testnet', 'solana:localnet'], features: ['solana:signTransaction'] };
+      const account = { address, publicKey: new Uint8Array(publicKey), chains: ['solana:mainnet', 'solana:devnet', 'solana:testnet', 'solana:localnet'], features: ['solana:signTransaction', 'solana:signMessage'] };
       let connected: (typeof account)[] = [];
       const listeners = new Set<(p: { accounts: (typeof account)[] }) => void>();
       const wallet = {
@@ -79,6 +85,17 @@ export async function injectWallet(context: BrowserContext, key: SolanaSigner): 
             on: (_event: string, l: (p: { accounts: (typeof account)[] }) => void) => {
               listeners.add(l);
               return () => listeners.delete(l);
+            },
+          },
+          'solana:signMessage': {
+            version: '1.0.0',
+            signMessage: async (...inputs: { message: Uint8Array }[]) => {
+              const out = [];
+              for (const i of inputs) {
+                const signature = unb64(await (window as unknown as { __testWalletSignMessage(m: string): Promise<string> }).__testWalletSignMessage(b64(new Uint8Array(i.message))));
+                out.push({ signedMessage: new Uint8Array(i.message), signature });
+              }
+              return out;
             },
           },
           'solana:signTransaction': {
@@ -164,7 +181,10 @@ export async function shots(page: Page, name: string): Promise<void> {
   if (!process.env.SCREENSHOTS) return;
   const before = page.viewportSize();
   for (const [device, size] of [['desktop', { width: 1280, height: 800 }], ['phone', { width: 390, height: 844 }]] as const) {
+    // Keep whatever the test scrolled to in view after the viewport changes.
+    const anchor = await page.evaluate(() => window.scrollY);
     await page.setViewportSize(size);
+    if (device === 'desktop') await page.evaluate((y) => window.scrollTo(0, y), anchor);
     for (const theme of ['dark', 'light'] as const) {
       await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme);
       await page.waitForTimeout(150);

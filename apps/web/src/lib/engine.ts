@@ -38,10 +38,12 @@ import {
   swapJointAddress,
   takerAtRisk,
   takerRefundDeadline,
+  freezeRefusal,
   takerStep,
   unhex,
 } from '@xmrswap/sdk';
 import { type ChainPort, type MoneroPort, WalletNeeded, swapRefOf } from './ports.js';
+import { type WatcherNote, acknowledged } from './watcher.js';
 import { local } from './storage.js';
 
 /** Non-secret notes about one swap, kept in local storage. Losing them never loses funds. */
@@ -71,6 +73,16 @@ export interface SwapNote {
   amount?: string;
   direction?: number;
   lastState?: number;
+  /** The watcher named at lock, and its acknowledgement once verified (SPEC 11.6). */
+  watcher?: WatcherNote;
+  /** The user asked to pause (freeze) the swap from this tab. */
+  freeze?: boolean;
+  /** This tab sent the freeze (otherwise the watcher did). */
+  frozeMyself?: boolean;
+  /** The swap was seen paused (FROZEN): what happened afterwards is explained with that in mind. */
+  wasFrozen?: boolean;
+  /** Direction B: the payout address named at take, when it is not the taking wallet. */
+  payout?: string;
   /** How the swap ended, once known: survives the account being closed. */
   ended?: 'claim' | 'refund';
   /** The account was seen on-chain and is now gone. */
@@ -133,6 +145,12 @@ export interface Tracked {
   pending: { view: SwapView; etaSecs: number | null } | null;
   /** Ethereum direction B: the check of the maker's key proof for the share it funded with. */
   proof: ProofStatus;
+  /** Registration with the watcher the swap names. `acknowledged` only after its signed acknowledgement verified. */
+  watch: { phase: 'none' | 'registering' | 'acknowledged' | 'failed'; error?: string };
+  /** A watcher has acknowledged this swap and it is still in a state a pause can protect. */
+  watched: boolean;
+  /** Why this tab cannot pause the swap right now; `null` = it can. */
+  freezeRefusal: Refusal | null;
   /** Why a request to get out (refund, cancel, abort) would be refused right now; `null` = it would be carried out. */
   exitRefusal: Refusal | null;
   note: SwapNote;
@@ -168,6 +186,8 @@ export interface EngineDeps {
   makerProof?: (s: SwapView) => Promise<{ ok: true } | { ok: false } | { retry: string }>;
   /** Longest one proof attempt may take before it counts as failed and is retried. */
   proofTimeoutMs?: number;
+  /** Hand a swap that names a watcher to it; resolves with the verified acknowledgement. */
+  registerWatcher?: (w: WatcherNote, s: SwapView, keys: DerivedKeys) => Promise<{ watching_until: number; sig: string; swap_ref: string }>;
   /** Override of the sweep fee cap (regtest). */
   sweepMaxFee?: () => bigint | null;
   nowMs?: () => number;
@@ -350,7 +370,7 @@ export class Engine {
   private track(ref: string, chain: ChainName): Tracked {
     let t = this.tracked.get(ref);
     if (!t) {
-      t = { ref, chain, view: null, keys: null, decision: null, leg: 'planned', atRisk: false, refundDeadline: null, noticeOpens: undefined, joint: null, lockTxid: null, lock: null, lockError: null, sweep: { phase: 'idle' }, busy: null, error: null, needsWallet: false, lost: null, pending: null, proof: { phase: 'idle' }, exitRefusal: null, note: loadNote(ref) };
+      t = { ref, chain, view: null, keys: null, decision: null, leg: 'planned', atRisk: false, refundDeadline: null, noticeOpens: undefined, joint: null, lockTxid: null, lock: null, lockError: null, sweep: { phase: 'idle' }, busy: null, error: null, needsWallet: false, lost: null, pending: null, proof: { phase: 'idle' }, watch: { phase: 'none' }, watched: false, freezeRefusal: null, exitRefusal: null, note: loadNote(ref) };
       this.tracked.set(ref, t);
     }
     return t;
@@ -446,7 +466,9 @@ export class Engine {
     const ended = endedInClaim(t.view) ? 'claim' : endedInRefund(t.view) ? 'refund' : undefined;
     if (t.note.lastState !== t.view.state || t.note.ended !== ended || !t.note.openedAt)
       this.patchNote(t, { xmr: t.view.xmr.toString(), amount: t.view.amount.toString(), direction: t.view.direction, lastState: t.view.state, ...(ended ? { ended } : {}), ...(t.note.openedAt ? {} : { openedAt: Number(t.view.tLock) }) });
+    if (t.view.state === SWAP_STATE.FROZEN && !t.note.wasFrozen) this.patchNote(t, { wasFrozen: true });
     let makerProofOk: boolean | undefined;
+    this.registerWatcher(t, keys);
     let report: LockReport | undefined;
     let noticeOpens: boolean | undefined;
     for (let step = 0; step < 8; step++) {
@@ -457,6 +479,7 @@ export class Engine {
         swap: s,
         now,
         ...(t.note.cancel ? { cancel: true } : {}),
+        ...(t.note.freeze ? { freeze: true } : {}),
         ...(noticeOpens !== undefined ? { noticeOpens } : {}),
         ...(report ? { lock: report } : {}),
         ...(t.note.paidTxid ? { paid: true } : {}),
@@ -510,7 +533,8 @@ export class Engine {
           throw e;
         }
         t.busy = null;
-        if (d.call.name === 'refund' && d.row === 'A10b' && !t.note.cancel) this.patchNote(t, { autoRefunded: true });
+        if (d.call.name === 'refund' && (d.row === 'A10b' || d.row === 'Z3') && !t.note.cancel) this.patchNote(t, { autoRefunded: true });
+        if (d.call.name === 'freeze') this.patchNote(t, { frozeMyself: true });
         t.view = await port.getSwap(t.ref);
         if (!t.view) {
           t.decision = { do: 'done', outcome: 'closed' };
@@ -531,6 +555,41 @@ export class Engine {
       if (t.joint && t.lockTxid && !swept && (s.state === SWAP_STATE.READY || (s.state === SWAP_STATE.NOTICED && report === undefined))) await this.verify(t, s.depth);
       return;
     }
+  }
+
+  private readonly watchRuns = new Map<string, number>();
+  /**
+   * Hand a swap that names a watcher to that watcher, in the background, until its signed
+   * acknowledgement verifies. Until then the swap is not watched and nothing about the tab's
+   * own duties changes.
+   */
+  private registerWatcher(t: Tracked, keys: DerivedKeys): void {
+    const s = t.view;
+    const w = t.note.watcher;
+    if (!s || !w || !this.deps.registerWatcher || s.direction !== 0 || s.watcherAddress === null) return;
+    if (s.state !== SWAP_STATE.PENDING && s.state !== SWAP_STATE.ACTIVE && s.state !== SWAP_STATE.NOTICED) return;
+    if (acknowledged(w, s)) {
+      t.watch = { phase: 'acknowledged' };
+      return;
+    }
+    const last = this.watchRuns.get(t.ref);
+    if (last !== undefined && (last === -1 || this.nowMs() - last < 5000)) return;
+    this.watchRuns.set(t.ref, -1);
+    if (t.watch.phase !== 'failed') t.watch = { phase: 'registering' };
+    void this.deps.registerWatcher(w, s, keys).then(
+      (ack) => {
+        this.watchRuns.set(t.ref, this.nowMs());
+        this.patchNote(t, { watcher: { url: w.url, solana: w.solana, address: w.address, ack } });
+        t.watch = acknowledged(t.note.watcher, s) ? { phase: 'acknowledged' } : { phase: 'failed', error: 'The watcher answered, but not with an acknowledgement signed by the key this swap names.' };
+        this.emit();
+        void this.poll();
+      },
+      (e: unknown) => {
+        this.watchRuns.set(t.ref, this.nowMs());
+        t.watch = { phase: 'failed', error: message(e) };
+        this.emit();
+      },
+    );
   }
 
   private readonly proofs = new Map<string, boolean>();
@@ -679,11 +738,12 @@ export class Engine {
    * "Export keys" (SPEC 8.4): address, private view key, private spend key, lock txid and height,
    * for any swap whose two spend shares are known. Restores in standard Monero wallet software.
    */
-  exportKeys(ref: string): ReturnType<typeof exportJointWallet> {
+  exportKeys(ref: string): ReturnType<typeof exportJointWallet> & { swap: string; payout?: string } {
     const t = this.tracked.get(ref);
     if (!t?.view || !t.keys || !t.joint || !t.lockTxid) throw new Error('The keys of this swap are not complete yet.');
     const spendKey = jointSpendKey(t.view, t.keys.spend, 'taker');
-    return exportJointWallet(t.joint, spendKey, unhex(t.lockTxid), t.lock?.blockHeight ?? 0);
+    // The swap it belongs to and, when selling, the payout address bound at take travel with the keys.
+    return { ...exportJointWallet(t.joint, spendKey, unhex(t.lockTxid), t.lock?.blockHeight ?? 0), swap: t.ref, ...(t.view.payoutAddress ? { payout: t.view.payoutAddress } : {}) };
   }
 
   /** Whether both spend shares of a swap are known (the other one was revealed on-chain). */
@@ -700,6 +760,9 @@ export class Engine {
     t.atRisk = isAtRisk(t);
     t.refundDeadline = s && t.atRisk ? (s.state === SWAP_STATE.ACTIVE ? deadlinesOf(s.chain, s).tNote : takerRefundDeadline(s)) : null;
     t.lost = lossOf(t, now);
+    t.watched = !!s && (s.state === SWAP_STATE.PENDING || s.state === SWAP_STATE.ACTIVE || s.state === SWAP_STATE.NOTICED) && acknowledged(t.note.watcher, s);
+    if (t.watched) t.watch = { phase: 'acknowledged' };
+    t.freezeRefusal = s && t.keys && s.direction === 0 ? freezeRefusal(s, now, 0) : null;
     // What the flow would answer to "get me out" now, so the page never offers an action that will be refused.
     t.exitRefusal = s && t.keys ? (takerStep({ swap: s, now, cancel: true, noticeOpens: t.noticeOpens ?? true, lock: t.lock ? lockReport(t.lock) : { state: 'not-found', ok: false, confirmations: 0 }, ...(t.note.paidTxid ? { paid: true } : {}), ...(swept ? { swept: true } : {}) }).refused ?? null) : null;
   }
@@ -720,6 +783,8 @@ export function finalityEta(head: SwapView, fin: { latestTime: bigint; finalized
 
 const BUSY_TEXT: Partial<Record<string, string>> = {
   set_ready: 'Confirming the lock (setting ready)',
+  freeze: 'Pausing the swap',
+  push_owed: 'Delivering the parked proceeds',
   refund: 'Refunding',
   refund_unnoticed: 'Refunding',
   cancel_pending: 'Cancelling',

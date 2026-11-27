@@ -7,6 +7,8 @@ import { ASSET_LABEL, CHAIN_LABEL, formatAsset, formatDuration, formatTime, form
 import { marketOf } from '../lib/market.js';
 import { LEG_LABEL } from '../lib/orders.js';
 import { refusalText } from '../lib/refusal.js';
+import { isUsdc } from '../lib/market.js';
+import { comeBackBefore, watchedSafeText } from '../lib/watcher.js';
 import { downloadText } from '../lib/vault.js';
 import { href, useApp, useChainNow, useEngine, useVault } from '../ui/hooks.js';
 import { Copyable, Countdown, Empty, Field, Notice, Spinner } from '../ui/kit.js';
@@ -37,7 +39,7 @@ function Steps({ steps }: { steps: Step[] }) {
   );
 }
 
-const rank = (state: number): number => ({ [SWAP_STATE.PENDING]: 1, [SWAP_STATE.ACTIVE]: 2, [SWAP_STATE.NOTICED]: 3, [SWAP_STATE.READY]: 4 })[state] ?? 5;
+const rank = (state: number): number => ({ [SWAP_STATE.PENDING]: 1, [SWAP_STATE.ACTIVE]: 2, [SWAP_STATE.NOTICED]: 3, [SWAP_STATE.FROZEN]: 3, [SWAP_STATE.READY]: 4 })[state] ?? 5;
 const st = (reached: boolean, current: boolean): StepState => (reached ? 'done' : current ? 'current' : 'todo');
 
 const REASON_TEXT: Readonly<Record<string, string>> = {
@@ -270,6 +272,71 @@ export function ProofStatusNotice({ t, now }: { t: Tracked; now: bigint | null }
   return null;
 }
 
+/** The watcher named at lock: not yet acknowledged, acknowledged (with what that means), or failing. */
+export function WatcherStatus({ t, now, market }: { t: Tracked; now: bigint | null; market: Market }) {
+  const s = t.view!;
+  const w = t.note.watcher!;
+  if (s.watcherAddress === null) return null;
+  if (t.watch.phase === 'acknowledged')
+    return (
+      <Notice kind="safe" title="Watcher acknowledged" role="status" id="watcher-ack">
+        {watchedSafeText(formatTime(comeBackBefore(s), now ?? undefined), `${formatAsset(s.deposit, market)} ${ASSET_LABEL[market]}`)} Its acknowledgement is signed by the key this swap names (<Copyable value={w.address} label="watcher key" />) and was checked in this page.
+      </Notice>
+    );
+  return (
+    <Notice kind="warn" title={t.watch.phase === 'failed' ? 'The watcher has not acknowledged this swap' : 'Waiting for the watcher to acknowledge this swap'} role="status" id="watcher-pending">
+      {t.watch.phase === 'failed' ? `${t.watch.error ?? 'It did not answer'}. The page keeps trying. ` : ''}Until a signed acknowledgement arrives this swap is not watched: keep this tab open exactly as without a watcher, or you can lose your funds.
+    </Notice>
+  );
+}
+
+/** A paused swap (state FROZEN, SPEC 11.6): who paused it and when, until when, and the two ways forward. */
+export function FrozenPanel({ t, now, market, onRefund, asked }: { t: Tracked; now: bigint | null; market: Market; onRefund: () => void; asked: boolean }) {
+  const s = t.view!;
+  const d = deadlinesOf(s.chain, s);
+  const asset = ASSET_LABEL[market];
+  const tFf = d.tFf!;
+  const lastRefund = tFf - d.margin;
+  const good = t.noticeOpens === true && t.lock?.ok === true;
+  const bad = t.noticeOpens === false || t.lock?.state === 'invalid';
+  return (
+    <section className="panel grid gap-4 p-4" aria-labelledby="frozen-h" data-testid="frozen">
+      <div className="grid gap-1">
+        <h2 id="frozen-h">This swap is paused</h2>
+        <p className="muted">
+          Paused by {t.note.frozeMyself ? 'this tab, at your request' : s.watcherAddress ? <>the watcher you named (<Copyable value={s.watcherAddress} label="watcher key" />)</> : 'its watcher'} at {formatTime(s.tFreeze, now ?? undefined)}. A pause moves no funds. It holds back the
+          maker's right to take your payment without your confirmation.
+        </p>
+      </div>
+      <div className="grid gap-1">
+        <span className="label">The maker can take your payment again in</span>
+        <Countdown to={tFf} now={now} className="figure figure-lg" />
+        <span className="muted">
+          At {formatTime(tFf, now ?? undefined)}. To be safe a refund must be sent by {formatTime(lastRefund, now ?? undefined)}; after that, if the lock was false, your payment is lost.
+        </span>
+      </div>
+      <div className="grid gap-3">
+        <h3>Two ways forward</h3>
+        <p className="prose-w">
+          <strong>Confirm the lock.</strong> If the pause was wrong and the maker's XMR lock is in fact good, the tab sets ready and the swap completes normally; your deposit is not at stake. The tab checks the lock itself on your nodes and does this without asking.{' '}
+          {good ? 'The lock checks out: the tab is setting ready.' : bad ? 'The lock does not check out, so this will not happen.' : 'The lock is not confirmed yet; the tab keeps checking.'}
+        </p>
+        <p className="prose-w">
+          <strong>Refund.</strong> You get {formatAsset(s.amount - s.deposit, market)} {asset} back now. The deposit of {formatAsset(s.deposit, market)} {asset} is held for 30 minutes and, after a pause, the maker may always withhold it for up to 60 days, when half of it is lost.{' '}
+          {bad ? 'The lock does not check out, so the tab refunds by itself.' : t.decision?.do === 'wait' && t.decision.until !== null ? `If the lock is still not confirmed at ${formatTime(t.decision.until, now ?? undefined)}, the tab refunds by itself.` : ''}
+        </p>
+        {asked ? null : t.exitRefusal ? (
+          <p className="prose-w font-semibold">{refusalText(t.exitRefusal, true).text}</p>
+        ) : (
+          <button type="button" className="btn btn-danger justify-self-start" onClick={onRefund}>
+            Refund now
+          </button>
+        )}
+      </div>
+    </section>
+  );
+}
+
 /** A request that cannot be carried out: why, and what happens instead. */
 export function RefusedNotice({ reason, buying }: { reason: Refusal; buying: boolean }) {
   const r = refusalText(reason, buying);
@@ -339,7 +406,7 @@ export function SwapPage({ swapRef }: { swapRef: string }) {
           </>
         ) : undefined,
     });
-    steps.push({ title: `XMR lock reaches ${s?.depth ?? ''} confirmation${s?.depth === 1 ? '' : 's'} on your nodes`, state: st(r > 3, state === SWAP_STATE.NOTICED), detail: state === SWAP_STATE.NOTICED && !refunded ? <LockProgress t={t} /> : undefined });
+    steps.push({ title: `XMR lock reaches ${s?.depth ?? ''} confirmation${s?.depth === 1 ? '' : 's'} on your nodes`, state: st(r > 3, state === SWAP_STATE.NOTICED || state === SWAP_STATE.FROZEN), detail: (state === SWAP_STATE.NOTICED || state === SWAP_STATE.FROZEN) && !refunded ? <LockProgress t={t} /> : undefined });
     steps.push({
       title: 'This tab confirms the lock (ready)',
       state: st(r > 3 && !refunded, waitOn === 'ready-minimum'),
@@ -368,13 +435,18 @@ export function SwapPage({ swapRef }: { swapRef: string }) {
   }
 
   const heading = buying ? `Buying ${formatXmrAmount(xmr)} XMR for ${formatAsset(amount, market)} ${asset}` : `Selling ${formatXmrAmount(xmr)} XMR for ${formatAsset(amount, market)} ${asset}`;
-  const pill = t.atRisk ? <span className="pill pill-risk">At risk: keep this tab open</span> : !s && head ? <span className="pill pill-warn">Waiting for Ethereum finality</span> : !s ? <span className="pill">{refunded ? 'Refunded and closed' : 'Complete and closed'}</span> : state === SWAP_STATE.READY ? <span className="pill pill-safe">Ready</span> : <span className="pill">{LEG_LABEL[t.leg]}</span>;
+  const pill = t.atRisk && t.watched ? <span className="pill pill-safe">Watched: may be closed, with conditions</span> : t.atRisk ? <span className="pill pill-risk">At risk: keep this tab open</span> : !s && head ? <span className="pill pill-warn">Waiting for Ethereum finality</span> : !s ? <span className="pill">{refunded ? 'Refunded and closed' : 'Complete and closed'}</span> : state === SWAP_STATE.READY ? <span className="pill pill-safe">Ready</span> : <span className="pill">{LEG_LABEL[t.leg]}</span>;
   // What the user asked for, and what the flow answered. A confirmed request always has a visible result.
   const asked = !!t.note.cancel;
   const refusal = asked ? (t.decision?.refused ?? null) : null;
+  // A pause requested from this tab: carried out (the swap becomes FROZEN) or refused with its reason.
+  const pauseAsked = !!t.note.freeze && !asked && state !== SWAP_STATE.FROZEN && !t.note.wasFrozen;
+  const pauseRefusal = pauseAsked ? (t.decision?.refused ?? null) : null;
+  const canPause = buying && s !== null && t.keys !== null && state === SWAP_STATE.NOTICED && t.freezeRefusal === null && !t.note.freeze && !asked;
   const backingOut = !buying && state === SWAP_STATE.ACTIVE;
-  const exitStates = buying ? [SWAP_STATE.PENDING, SWAP_STATE.ACTIVE, SWAP_STATE.NOTICED, SWAP_STATE.READY, SWAP_STATE.ABORTED_FREE, SWAP_STATE.ABORTED_HOLD] : [SWAP_STATE.PENDING, SWAP_STATE.ACTIVE, SWAP_STATE.NOTICED, SWAP_STATE.READY];
-  const canCancel = s !== null && t.keys !== null && (exitStates as number[]).includes(state) && !(backingOut && t.note.paidTxid);
+  const exitStates = buying ? [SWAP_STATE.PENDING, SWAP_STATE.ACTIVE, SWAP_STATE.NOTICED, SWAP_STATE.FROZEN, SWAP_STATE.READY, SWAP_STATE.ABORTED_FREE, SWAP_STATE.ABORTED_HOLD] : [SWAP_STATE.PENDING, SWAP_STATE.ACTIVE, SWAP_STATE.NOTICED, SWAP_STATE.READY];
+  // A paused swap has its own panel with the refund in it.
+  const canCancel = s !== null && t.keys !== null && state !== SWAP_STATE.FROZEN && (exitStates as number[]).includes(state) && !(backingOut && t.note.paidTxid);
   // Once the request would be refused the control is disabled and says why, rather than offering it.
   // Backing out of a funded sell before paying is the exception: it is a decision not to pay, and it hides the address.
   const blocked = t.exitRefusal !== null && !(backingOut && t.exitRefusal === 'cannot-exit-after-funding') ? t.exitRefusal : null;
@@ -395,6 +467,11 @@ export function SwapPage({ swapRef }: { swapRef: string }) {
               with maker <a href={href('maker', s.maker)}>{s.maker.slice(0, 8)}…</a>
             </>
           ) : null}
+          {!buying && shown?.payoutAddress ? (
+            <span className="block" data-testid="bound-payout">
+              {asset} is paid to {shown.payoutAddress === shown.taker ? 'the wallet that took the offer' : <Copyable value={shown.payoutAddress} label="payout address" />}; this was fixed when the offer was taken and cannot change.
+            </span>
+          ) : null}
         </p>
       </header>
 
@@ -412,10 +489,23 @@ export function SwapPage({ swapRef }: { swapRef: string }) {
         </Notice>
       ) : null}
 
+      {buying && s && t.note.watcher && (state === SWAP_STATE.PENDING || state === SWAP_STATE.ACTIVE || state === SWAP_STATE.NOTICED) ? <WatcherStatus t={t} now={now} market={market} /> : null}
+      {buying && s && state === SWAP_STATE.FROZEN && d ? <FrozenPanel t={t} now={now} market={market} onRefund={() => app.engine.annotate(t.ref, { cancel: true })} asked={asked} /> : null}
+      {buying && s && state === SWAP_STATE.READY && t.note.wasFrozen ? (
+        <Notice kind="safe" title="The pause was lifted: the lock is good" role="status">
+          The swap had been paused. This tab checked the Monero lock itself on your nodes, found it confirmed, and set ready, so the swap completes normally and your deposit is not at stake.
+        </Notice>
+      ) : null}
+      {pauseAsked ? (
+        <section aria-label="Your pause request" data-testid="pause-outcome" data-refused={pauseRefusal ?? ''}>
+          {pauseRefusal ? <RefusedNotice reason={pauseRefusal} buying /> : <Notice kind="info" title="Your request is being carried out: pausing the swap" role="status">The tab is sending the pause with the session key. It moves no funds.</Notice>}
+        </section>
+      ) : null}
+
       {t.atRisk && t.refundDeadline !== null ? (
         <section className="grid gap-1" aria-label="Refund deadline">
-          <span className="label">{state === SWAP_STATE.ACTIVE ? 'Maker must announce its lock within' : 'This tab can still refund for'}</span>
-          <Countdown to={t.refundDeadline} now={now} className="figure figure-lg text-danger-text" />
+          <span className="label">{state === SWAP_STATE.ACTIVE ? 'Maker must announce its lock within' : state === SWAP_STATE.FROZEN ? 'Paused. This tab can still refund for' : 'This tab can still refund for'}</span>
+          <Countdown to={t.refundDeadline} now={now} className={t.watched ? 'figure figure-lg' : 'figure figure-lg text-danger-text'} />
           <span className="muted">
             Until {formatTime(t.refundDeadline, now ?? undefined)} on the chain's clock.
             {state === SWAP_STATE.NOTICED && d ? ` If the lock is not confirmed by ${formatTime(d.tCut!, now ?? undefined)} the tab refunds by itself.` : ''}
@@ -439,22 +529,34 @@ export function SwapPage({ swapRef }: { swapRef: string }) {
         </Notice>
       ) : null}
       {t.needsWallet && t.decision?.do === 'call' ? (
-        <Notice kind="info" title={t.decision.call.name === 'release_deposit' || t.decision.call.name === 'split_deposit' ? 'Your deposit can be collected now' : 'Your wallet is needed for the next step'}>
-          <p>
-            {t.decision.call.name === 'release_deposit' || t.decision.call.name === 'split_deposit'
-              ? 'Returning it takes one small transaction. The session key\'s budget went back to you with the refund, so your wallet pays the fee. Anyone may send it, and it always pays your address; there is no deadline.'
-              : 'This step cannot be signed by the session key. Connect the wallet that opened this swap.'}
-          </p>
-          <button type="button" className="btn mt-3" onClick={() => void app.engine.signWithWallet(t.ref)}>
-            Sign with my wallet
-          </button>
-        </Notice>
+        t.decision.row === 'deliver_owed' ? (
+          <Notice kind="warn" title="The proceeds are parked for the payout address" id="deliver">
+            <p>
+              The claim went through, but the {asset} could not be paid into {s?.payoutAddress ? <Copyable value={s.payoutAddress} label="payout address" /> : 'the payout address'} (it had no account for it, or refused the payment). Nothing is lost: the amount is held by
+              the program for that address and for no other, and anyone can deliver it there. Your wallet pays the small fee{isUsdc(market) ? ' and the rent of the new account' : ''}; it cannot redirect the money.
+            </p>
+            <button type="button" className="btn btn-primary mt-3" onClick={() => void app.engine.signWithWallet(t.ref)}>
+              Deliver to the payout address
+            </button>
+          </Notice>
+        ) : (
+          <Notice kind="info" title={t.decision.call.name === 'release_deposit' || t.decision.call.name === 'split_deposit' ? 'Your deposit can be collected now' : 'Your wallet is needed for the next step'}>
+            <p>
+              {t.decision.call.name === 'release_deposit' || t.decision.call.name === 'split_deposit'
+                ? 'Returning it takes one small transaction. The session key\'s budget went back to you with the refund, so your wallet pays the fee. Anyone may send it, and it always pays your address; there is no deadline.'
+                : 'This step cannot be signed by the session key. Connect the wallet that opened this swap.'}
+            </p>
+            <button type="button" className="btn mt-3" onClick={() => void app.engine.signWithWallet(t.ref)}>
+              Sign with my wallet
+            </button>
+          </Notice>
+        )
       ) : null}
 
       {refunded ? (
         <section className="grid gap-3" aria-label="Refund">
           <Notice kind="info" title={t.note.autoRefunded ? 'This tab refunded by itself' : s && state === SWAP_STATE.DONE && !s.deposit ? 'Refunded' : 'Refunded'} role="status">
-            {t.note.autoRefunded ? 'The Monero lock had not reached the required depth by the safety cutoff, so the tab refunded rather than risk your payment. ' : ''}
+            {t.note.autoRefunded ? (t.note.wasFrozen ? 'The swap was paused, and when this tab checked the lock itself it did not check out, so the tab refunded inside the pause rather than risk your payment. ' : 'The Monero lock had not reached the required depth by the safety cutoff, so the tab refunded rather than risk your payment. ') : ''}
             {s && (state === SWAP_STATE.HOLD || state === SWAP_STATE.WITHHELD) ? `${formatAsset(s.amount - s.deposit, market)} ${asset} is back in your wallet.` : `Your ${buying ? `${formatAsset(amount, market)} ${asset}` : 'deposit'} is back in your wallet.`}
           </Notice>
           {s && state === SWAP_STATE.HOLD && d ? (
@@ -502,6 +604,19 @@ export function SwapPage({ swapRef }: { swapRef: string }) {
         </section>
       ) : canCancel ? (
         <section className="grid gap-3" aria-label="Cancel">
+          {canPause && d ? (
+            <div className="grid gap-2" data-testid="pause-control">
+              <button type="button" className="btn justify-self-start" onClick={() => app.engine.annotate(t.ref, { freeze: true })}>
+                Pause this swap
+              </button>
+              <p className="muted prose-w text-sm">
+                One pause, of up to {formatDuration(s!.wZ)}: the maker cannot take your payment without your confirmation until it ends. It moves no funds and reveals nothing. Use it if you must leave before the lock is confirmed. A refund after a pause always leaves your
+                deposit withholdable, and a tab that stays open does not need it.
+              </p>
+            </div>
+          ) : buying && state === SWAP_STATE.NOTICED && t.freezeRefusal && t.freezeRefusal !== 'freeze-not-available' ? (
+            <p className="muted prose-w text-sm">{refusalText(t.freezeRefusal, true).text}</p>
+          ) : null}
           {blocked ? (
             <div className="grid gap-2">
               <button type="button" className="btn justify-self-start" disabled aria-describedby="exit-why">
@@ -543,6 +658,14 @@ export function SwapPage({ swapRef }: { swapRef: string }) {
       <details className="panel p-4">
         <summary className="cursor-pointer font-semibold">Mechanics</summary>
         <dl className="kv mt-4">
+          {s && s.wZ > 0 ? (
+            <>
+              <dt>Pause window</dt>
+              <dd>
+                {formatDuration(s.wZ)}; watcher: {s.watcherAddress ? <Copyable value={s.watcherAddress} label="watcher key" /> : 'none named'}
+              </dd>
+            </>
+          ) : null}
           <dt>State on-chain</dt>
           <dd>{s ? `${Object.entries(SWAP_STATE).find(([, v]) => v === state)?.[0] ?? state}` : 'Account closed'}</dd>
           {t.joint ? (

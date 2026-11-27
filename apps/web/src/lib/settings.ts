@@ -34,6 +34,17 @@ export interface Settings {
   pollMs: number;
   /** Override of the sweep fee cap in piconero (regtest fees are far above mainnet's). Empty = the protocol cap. */
   sweepMaxFee: string;
+  /**
+   * `SITE` of the wallet-key message (SPEC 11.3): one fixed name per release, set by the release's
+   * config. Empty = the owner has not chosen it yet, and the wallet-key mode is not offered.
+   */
+  walletKeySite: string;
+  /** The watcher this site runs, when the bundle configures one. Empty = none. */
+  hostedWatcherUrl: string;
+  /** A watcher the user runs themselves. Empty = none. */
+  watcherUrl: string;
+  /** The key the user's own watcher is expected to answer with (base58). Empty = accept what it reports, and show it. */
+  watcherKey: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -55,6 +66,10 @@ export const DEFAULT_SETTINGS: Settings = {
   theme: 'system',
   pollMs: 4000,
   sweepMaxFee: '',
+  walletKeySite: '',
+  hostedWatcherUrl: '',
+  watcherUrl: '',
+  watcherKey: '',
 };
 
 const KEY = 'xmrswap.settings.v1';
@@ -101,6 +116,7 @@ export function settingsProblems(s: Settings, pageIsHttps = typeof location !== 
   }
   if (new Set(nodes).size !== nodes.length) out.push({ field: 'moneroNodes', message: 'The same node is listed twice. Two entries for one node are one source, not two.' });
   if ((s.mode === 'hosted' || s.mode === 'self-hosted') && s.relayUrl && !isUrl(s.relayUrl) && !s.relayUrl.startsWith('/')) out.push({ field: 'relayUrl', message: 'The relay URL must be an http(s) URL or a path on this site.' });
+  if (s.watcherUrl && !isUrl(s.watcherUrl)) out.push({ field: 'watcherUrl', message: 'The watcher URL must start with http:// or https://.' });
   if (!s.programId) out.push({ field: 'programId', message: 'The program id is missing.' });
   return out;
 }

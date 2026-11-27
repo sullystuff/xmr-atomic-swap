@@ -14,6 +14,7 @@ import {
   type FoundDeposit,
   type MakerProfile,
   NO_SWAP,
+  machine,
   type SwapView,
   type VerifyLockResult,
   apply,
@@ -53,6 +54,11 @@ export interface LockOpts {
   nonce?: Uint8Array;
   makerPda?: string;
   chain?: ChainName;
+  /** Direction B: the payout address (default: the taker). */
+  payout?: string;
+  /** Direction A: the watcher named at lock. Needs `wZ` > 0. */
+  watcher?: string;
+  wZ?: number;
 }
 
 export class ModelChain implements ChainPort {
@@ -66,6 +72,8 @@ export class ModelChain implements ChainPort {
   down = false;
   /** Make `exec` fail with this error once. */
   failNext: Error | null = null;
+  /** The payout address of direction-B swaps cannot receive (no token account): a claim parks the proceeds. */
+  payoutBlocked = false;
   /** Make every `exec` fail until cleared. */
   failAlways: Error | null = null;
   private counter = 0;
@@ -127,7 +135,7 @@ export class ModelChain implements ChainPort {
     const amount = direction === 0 ? (xmr * price + XMR - 1n) / XMR : (xmr * price) / XMR;
     const nonce = o.nonce ?? new Uint8Array(16).fill(++this.counter);
     const keys = takerSwapKeys(o.seed ?? TAKER_SEED, this.chain, nonce);
-    const args = { xmr, offerMode: o.mode ?? 0, approval: false, amount, ...(this.chain === 'ethereum' ? { wA: o.wA ?? 120, wN: 1800, dC: o.dC ?? 10_800, wC: 5400 } : { wA: o.wA ?? 60, wN: 600, dC: o.dC ?? 3600, wC: 1800 }), wF: 604_800, depth: o.depth ?? 2, depBps: o.depBps ?? 100 };
+    const args = { xmr, offerMode: o.mode ?? 0, approval: false, amount, ...(this.chain === 'ethereum' ? { wA: o.wA ?? 120, wN: 1800, dC: o.dC ?? 10_800, wC: 5400 } : { wA: o.wA ?? 60, wN: 600, dC: o.dC ?? 3600, wC: 1800 }), wF: 604_800, depth: o.depth ?? 2, depBps: o.depBps ?? 100, wZ: o.wZ ?? 0, ...(direction === 1 ? { payout: o.payout && o.payout !== TAKER ? ('other' as const) : ('taker' as const) } : {}), ...(o.watcher ? { watcher: true } : {}) };
     const fx = apply(this.chain, NO_SWAP, { name: direction === 0 ? 'lock' : 'take', args }, 'taker', this.now_);
     const swapRef = new Uint8Array(32).fill(200 + this.counter);
     const share = fx.swap.state === SWAP_STATE.ACTIVE ? this.newShare() : null;
@@ -154,6 +162,8 @@ export class ModelChain implements ChainPort {
       evidenceTxid: zero32(),
       evidenceView: zero32(),
       revealed: zero32(),
+      payoutAddress: direction === 1 ? (o.payout ?? TAKER) : null,
+      watcherAddress: o.watcher ?? null,
     };
     const ref = swapRefOf(view);
     this.swaps.set(ref, view);
@@ -174,7 +184,7 @@ export class ModelChain implements ChainPort {
   private transition(ref: string, call: Parameters<typeof apply>[2], caller: Parameters<typeof apply>[3], patch: Partial<SwapView> = {}): void {
     const s = this.swaps.get(ref);
     if (!s) throw new Error('BadState: no such swap');
-    const fx = apply(this.chain, s, call, caller, this.now_);
+    const fx = apply(this.chain, s, call, caller, this.now_, { ...machine.ENV_OK, payoutCanReceive: !this.payoutBlocked });
     if (fx.closed && this.chain === 'solana') this.swaps.delete(ref);
     else this.swaps.set(ref, { ...s, ...fx.swap, ...patch });
   }
@@ -202,6 +212,8 @@ export class ModelChain implements ChainPort {
     claim: (ref: string) => this.transition(ref, { name: 'claim' }, 'operator', { revealed: this.shareOf(ref).spend }),
     refund: (ref: string) => this.transition(ref, { name: 'refund' }, 'operator', { revealed: this.shareOf(ref).spend }),
     abort: (ref: string) => this.transition(ref, { name: 'abort' }, 'operator'),
+    /** The watcher named in the swap pauses it (it can do nothing else). */
+    watcherFreeze: (ref: string) => this.transition(ref, { name: 'freeze' }, 'watcher'),
     withhold: (ref: string) => this.transition(ref, { name: 'withhold', evidence: 'opens' }, 'operator'),
   };
 
@@ -363,6 +375,7 @@ export function offer(maker: string, o: Partial<Offer> & { price?: bigint } = {}
     dC: 3600,
     wC: 1800,
     wF: 604_800,
+    wZ: 0,
     termsHash: zero32(),
     poolFilled: 0xff,
     poolUsed: 0,

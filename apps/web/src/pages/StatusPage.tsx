@@ -1,10 +1,116 @@
 /** "Checking it works": what the page can reach, whether the Monero nodes agree, and whether the contracts can still be upgraded. */
+import { PROGRAM_HASH, PROGRAM_ID } from '@xmrswap/protocol';
 import { useEffect, useState } from 'react';
 import { type Check, runStatus } from '../lib/status.js';
 import { href, useApp, useEngine, useGuard, useObs } from '../ui/hooks.js';
 import { Icon, Notice, SkeletonRows } from '../ui/kit.js';
 
 const STATE_TEXT = { ok: 'OK', warn: 'Attention', fail: 'Problem', off: 'Off' } as const;
+
+/**
+ * Which build this is (SPEC 11.5). Two different things are kept apart: what the serving bundle
+ * says about its own files (`/release.json`: a claim, with the way to check it), and what this
+ * page checked itself (the deployed program's hash against the build it expects).
+ */
+export function ReleasePanel() {
+  const app = useApp();
+  const settings = useObs(app.settings);
+  const served = useObs(app.release);
+  const build = useObs(app.programBuild);
+  const r = served.record?.release ?? null;
+  const expected = PROGRAM_HASH;
+  return (
+    <section className="grid gap-4" aria-labelledby="rel-h" data-testid="release">
+      <div className="grid gap-1">
+        <h2 id="rel-h">This build</h2>
+        <p className="muted prose-w">What the server says about the files it sent you, next to what this page expects and what it could check itself. A server describing itself proves nothing; the commands below are how you check.</p>
+      </div>
+      {!served.loaded ? (
+        <SkeletonRows rows={2} />
+      ) : served.record === null ? (
+        <Notice kind="info" title="No release record" id="release-none">
+          The server that sent this page provides no <code>release.json</code>, so it does not say which build these files are. Compare the files with a published release yourself before trusting them with funds.
+        </Notice>
+      ) : r === null ? (
+        <Notice kind="warn" title="These files match no recorded release" id="release-unrecorded">
+          The server reports a tree hash of <code className="break-all">{served.record.ui.tree_hash}</code> for the files it serves, and has no release record with that hash. They may be a local or modified build.
+        </Notice>
+      ) : (
+        <>
+          {r.status === 'development-snapshot' ? (
+            <Notice kind="warn" title="Development snapshot" id="release-dev">
+              This is a development snapshot, not a release: it was built from an in-progress commit, nothing is deployed for it, and its hashes are for checking the build only.{r.program_hash_source === 'local' ? ' Its program hash comes from a local build, not from the reproducible Docker build.' : ''}
+            </Notice>
+          ) : null}
+          <dl className="kv kv-wide">
+            <dt>Version</dt>
+            <dd>
+              {r.version} <span className="pill">{r.status === 'release' ? 'release' : 'development snapshot'}</span>
+            </dd>
+            <dt>Commit</dt>
+            <dd>
+              <code className="break-all">{r.commit}</code>
+              {r.commit_time ? ` (${r.commit_time})` : ''}
+            </dd>
+            <dt>UI tree hash</dt>
+            <dd>
+              <code className="break-all">{served.record.ui.tree_hash}</code>
+              <span className="block text-sm muted">
+                As reported by the server for the {served.record.ui.files} files it serves. {r.web_tree_hash === served.record.ui.tree_hash ? 'It is the hash this release records.' : `The release records ${r.web_tree_hash}: they differ.`} Not checked by this page.
+              </span>
+            </dd>
+            <dt>Program id</dt>
+            <dd>
+              <code className="break-all">{r.program_id}</code>
+              <span className={`block text-sm ${r.program_id === settings.programId ? 'muted' : 'text-danger-text font-semibold'}`}>
+                {r.program_id === settings.programId ? 'The same id this page is set to use.' : `This page is set to use ${settings.programId}: they differ. Do not swap until you know why.`}
+                {settings.programId === PROGRAM_ID ? ' It is the id pinned in this code.' : ` The id pinned in this code is ${PROGRAM_ID}.`}
+              </span>
+            </dd>
+            <dt>Program executable hash (release)</dt>
+            <dd>
+              <code className="break-all">{r.program_executable_hash}</code>
+              <span className="block text-sm muted">From the {r.program_hash_source === 'docker' ? 'reproducible Docker build' : 'local build (not a reproducibility proof)'}.</span>
+            </dd>
+          </dl>
+        </>
+      )}
+      <dl className="kv kv-wide">
+        <dt>Hash this page expects</dt>
+        <dd>{expected ? <code className="break-all">{expected}</code> : 'None: no published build is pinned in this code yet.'}</dd>
+        <dt>Hash of the deployed program</dt>
+        <dd data-testid="program-build" data-status={build?.status ?? 'none'}>
+          {build === null ? (
+            'Not read: no Solana RPC is configured.'
+          ) : build.status === 'unread' ? (
+            <span className="text-danger-text font-semibold">Could not be read from the chain. The page cannot tell whether the deployed program is the published build.</span>
+          ) : (
+            <>
+              <code className="break-all">{build.hash}</code>
+              <span className={`block text-sm ${build.status === 'mismatch' ? 'text-danger-text font-semibold' : 'muted'}`}>
+                {build.status === 'match'
+                  ? 'Computed by this page from the chain: it matches the published build.'
+                  : build.status === 'mismatch'
+                    ? 'Computed by this page from the chain: it is NOT the build this page expects. The page and the chain disagree, so locking is disabled.'
+                    : `Computed by this page from the chain. There is no published build to compare with${r ? `; the release record above lists ${r.program_executable_hash === build.hash ? 'the same hash' : 'a different hash, as expected when nothing is deployed from it'}` : ''}.`}
+              </span>
+            </>
+          )}
+        </dd>
+      </dl>
+      <details>
+        <summary className="cursor-pointer text-sm font-semibold">How to check this yourself</summary>
+        <div className="mt-2 grid gap-2 text-sm">
+          <p>The files of a release, against its record (run in a checkout of the repository):</p>
+          <pre className="panel overflow-x-auto p-3"><code>pnpm --filter @xmrswap/deploy run verify {'<release directory>'}</code></pre>
+          <p>The deployed program, against the source at the release's commit:</p>
+          <pre className="panel overflow-x-auto p-3"><code>{`solana-verify get-program-hash ${settings.programId}
+solana-verify verify-from-repo --program-id ${settings.programId} <repository URL> --commit-hash ${r?.commit ?? '<commit>'} --library-name xmr_swap --mount-path solana/program`}</code></pre>
+        </div>
+      </details>
+    </section>
+  );
+}
 
 export function StatusPage() {
   const app = useApp();
@@ -62,6 +168,8 @@ export function StatusPage() {
           </ul>
         </>
       )}
+
+      <ReleasePanel />
 
       <section className="grid gap-3" aria-labelledby="this-h">
         <h2 id="this-h">This browser</h2>

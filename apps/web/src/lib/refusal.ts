@@ -49,7 +49,13 @@ export function refusalText(reason: Refusal, buying: boolean): RefusalText {
       return { title: 'The 30-minute hold is over', text: 'A deposit can only be withheld during the 30 minutes after a refund. That time has passed, so the deposit returns to you: anyone can send the transaction, and the tab offers it.', control: 'Hold ended' };
     case 'no-deposit-held':
       return { title: 'No deposit is being held', text: 'There is no deposit in the hold or withheld for this swap, so there is nothing to collect or release. Whatever was owed to you has already been paid.', control: 'Nothing to collect' };
+    case 'freeze-not-available':
+      return { title: 'This swap cannot be paused', text: 'A pause (freeze) is only possible on a swap that named a watcher when it was locked, against an offer that allows one. This swap did not, so nothing changes: the tab keeps checking the lock and refunds by itself at the cutoff if it does not check out.', control: 'Pause not available' };
+    case 'freeze-window-closed':
+      return { title: 'It is too late to pause this swap', text: 'A pause is only accepted after the maker announced its lock and before its claim opens. That time has passed or has not come yet. The tab carries on with what is still possible: confirming a good lock, or refunding while the refund window is open.', control: 'Pause window closed' };
+    case 'already-frozen':
+      return { title: 'This swap is already paused', text: 'A swap can be paused once. It already is, and the pause runs until the time shown above: refund before then, or let the tab confirm the lock if it turns out to be good.', control: 'Already paused' };
   }
 }
 
-export const REFUSALS: readonly Refusal[] = ['ready-already-set', 'refund-window-closed', 'abort-window-closed', 'already-settled', 'cannot-exit-after-funding', 'reject-not-available', 'hold-ended', 'no-deposit-held'];
+export const REFUSALS: readonly Refusal[] = ['ready-already-set', 'refund-window-closed', 'abort-window-closed', 'already-settled', 'cannot-exit-after-funding', 'reject-not-available', 'hold-ended', 'no-deposit-held', 'freeze-not-available', 'freeze-window-closed', 'already-frozen'];

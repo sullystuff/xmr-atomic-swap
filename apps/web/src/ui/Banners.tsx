@@ -3,6 +3,7 @@ import { CLOCK_SKEW_WARN_SECS } from '@xmrswap/protocol';
 import { formatAsset, formatClock, formatTime, ASSET_LABEL, formatDuration } from '../lib/format.js';
 import { marketOf } from '../lib/market.js';
 import { chainNow, secondsLeft } from '../lib/safety.js';
+import { watchedSafeText } from '../lib/watcher.js';
 import { href, useEngine, useGuard, useSafety, useTick, useVault } from './hooks.js';
 import { Icon, Notice } from './kit.js';
 
@@ -11,13 +12,15 @@ export function RiskBanner() {
   const safety = useSafety();
   const guard = useGuard();
   const now = useTick();
-  if (safety.atRisk.length === 0) return null;
+  // Legs a watcher has acknowledged no longer hold the tab (SPEC 11.6); the banner is about the others.
+  const risky = safety.uncovered;
+  if (risky.length === 0) return null;
   const left = secondsLeft(engine, safety, now);
-  const total = safety.atRisk.reduce((sum, t) => sum + (t.view?.amount ?? 0n), 0n);
-  const first = safety.atRisk[0]!;
+  const total = risky.reduce((sum, t) => sum + (t.view?.amount ?? 0n), 0n);
+  const first = risky[0]!;
   const market = first.note.market ?? marketOf(first.chain, first.view!.asset);
-  const sameAsset = safety.atRisk.every((t) => (t.note.market ?? marketOf(t.chain, t.view!.asset)) === market);
-  const stake = sameAsset ? `${formatAsset(total, market)} ${ASSET_LABEL[market]}` : `${safety.atRisk.length} payments`;
+  const sameAsset = risky.every((t) => (t.note.market ?? marketOf(t.chain, t.view!.asset)) === market);
+  const stake = sameAsset ? `${formatAsset(total, market)} ${ASSET_LABEL[market]}` : `${risky.length} payments`;
   return (
     <div className="banner banner-risk" role="alert" aria-label="Funds at risk" data-testid="risk-banner">
       <div className="banner-inner">
@@ -26,8 +29,8 @@ export function RiskBanner() {
           {left === null ? '--:--' : formatClock(left)}
         </span>
         <span className="banner-text">
-          {stake} {sameAsset ? 'is' : 'are'} locked{safety.atRisk.length > 1 ? ` in ${safety.atRisk.length} swaps` : ''}, and only this tab can refund {safety.atRisk.length === 1 ? 'it' : 'them'}. If you close it, let the computer sleep or lose your connection before the refund deadline, you can lose your funds.{' '}
-          {safety.atRisk.length === 1 ? <a href={href('swap', first.ref)}>Show the swap</a> : <a href={href('activity')}>Show the swaps</a>}
+          {stake} {sameAsset ? 'is' : 'are'} locked{risky.length > 1 ? ` in ${risky.length} swaps` : ''}, and only this tab can refund {risky.length === 1 ? 'it' : 'them'}. If you close it, let the computer sleep or lose your connection before the refund deadline, you can lose your funds.{' '}
+          {risky.length === 1 ? <a href={href('swap', first.ref)}>Show the swap</a> : <a href={href('activity')}>Show the swaps</a>}
           <span className="banner-note">{guard.wakeLock === 'held' ? 'The screen is being kept on.' : 'This browser cannot keep the screen on: turn off sleep yourself.'}</span>
         </span>
       </div>
@@ -49,6 +52,32 @@ export function SafeBanner() {
         <span className="banner-text">
           Every leg is Ready, Claimed or Refunded and your recovery file is saved, so nothing can be lost by closing this tab now.
           {safety.comeBackBefore !== null ? ` If the maker does not complete, come back before ${formatTime(safety.comeBackBefore, now ?? undefined)} to refund.` : ''} Keep it open to collect your XMR as soon as it is yours.
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The qualified state of SPEC 11.6: a watcher has acknowledged every leg that is still at risk.
+ * It is not the plain green: it names what remains at risk and by when to be back.
+ */
+export function WatchedBanner() {
+  const engine = useEngine();
+  const safety = useSafety();
+  if (!safety.watchedSafe || safety.watchedComeBack === null) return null;
+  const first = safety.covered[0]!;
+  const now = chainNow(engine, first.chain);
+  const market = first.note.market ?? marketOf(first.chain, first.view!.asset);
+  const deposit = safety.covered.reduce((sum, t) => sum + (t.view?.deposit ?? 0n), 0n);
+  return (
+    <div className="banner banner-watched" role="status" aria-label="Safe to close, with a watcher" data-testid="watched-banner">
+      <div className="banner-inner">
+        <Icon name="safe" size={28} />
+        <span className="banner-title">Safe to close, with a watcher</span>
+        <span className="banner-text" data-testid="watched-text">
+          {watchedSafeText(formatTime(safety.watchedComeBack, now ?? undefined), `${formatAsset(deposit, market)} ${ASSET_LABEL[market]}`)}
+          <span className="banner-note">Keeping this tab open is still the safest: it checks the lock itself and needs no pause. {safety.covered.length === 1 ? <a href={href('swap', first.ref)}>Show the swap</a> : <a href={href('activity')}>Show the swaps</a>}</span>
         </span>
       </div>
     </div>

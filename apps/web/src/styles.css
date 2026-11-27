@@ -427,6 +427,16 @@
     background: var(--safe-bg);
     color: var(--safe-ink);
   }
+  /* Qualified: a watcher stands in for the tab. Deliberately not the plain green. */
+  .banner-watched {
+    background: var(--surface);
+    color: var(--ink);
+    border-bottom: 3px solid var(--safe-bg);
+  }
+  .banner-watched > .banner-inner > svg,
+  .banner-watched .banner-title {
+    color: var(--safe-text);
+  }
   .banner-inner {
     display: flex;
     flex-wrap: wrap;
@@ -509,6 +519,19 @@
     margin: 0;
     min-width: 0;
     overflow-wrap: anywhere;
+  }
+  /* Several definition lists on one page that must line up share a fixed label column. */
+  .kv-wide {
+    grid-template-columns: minmax(9rem, 17rem) 1fr;
+  }
+  @media (max-width: 40rem) {
+    .kv-wide {
+      grid-template-columns: 1fr;
+      gap: 0.125rem 0;
+    }
+    .kv-wide dd {
+      margin-bottom: 0.625rem;
+    }
   }
   .table {
     width: 100%;

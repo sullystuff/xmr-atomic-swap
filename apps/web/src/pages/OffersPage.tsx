@@ -2,6 +2,7 @@
 import type { Market } from '@xmrswap/protocol';
 import { useState } from 'react';
 import { ASSET_LABEL, MARKET_LABEL, bpsPercent, formatAsset, formatDuration, formatPercent, formatPrice, formatXmrAmount } from '../lib/format.js';
+import { NOT_OPEN_TITLE, capsLine, capsState, notOpenText } from '../lib/caps.js';
 import { type OfferRow, rankRows, referenceFor, vsReferenceBps } from '../lib/market.js';
 import { settingsProblems } from '../lib/settings.js';
 import { href, useApp, useObs } from '../ui/hooks.js';
@@ -79,6 +80,7 @@ function OfferItem({ row, refPrice, refSource }: { row: OfferRow; refPrice: bigi
             {row.startsPending && row.approvalWindow > 0 ? `, up to ${formatDuration(row.approvalWindow)}` : ''}
           </span>
           {row.chain === 'ethereum' ? <span className="pill">Ethereum</span> : null}
+          {row.freezeWindow > 0 ? <span className="pill">Pause window {formatDuration(row.freezeWindow)}</span> : null}
         </div>
       </div>
       <div className="grid gap-3">
@@ -135,6 +137,7 @@ export function OffersPage() {
   const rows = registry.snapshot ? rankRows(registry.snapshot.rows, { market, direction, mode }) : [];
   const ref = registry.snapshot ? referenceFor(market, registry.snapshot.rows.filter((r) => r.direction === direction), settings) : null;
   const refSource = ref?.source === 'settings' ? 'your reference' : 'the median offer';
+  const caps = registry.snapshot?.caps[market];
   const ethOff = (market === 'eth' || market === 'usdc_eth') && !settings.ethereumRpc;
 
   return (
@@ -181,6 +184,16 @@ export function OffersPage() {
             <Notice kind="warn" title="Monero nodes are not set up yet">
               {problems.find((p) => p.field === 'moneroNodes')!.message} You can browse offers, but locking stays disabled. <a href={href('settings')}>Open Settings</a>.
             </Notice>
+          ) : null}
+
+          {capsState(caps) === 'closed' ? (
+            <Notice kind="info" title={NOT_OPEN_TITLE} role="status" id="caps-closed">
+              {notOpenText(market)}
+            </Notice>
+          ) : capsLine(caps, market) ? (
+            <p className="text-sm muted" data-testid="caps-line">
+              {capsLine(caps, market)} These are limits of the protocol during its beta, not of any maker.
+            </p>
           ) : null}
 
           {ethOff ? (
