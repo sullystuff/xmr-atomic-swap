@@ -4,12 +4,15 @@
  * here, so the console also works against a daemon that predates it.
  */
 import type { ChainName } from '@xmrswap/protocol';
-import type { Alert, ChainConnection, ConfigIssue, ConfigValidation, FeesResponse, OfferView, OffersResponse, RebalanceResponse, RefillView, RegistrationResponse, StatusResponse, SwapAction, SwapActionResponse, SwapDetail, SwapSummary, SwapsResponse, TxResult } from '@xmrswap/protocol/daemon-api';
+import type { Alert, ApprovalsResponse, PendingApproval, ChainConnection, ConfigIssue, ConfigValidation, FeesResponse, OfferView, OffersResponse, RebalanceResponse, RefillView, RegistrationResponse, StatusResponse, SwapAction, SwapActionResponse, SwapDetail, SwapSummary, SwapsResponse, TxResult } from '@xmrswap/protocol/daemon-api';
 
 /** A10: what became of an operator instruction. */
 export type ActionOutcome = 'carried_out' | 'refused' | 'pending';
-/** The daemon's one documented list (its A16): the SDK's eight reasons plus its own two. */
+/** The daemon's documented list (its A16, with the three freeze reasons A26 adds). */
 export const REFUSAL_REASONS = [
+  'freeze-not-available',
+  'freeze-window-closed',
+  'already-frozen',
   'ready-already-set',
   'refund-window-closed',
   'abort-window-closed',
@@ -41,7 +44,7 @@ export interface SummaryExtras {
   /** The operator's latest instruction and what became of it. */
   instruction?: SwapInstruction | null;
 }
-export type SwapSummaryX = SwapSummary & SummaryExtras;
+export type SwapSummaryX = SwapSummary & SummaryExtras & { frozen?: FrozenInfo | null };
 export type SwapDetailX = SwapDetail & SummaryExtras & FreezeExtras;
 export interface SwapsX extends SwapsResponse {
   swaps: SwapSummaryX[];
@@ -79,6 +82,10 @@ export interface ChainPause {
 export interface StatusX extends StatusResponse {
   chains: ChainConnectionX[];
   paused: StatusResponse['paused'] & { chains?: ChainPause[] };
+  /** A18: offers a cap stops right now, and how many swaps were ever paused. */
+  cap_reached?: { market: string; direction: string; code: CapCode; reason: string }[];
+  freezes?: number;
+  watcher: StatusResponse['watcher'] & { reported?: { solana: string | null; ethereum: string | null } | null };
   /** A12: `registry_onion` is what the registry shows; `reachable` stays `null` (the daemon runs no Tor client). */
   tor: StatusResponse['tor'] & { registry_onion?: string | null };
 }
@@ -87,7 +94,7 @@ export interface CostExtras {
   sol_usd?: number | null;
   compute_units_per_update?: number;
 }
-export type FeesX = FeesResponse & CostExtras;
+export type FeesX = FeesResponse & CostExtras & { swap_cost?: SwapCost; daily_swap_lamports?: string | number; eth_runway_swaps?: number | null };
 /** A17: the file's choice of sources, and what is pricing the offer right now. */
 export interface OfferSourceExtras {
   source?: string;
@@ -99,8 +106,9 @@ export interface OfferSourceExtras {
   /** `"asset"` when a SOL-quoted pool prices the SOL market with no USD figure. */
   price_unit?: 'usd' | 'asset';
 }
-export type OfferViewX = OfferView & OfferSourceExtras;
-export type OffersX = Omit<OffersResponse, 'offers'> & CostExtras & { offers: OfferViewX[] };
+export type OfferViewX = OfferView & OfferSourceExtras & { cap_reached?: CapCode | null; freeze_window_secs?: number };
+export type OffersX = Omit<OffersResponse, 'offers'> & CostExtras & { offers: OfferViewX[]; caps?: StatusResponse['caps']; swap_cost?: SwapCost };
+export type PendingApprovalX = PendingApproval & { taker_freezes?: number; freeze_window_secs?: number };
 
 /** A5: `PUT /api/registration/published`. */
 export interface PublishedRequest {
@@ -151,11 +159,49 @@ export interface ReleaseRecord {
     onchain_deployed?: boolean;
   } | null;
 }
-/** A swap's extras as the daemon may extend them: who froze it. */
+/**
+ * Who paused a swap, as the daemon INFERS it: the chain stores the time of a freeze, not the
+ * caller. `taker_side` = the taker, its session key or the watcher it named.
+ */
+export type FrozenBy = 'taker_side' | 'maker' | 'maker_watcher';
+/** A20: on every swap summary; `null` unless the swap was frozen. */
+export interface FrozenInfo {
+  t_freeze: number;
+  t_ff: number;
+  frozen_by: FrozenBy | null;
+}
+/** A21: additions on the swap detail. */
 export interface FreezeExtras {
-  frozen_by?: string | null;
-  /** How many of this taker's swaps with this maker were frozen. */
-  taker_freezes?: number;
+  frozen?: FrozenInfo | null;
+  freeze?: { swap_ref: string; chain: ChainName; direction: 'A' | 'B'; taker: string; watcher: string | null; frozen_by: FrozenBy | null; t_freeze: number; t_ff: number; at: number } | null;
+  /** The maker watcher's signed promise to follow this swap: `sig` is base64 Ed25519 by its Solana key. */
+  watcher_ack?: { watcher: string; watching_until: number; sig: string; at: number } | null;
+}
+export type CapCode = 'SwapCapExceeded' | 'OpenCapExceeded';
+/** A25: the operator's transactions of one ordinary swap, at the configured priority fee and gas cap. */
+export interface SwapCost {
+  solana: Record<'sol' | 'usdc_sol', Record<'sell_xmr' | 'sell_xmr_window' | 'buy_xmr', { compute_units: number; lamports: string | number }>>;
+  ethereum: { sell_xmr_gas: number; buy_xmr_gas: number; freeze_gas: number; push_owed_gas: number; max_fee_gwei: number | null; sell_xmr_wei: string | null; buy_xmr_wei: string | null };
+  taker_open_compute_units: { lock_or_take: number; usdc_with_approval: number };
+}
+/** A23: `GET /api/freezes`. */
+export interface FreezesResponse {
+  freezes: { ref: string; chain: ChainName; direction: 'A' | 'B'; taker: string; watcher: string | null; frozen_by: FrozenBy | null; t_freeze: number; t_ff: number; state: string }[];
+  /** Direction A only, most first. */
+  by_taker: { taker: string; count: number }[];
+  counters: { chain: ChainName; freezes: number; refunds_after_freeze: number; backouts_after_freeze: number; claims_after_freeze: number }[];
+  settings: { refuse_watchers: boolean; deny_watchers: string[]; max_taker_freezes: number | null };
+}
+/** A24: `GET /api/watcher`. */
+export interface WatcherResponse {
+  status: StatusX['watcher'];
+  acks: { ref: string; chain: ChainName; watcher: string; watching_until: number; sig: string; at: number; open: boolean }[];
+}
+/** A24: `GET /api/caps`. */
+export interface CapsResponse {
+  caps: StatusResponse['caps'];
+  offers: { market: string; direction: string; enabled: boolean; capacity_xmr: string; capacity_limit: string; cap_reached: CapCode | null; reason: string | null }[];
+  refused_quotes: number;
 }
 
 /** A3: a refused configuration carries every issue. */
@@ -172,6 +218,7 @@ export interface ExtendedResponses {
   offersPreview: OffersX;
   swap: SwapDetailX;
   swaps: SwapsX;
+  approvals: Omit<ApprovalsResponse, 'pending'> & { pending: PendingApprovalX[] };
   rebalance: RebalanceX;
   rebalanceRun: RefillViewX;
   rebalanceApprove: RefillViewX;

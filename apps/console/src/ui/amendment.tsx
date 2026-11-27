@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { CHAIN_CONSTS, MARKET_CHAIN, type Market } from '@xmrswap/protocol';
 import type { MarketCaps, MarketDirection, ProgramBuildStatus, SwapDetail, WatcherStatus } from '@xmrswap/protocol/daemon-api';
-import type { ReleaseRecord, StatusX } from '../api/extensions.js';
+import type { FrozenBy, ReleaseRecord, StatusX, SwapCost, SwapDetailX } from '../api/extensions.js';
 import { useClient } from '../api/hooks.js';
 import { capsState, degradedReasons, freezeExposure, type CapsKind, type CapsState } from '../lib/amendment.js';
 import { chainLabel } from '../lib/config/schema.js';
@@ -141,7 +141,7 @@ export function FreezeWindowNote({ market, direction, claimDelaySecs, freezeWind
       ) : (
         <>
           <p style={{ marginTop: 6 }}>
-            <strong>What it does on this offer.</strong> Buying XMR, you are the one who locks funds, so the watcher is yours (Your watcher, under Daemon and connections). If the taker’s XMR lock does not check out while your daemon is down, it freezes the taker’s claim, which gives you up to the window to bring the daemon back and refund.
+            <strong>What it does on this offer.</strong> Buying XMR, you are the one who locks funds, so the watcher is yours (Your watcher, under Daemon and connections). If the taker’s XMR lock does not check out while your daemon is down, it freezes the taker’s claim, which gives you up to the window to bring the daemon back and refund. While the daemon is up it decides by itself: a lock that is provably bad is refunded at once rather than frozen (freezing first would give up the hold on the deposit), and a lock that is real but still unconfirmed at the cutoff is frozen by the daemon. There is no freeze button; you never have to press one.
           </p>
           <p style={{ marginTop: 6 }} data-testid="freeze-worst">
             {off ? (
@@ -164,24 +164,19 @@ export function FreezeWindowNote({ market, direction, claimDelaySecs, freezeWind
 // ------------------------------------------------------------------ a frozen swap
 
 /** Who froze, when, until when, and what the daemon does next. */
-export function FrozenPanel({ swap, frozenBy }: { swap: SwapDetail; frozenBy?: string | null | undefined }) {
+export function FrozenPanel({ swap, frozenBy }: { swap: SwapDetail; frozenBy?: FrozenBy | null | undefined }) {
   const d = swap.deadlines;
   const margin = CHAIN_CONSTS[swap.chain].marginSecs;
   const selling = swap.direction === 'A';
+  // The chain stores when a swap was frozen, not who called: the daemon infers it, and the console says so.
   const who =
-    frozenBy === undefined || frozenBy === null
-      ? swap.extras.watcher
-        ? selling
-          ? 'the taker’s watcher, or the taker itself (the daemon did not report which)'
-          : 'your watcher, or your daemon (the daemon did not report which)'
-        : 'not reported'
-      : frozenBy === swap.extras.watcher
-        ? selling
-          ? 'the taker’s watcher'
-          : 'your watcher'
-        : frozenBy === swap.taker
-          ? 'the taker'
-          : 'your daemon';
+    frozenBy === 'taker_side'
+      ? 'Probably the taker’s side: the taker, its session key or the watcher it named.'
+      : frozenBy === 'maker'
+        ? 'Probably your own daemon, which pauses a swap itself when the taker’s lock is real but still unconfirmed at the cutoff.'
+        : frozenBy === 'maker_watcher'
+          ? 'Probably your watcher.'
+          : 'Not known yet: the daemon has not recorded it.';
   return (
     <div data-testid="frozen-panel">
       <Notice tone="warn" title="This swap is frozen.">
@@ -192,7 +187,8 @@ export function FrozenPanel({ swap, frozenBy }: { swap: SwapDetail; frozenBy?: s
       <dl className="kv" style={{ marginTop: 10 }}>
         <dt>Frozen by</dt>
         <dd>
-          {who} {frozenBy ? <Id value={frozenBy} head={8} tail={6} /> : null}
+          {who}
+          <div className="muted">The chain records when a swap was frozen, not who called. This is the daemon’s inference, not a fact.</div>
         </dd>
         <dt>Watcher key</dt>
         <dd>{swap.extras.watcher ? <code style={{ overflowWrap: 'anywhere' }}>{swap.extras.watcher}</code> : <span className="muted">none named</span>}</dd>
@@ -275,7 +271,7 @@ export function WatcherCard({ watcher }: { watcher: WatcherStatus }) {
 }
 
 /** The watcher's state for one swap where the maker is the locker (direction B). */
-export function SwapWatcherStatus({ swap, status }: { swap: SwapDetail; status: StatusX | null }) {
+export function SwapWatcherStatus({ swap, status }: { swap: SwapDetailX; status: StatusX | null }) {
   if (swap.direction !== 'B') return null;
   const x = swap.extras;
   const funded = swap.state === 'ACTIVE' || swap.state === 'NOTICED' || swap.state === 'FROZEN';
@@ -289,6 +285,11 @@ export function SwapWatcherStatus({ swap, status }: { swap: SwapDetail; status: 
             <>
               <Badge tone="ok">Acknowledged</Badge> watching until <span className="mono">{fmtTime(x.watching_until)}</span> (<Countdown to={x.watching_until} chain={swap.chain} passed="over" />)
               <div className="muted">The watcher signed an acknowledgement that it follows this swap until your refund window closes.</div>
+              {swap.watcher_ack ? (
+                <div className="muted" data-testid="watcher-ack">
+                  Signed by <Id value={swap.watcher_ack.watcher} head={8} tail={6} /> <Time at={swap.watcher_ack.at} />; signature <code title={swap.watcher_ack.sig}>{swap.watcher_ack.sig.slice(0, 16)}…</code>
+                </div>
+              ) : null}
             </>
           ) : x.watcher !== null ? (
             <>
@@ -317,7 +318,7 @@ export function SwapWatcherStatus({ swap, status }: { swap: SwapDetail; status: 
       {funded && x.watching_until === null && degraded.length > 0 ? (
         <div style={{ marginTop: 8 }}>
           <Notice tone="bad" title="Funded, unwatched, and the daemon is degraded.">
-            Your funds are in escrow on this swap, no watcher has acknowledged it, and right now {degraded.join(', ')}. If the daemon cannot check the taker’s XMR lock and refund inside the refund window, a false notice can cost you the escrow. Restore the daemon’s connections now.
+            Your funds are in escrow on this swap, no watcher has acknowledged it, and right now {degraded.join(', ')}. If the daemon cannot check the taker’s XMR lock and refund inside the refund window, a false notice can cost you the escrow. Restore the daemon’s connections now. (“Degraded” is this console’s own reading of the daemon’s status; the daemon does not report it as such.)
           </Notice>
         </div>
       ) : null}
@@ -426,7 +427,7 @@ export function ProgramBuildCard({ build }: { build: ProgramBuildStatus }) {
       : build.matches === false
         ? 'The deployed program does not match the published build.'
         : build.expected_hash === null
-          ? 'No published build to compare with.'
+          ? 'No published hash yet.'
           : 'The deployed program could not be read.';
   return (
     <div data-testid="program-build" data-matches={String(build.matches)}>
@@ -434,7 +435,7 @@ export function ProgramBuildCard({ build }: { build: ProgramBuildStatus }) {
         {build.matches === false
           ? 'What is on the chain is not what this daemon was built to run against. Do not rely on it: pause quoting and find out why before anything else.'
           : build.matches === null && build.expected_hash === null
-            ? 'The daemon knows no expected hash, as is the case before any release is published.'
+            ? 'No program hash has been published, so there is nothing to compare the deployed program with. That is the case until a release publishes one.'
             : build.matches === null
               ? 'Treat it as unverified until the daemon can read it.'
               : 'The hash of the deployed program equals the one this daemon expects.'}
@@ -449,6 +450,53 @@ export function ProgramBuildCard({ build }: { build: ProgramBuildStatus }) {
         <dt>On-chain hash</dt>
         <dd>{build.on_chain_hash ? <code style={{ overflowWrap: 'anywhere' }}>{build.on_chain_hash}</code> : <span className="muted">unreadable</span>}</dd>
       </dl>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ what one swap costs the operator
+
+/** The operator's transactions of one ordinary swap, in the daemon's own figures (its `swap_cost`). */
+export function SwapCostTable({ cost }: { cost: SwapCost }) {
+  const sol = (v: string | number): string => `${(Number(v) / 1e9).toLocaleString('en-US', { maximumFractionDigits: 9 })} SOL`;
+  const eth = (v: string | null): string => (v === null ? 'no gas cap set' : `${(Number(BigInt(v) / 1_000_000_000n) / 1e9).toLocaleString('en-US', { maximumFractionDigits: 6 })} ETH`);
+  const rows: [string, string, string][] = [];
+  for (const asset of ['sol', 'usdc_sol'] as const) {
+    const c = cost.solana[asset];
+    const name = asset === 'sol' ? 'SOL' : 'USDC-SOL';
+    rows.push([`${name}, sell XMR`, `${c.sell_xmr.compute_units.toLocaleString('en-US')} compute units`, sol(c.sell_xmr.lamports)]);
+    rows.push([`${name}, sell XMR with an approval window`, `${c.sell_xmr_window.compute_units.toLocaleString('en-US')} compute units`, sol(c.sell_xmr_window.lamports)]);
+    rows.push([`${name}, buy XMR`, `${c.buy_xmr.compute_units.toLocaleString('en-US')} compute units`, sol(c.buy_xmr.lamports)]);
+  }
+  rows.push(['Ethereum, sell XMR', `${cost.ethereum.sell_xmr_gas.toLocaleString('en-US')} gas`, eth(cost.ethereum.sell_xmr_wei)]);
+  rows.push(['Ethereum, buy XMR', `${cost.ethereum.buy_xmr_gas.toLocaleString('en-US')} gas`, eth(cost.ethereum.buy_xmr_wei)]);
+  return (
+    <div data-testid="swap-cost">
+      <table className="tbl" aria-label="Cost of one swap to you">
+        <thead>
+          <tr>
+            <th scope="col">One swap</th>
+            <th scope="col" className="num">
+              Work
+            </th>
+            <th scope="col" className="num">
+              Fees, at most
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(([name, work, fee]) => (
+            <tr key={name}>
+              <th scope="row">{name}</th>
+              <td className="num">{work}</td>
+              <td className="num">{fee}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="muted" style={{ marginTop: 6 }}>
+        Your daemon’s own transactions for one ordinary swap, at your priority fee{cost.ethereum.max_fee_gwei === null ? '' : ` and your gas cap of ${cost.ethereum.max_fee_gwei} gwei`}. A freeze on Ethereum costs {cost.ethereum.freeze_gas.toLocaleString('en-US')} gas and delivering a parked payout {cost.ethereum.push_owed_gas.toLocaleString('en-US')}. The taker pays for its own opening transaction.
+      </p>
     </div>
   );
 }

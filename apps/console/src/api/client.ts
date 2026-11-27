@@ -3,8 +3,8 @@
  * (SPEC 7.8). Typed by the frozen `ApiRoutes`. It never talks to a chain, a price feed or any
  * other host, and it holds no key: the bearer token only authorises this loopback API.
  */
-import { ROUTES, WS_CHANNELS, routePath, type Alert, type ApiError, type ApiRoutes, type ConfigIssue, type RegistrationTxResponse, type RouteName, type WsChannel, type WsClientMessage, type WsPayloads, type WsServerMessage } from '@xmrswap/protocol/daemon-api';
-import type { ErrorExtras, ExtendedResponses, LinkEntry, PublishedRequest, PublishedResponse, RefillChoice, RefillViewX, ReleaseRecord } from './extensions.js';
+import { ROUTES, WS_CHANNELS, routePath, type Alert, type ApiError, type ApiRoutes, type ConfigIssue, type RegistrationTxResponse, type RouteName, type TxResult, type WsChannel, type WsClientMessage, type WsPayloads, type WsServerMessage } from '@xmrswap/protocol/daemon-api';
+import type { CapsResponse, ErrorExtras, ExtendedResponses, FreezesResponse, LinkEntry, PublishedRequest, PublishedResponse, RefillChoice, RefillViewX, ReleaseRecord, WatcherResponse } from './extensions.js';
 
 export interface ResponseLike {
   ok: boolean;
@@ -122,6 +122,27 @@ export class DaemonClient {
    */
   withdrawOwedTx(ref: string): Promise<RegistrationTxResponse> {
     return this.request('POST', `/api/swaps/${encodeURIComponent(ref)}/withdraw-owed-tx`, {});
+  }
+
+  /**
+   * Deliver a parked payout with the operator key, no owner signature (the daemon's A26): on
+   * Ethereum for every party of the swap, on Solana for claim proceeds parked for a payout
+   * address. `409 nothing_owed`, `409 delivery_refused`, `409 dry_run`.
+   */
+  deliverOwed(ref: string): Promise<{ txs: TxResult[] }> {
+    return this.request('POST', `/api/swaps/${encodeURIComponent(ref)}/deliver-owed`, {});
+  }
+  /** Every swap that was ever paused, counts per taker, the on-chain counters and the maker's settings (A23). */
+  freezes(): Promise<FreezesResponse> {
+    return this.request('GET', '/api/freezes', undefined);
+  }
+  /** The maker's watcher, probed afresh, with the acknowledgements it signed (A24). */
+  watcherInfo(): Promise<WatcherResponse> {
+    return this.request('GET', '/api/watcher', undefined);
+  }
+  /** The caps read afresh, and what they do to each offer (A24). */
+  capsInfo(): Promise<CapsResponse> {
+    return this.request('GET', '/api/caps', undefined);
   }
 
   /**

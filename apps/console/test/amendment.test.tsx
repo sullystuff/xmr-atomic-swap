@@ -163,7 +163,10 @@ describe('mock daemon: Amendment 1 fields', () => {
     expect(s.caps.map((c) => c.market)).toEqual(['usdc_sol', 'sol', 'usdc_eth', 'eth']);
     expect(s.caps[0]?.caps).toMatchObject({ on: true, max_open: '1000000000000', open_value: '29294900000', headroom: '970705100000', frozen: false });
     expect(s.program_build).toMatchObject({ expected_hash: null, matches: null });
-    expect(s.watcher).toEqual({ url: null, reachable: null, solana: null, ethereum: null, watching: 0 });
+    expect(s.watcher).toEqual({ url: null, reachable: null, solana: null, ethereum: null, watching: 0, reported: null });
+    // Untyped additions (A18).
+    expect(s.cap_reached).toEqual([]);
+    expect(s.freezes).toBe(0);
     daemon.setCaps('sol', null);
     expect((await client.call('status')).caps[1]).toEqual({ market: 'sol', caps: null });
   });
@@ -176,8 +179,24 @@ describe('mock daemon: Amendment 1 fields', () => {
     expect(await sell()).toMatchObject({ capacity_limit: 'max_open', capacity_xmr: '5000000000000' });
     daemon.setCaps('usdc_sol', { on: true, max_swap: usdc(4_185.3525), max_open: usdc(1_000_000), open_value: '0' });
     expect(await sell()).toMatchObject({ capacity_limit: 'max_swap', capacity_xmr: '10000000000000' });
+    // A cap that stops an offer disables it, with a reason that always starts "cap reached:" and its own code (A19).
     daemon.setCaps('usdc_sol', { on: true, max_swap: '0', max_open: '0', open_value: '0' });
-    expect(await sell()).toMatchObject({ capacity_limit: 'max_open', capacity_xmr: '0', enabled: true });
+    const stopped = await sell();
+    expect(stopped).toMatchObject({ capacity_limit: 'max_open', capacity_xmr: '0', enabled: false, live: false, cap_reached: 'OpenCapExceeded' });
+    expect(stopped?.disabled_reason).toMatch(/^cap reached: /);
+    expect((await client.call('status')).cap_reached).toEqual([
+      { market: 'usdc_sol', direction: 'sell_xmr', code: 'OpenCapExceeded', reason: stopped?.disabled_reason },
+      { market: 'usdc_sol', direction: 'buy_xmr', code: 'OpenCapExceeded', reason: expect.stringMatching(/^cap reached: /) },
+    ]);
+    // The largest swap allowed is below the offer's smallest swap: the other code.
+    daemon.setCaps('usdc_sol', { on: true, max_swap: usdc(10), max_open: usdc(1_000_000), open_value: '0' });
+    expect(await sell()).toMatchObject({ enabled: false, cap_reached: 'SwapCapExceeded', capacity_limit: 'max_swap' });
+    expect((await sell())?.disabled_reason).toBe("cap reached: the largest swap the protocol allows (10 USDC) is below this offer's smallest swap");
+    // The maker's own limits never use those words.
+    const caps = await client.capsInfo();
+    expect(caps.refused_quotes).toBe(0);
+    expect(caps.offers.find((o) => o.market === 'usdc_sol' && o.direction === 'sell_xmr')).toMatchObject({ enabled: false, cap_reached: 'SwapCapExceeded', capacity_limit: 'max_swap' });
+    expect(caps.caps.map((c) => c.market)).toEqual(['usdc_sol', 'sol', 'usdc_eth', 'eth']);
     // With the switch off the caps bound nothing.
     daemon.setCaps('usdc_sol', { on: false, max_swap: '0', max_open: '0', open_value: '0' });
     expect(await sell()).toMatchObject({ capacity_limit: 'inventory' });
@@ -192,8 +211,18 @@ describe('mock daemon: Amendment 1 fields', () => {
     expect(d.deadlines.t_freeze).toBe(T0 - 20 * 60);
     expect(d.deadlines.t_ff).toBe(T0 - 20 * 60 + 86_400);
     expect(d.actions).toEqual(['abort']);
+    // A20, A21: who paused it is the daemon's inference; the summary and the detail carry it.
+    expect(frozen?.frozen).toEqual({ t_freeze: T0 - 20 * 60, t_ff: T0 - 20 * 60 + 86_400, frozen_by: 'taker_side' });
+    expect(d.freeze).toMatchObject({ swap_ref: frozen?.ref, direction: 'A', frozen_by: 'taker_side', watcher: fakeSol('watcher-of-taker') });
+    expect(d.watcher_ack).toBeNull();
+    const fr = await client.freezes();
+    expect(fr.freezes.map((x) => [x.ref, x.state, x.frozen_by])).toEqual([[frozen?.ref, 'FROZEN', 'taker_side']]);
+    expect(fr.by_taker).toEqual([{ taker: fakeSol('taker-frozen'), count: 1 }]);
+    expect(fr.counters.find((c) => c.chain === 'solana')?.freezes).toBe(1);
+    expect(fr.settings).toEqual({ refuse_watchers: false, deny_watchers: [], max_taker_freezes: null });
+    expect((await client.call('status')).freezes).toBe(1);
     daemon.nameWatcher(REF.pendingSol, 'WatcherKey');
-    expect((await client.call('approvals')).pending.find((p) => p.ref === REF.pendingSol)).toMatchObject({ watcher: 'WatcherKey', watcher_denied: false, payout: null });
+    expect((await client.call('approvals')).pending.find((p) => p.ref === REF.pendingSol)).toMatchObject({ watcher: 'WatcherKey', watcher_denied: false, payout: null, taker_freezes: 0, freeze_window_secs: 0 });
     await client.call('configImport', { body: { toml: `${DEFAULT_TOML}\n[approvals]\ndeny_watchers = ["WatcherKey"]\n` } });
     expect((await client.call('approvals')).pending.find((p) => p.ref === REF.pendingSol)?.watcher_denied).toBe(true);
   });
@@ -369,11 +398,12 @@ describe('frozen swaps', () => {
     expect(text(row)).toContain('22h 40mFrozen-final time: the claim opens');
   });
 
-  it('shows who froze, when, the frozen-final time, what the daemon will do, and the withhold decision', async () => {
-    const m = mount(`#/swaps/${fakeSol('swap-frozen')}`, { frozen: true });
+  it('shows who probably froze, when, the frozen-final time, what the daemon will do, and the withhold decision', async () => {
+    mount(`#/swaps/${fakeSol('swap-frozen')}`, { frozen: true });
     const panel = await screen.findByTestId('frozen-panel');
     expect(text(panel)).toContain('This swap is frozen. The taker’s side paused it: your claim without the taker’s ready waits until the frozen-final time. Nothing was revealed and nothing moved.');
-    expect(text(panel)).toContain('Frozen bythe taker’s watcher, or the taker itself (the daemon did not report which)');
+    // The chain does not record the caller: the daemon infers it, and it is labelled so.
+    expect(text(panel)).toContain('Frozen byProbably the taker’s side: the taker, its session key or the watcher it named.The chain records when a swap was frozen, not who called. This is the daemon’s inference, not a fact.');
     expect(text(panel)).toContain(`Watcher key${fakeSol('watcher-of-taker')}`);
     expect(text(panel)).toContain('Frozen at2026-11-18 10:46:40Z (20m 00s ago)');
     expect(text(panel)).toContain('Frozen-final time23h 40m 2026-11-19 10:46:40Z');
@@ -382,28 +412,35 @@ describe('frozen swaps', () => {
       'Nothing until then. If the taker sets ready first, it claims inside the claim window as usual. If the taker refunds first, it recovers your XMR and the deposit is held for your withhold decision. Otherwise, at the frozen-final time (2026-11-19 10:46:40Z) it claims, or aborts if this offer is set to abort without ready.',
     );
     expect(text(panel)).toContain('If the taker refunds or you abort from here, the deposit is always withholdable: your withhold policy decides inside the 30-minute hold, and you can override it on the Deposits page.');
-    // In the summary: state, freeze window, the watcher, and this taker's freeze count.
     const summary = screen.getByRole('region', { name: 'Summary' });
     expect(text(summary)).toContain('Frozen');
     expect(text(summary)).toContain('Freeze window1d 0h');
     expect(text(summary)).toContain('Taker’s watcher');
-    await waitFor(() => expect(text(within(summary).getByTestId('taker-freezes'))).toBe('1 of this taker’s 1 swap with you was frozen.'));
-    // The deadlines list the freeze and the frozen-final time.
+    // The daemon's own count of swaps this taker's side paused (GET /api/freezes).
+    await waitFor(() => expect(text(within(summary).getByTestId('taker-freezes'))).toBe('1 of this taker’s swaps with you was paused by its side.'));
     const deadlines = text(within(screen.getByRole('region', { name: 'Deadlines' })).getByRole('table'));
     expect(deadlines).toContain('FrozenA watcher or the locker paused the swap2026-11-18 10:46:40Zpassed');
     expect(deadlines).toContain('Frozen-final timeThe claim without ready opens here instead2026-11-19 10:46:40Z23h 40m');
-    // The claimer may still abort, with the consequence spelled out.
+    // The claimer may abort; there is no freeze action to press, anywhere.
     expect(within(summary).getByRole('button', { name: 'Abort swap' })).toBeTruthy();
-    void m;
+    expect(screen.queryByRole('button', { name: /freeze/i })).toBeNull();
   });
 
-  it('names the freezer when the daemon reports it, and the taker’s freeze count from the daemon', async () => {
-    const swap = { ...frozenSwap(T0), frozen_by: fakeSol('watcher-of-taker'), taker_freezes: 3 } as SwapDetail;
-    mount(`#/swaps/${swap.ref}`, { prepare: (d) => d.putSwap(swap) });
+  it.each([
+    ['taker_side', 'Probably the taker’s side: the taker, its session key or the watcher it named.'],
+    ['maker', 'Probably your own daemon, which pauses a swap itself when the taker’s lock is real but still unconfirmed at the cutoff.'],
+    ['maker_watcher', 'Probably your watcher.'],
+    [null, 'Not known yet: the daemon has not recorded it.'],
+  ] as const)('labels frozen_by %s as an inference, never as fact', async (by, words) => {
+    const swap = frozenSwap(T0);
+    mount(`#/swaps/${swap.ref}`, {
+      prepare: (d) => {
+        d.putSwap(swap);
+        d.frozenBy.set(swap.ref, by);
+      },
+    });
     const panel = await screen.findByTestId('frozen-panel');
-    expect(text(panel)).toContain('Frozen bythe taker’s watcher');
-    expect(text(panel)).not.toContain('did not report which');
-    await waitFor(() => expect(text(screen.getByTestId('taker-freezes'))).toBe('3 of this taker’s 1 swap with you were frozen.'));
+    expect(text(panel)).toContain(`Frozen by${words}The chain records when a swap was frozen, not who called.`);
   });
 
   it('describes a frozen buy-XMR swap from the locker’s side: verify, then set ready or refund before the margin', async () => {
@@ -417,7 +454,7 @@ describe('frozen swaps', () => {
     expect(text(panel)).toContain('A refund of yours from here returns the taker’s deposit at once; it can never be held.');
   });
 
-  it('shows freeze counts and a named watcher in the approvals queue, and marks a denied watcher', async () => {
+  it('shows the daemon’s freeze count and a named watcher in the approvals queue, and marks a denied watcher', async () => {
     const taker = fakeSol('taker-pending');
     const past = (n: number): SwapDetail => ({ ...frozenSwap(T0), ref: fakeSol(`past-${n}`), taker, state: 'DONE', outcome: 'refunds_after_freeze', actions: [], next_deadline: null });
     const m = mount('#/approvals', {
@@ -431,7 +468,9 @@ describe('frozen swaps', () => {
     const row = within(table).getByRole('link', { name: `Swap ${REF.pendingSol}` }).closest('tr') as HTMLElement;
     expect(text(within(row).getByTestId('approval-watcher'))).toContain('names a watcher');
     expect(text(within(row).getByTestId('approval-watcher'))).toContain('May freeze');
-    await waitFor(() => expect(text(row)).toContain('2 of this taker’s 3 swaps with you were frozen'));
+    // `taker_freezes` from the daemon: swaps of this taker that its side paused.
+    expect(text(within(row).getByTestId('approval-freezes'))).toBe('2 of this taker’s swaps with you were paused by its side');
+    expect((await m.client.call('approvals')).pending.find((p) => p.ref === REF.pendingSol)?.taker_freezes).toBe(2);
     await m.client.call('configImport', { body: { toml: `${DEFAULT_TOML}\n[approvals]\ndeny_watchers = ["WatcherKeyExample"]\n` } });
     window.location.hash = '#/keys';
     act(() => void window.dispatchEvent(new HashChangeEvent('hashchange')));
@@ -470,11 +509,18 @@ describe('payout address and the maker’s watcher on a swap where the taker sel
 
   it('shows the watcher’s acknowledgement for the swap', async () => {
     const swap: SwapDetail = { ...frozenSwap(T0), direction: 'B', ref: fakeSol('swap-b-watched'), state: 'NOTICED', extras: { payout: null, watcher: fakeSol('my-watcher'), freeze_window_secs: 86_400, watching_until: T0 + 1_800 } };
-    mount(`#/swaps/${swap.ref}`, { prepare: (d) => d.putSwap(swap) });
+    const m = mount(`#/swaps/${swap.ref}`, { prepare: (d) => d.putSwap(swap) });
     const w = await screen.findByTestId('swap-watcher');
     expect(text(w)).toContain('Acknowledged watching until 2026-11-18 11:36:40Z (30m 01s)');
     expect(text(w)).toContain('The watcher signed an acknowledgement that it follows this swap until your refund window closes.');
     expect(text(w)).toContain(`Watcher key${fakeSol('my-watcher')}`);
+    // The signed acknowledgement itself (A21): who signed, and the signature.
+    const ack = await within(w).findByTestId('watcher-ack');
+    expect(text(ack)).toMatch(/^Signed by \S+ .* ago; signature [A-Za-z0-9+/]{16}…$/);
+    const real = (await m.client.call('swap', { params: { ref: swap.ref } })).watcher_ack;
+    expect(real).toMatchObject({ watcher: fakeSol('my-watcher'), watching_until: T0 + 1_800 });
+    expect(within(ack).getByTitle(real?.sig ?? '')).toBeTruthy();
+    expect((await m.client.watcherInfo()).acks).toEqual([{ ref: swap.ref, chain: 'solana', ...real, open: true }]);
     expect(within(w).queryByRole('alert')).toBeNull();
   });
 
@@ -491,7 +537,7 @@ describe('payout address and the maker’s watcher on a swap where the taker sel
     });
     const alert = await within(screen.getByTestId('swap-watcher')).findByRole('alert');
     expect(text(alert)).toBe(
-      'Funded, unwatched, and the daemon is degraded. Your funds are in escrow on this swap, no watcher has acknowledged it, and right now Solana is not connected. If the daemon cannot check the taker’s XMR lock and refund inside the refund window, a false notice can cost you the escrow. Restore the daemon’s connections now.',
+      'Funded, unwatched, and the daemon is degraded. Your funds are in escrow on this swap, no watcher has acknowledged it, and right now Solana is not connected. If the daemon cannot check the taker’s XMR lock and refund inside the refund window, a false notice can cost you the escrow. Restore the daemon’s connections now. (“Degraded” is this console’s own reading of the daemon’s status; the daemon does not report it as such.)',
     );
   });
 
@@ -554,7 +600,9 @@ describe('Status: release record, program build, watcher', () => {
     const m = mount('#/status');
     const card = await screen.findByTestId('program-build');
     expect(card.getAttribute('data-matches')).toBe('null');
-    expect(text(card)).toContain('No published build to compare with.');
+    // `expected_hash` is null until a release publishes one: said as that, not as a mismatch.
+    expect(text(card)).toContain('No published hash yet. No program hash has been published, so there is nothing to compare the deployed program with.');
+    expect(within(card).queryByRole('alert')).toBeNull();
     const hash = 'ef'.repeat(32);
     act(() => {
       m.daemon.programBuild = { expected_hash: hash, on_chain_hash: hash };
@@ -595,5 +643,97 @@ describe('Status: release record, program build, watcher', () => {
     await waitFor(() => expect(text(screen.getByTestId('watcher-card'))).toContain('Not reachable'));
     expect(text(screen.getByTestId('watcher-card'))).toContain('connection refused');
     expect(stat('Mode')).toBe('ModeLivetransactions are sent');
+  });
+});
+
+describe('reconciled with the daemon: cap-stopped offers, swap cost, parked payouts, the withhold default', () => {
+  const rowOf = (table: HTMLElement, head: string): HTMLElement => within(table).getAllByRole('row').find((r) => text(r).startsWith(head)) as HTMLElement;
+
+  it('shows an offer a cap has stopped as stopped by the protocol, with the daemon’s reason', async () => {
+    mount('#/offers', { prepare: (d) => d.setCaps('usdc_sol', { on: true, max_swap: usdc(10), max_open: usdc(1_000_000), open_value: '0' }) });
+    const offers = await screen.findByRole('table', { name: 'Offers' });
+    const row = rowOf(offers, 'USDC-SOLSell XMR');
+    expect(text(row)).toContain("Stopped by a protocol capcap reached: the largest swap the protocol allows (10 USDC) is below this offer's smallest swap");
+    expect(text(within(row).getByTestId('capacity-limit'))).toBe('limited by the protocol’s beta cap on one swap: 10 USDC');
+    expect(text(row)).not.toContain('Off');
+    // An offer the maker switched off is still just "Off".
+    expect(text(rowOf(offers, 'ETHSell XMR'))).toContain('OffSwitched off in the configuration');
+  });
+
+  it('shows what one swap costs, from the daemon’s own figures', async () => {
+    mount('#/offers');
+    const table = await within(await screen.findByRole('region', { name: 'Cost of one swap' })).findByRole('table', { name: 'Cost of one swap to you' });
+    const rows = within(table).getAllByRole('row').slice(1).map(text);
+    expect(rows).toEqual([
+      'SOL, sell XMR62,000 compute units0.00001 SOL',
+      'SOL, sell XMR with an approval window90,000 compute units0.000015 SOL',
+      'SOL, buy XMR70,000 compute units0.000015 SOL',
+      'USDC-SOL, sell XMR78,000 compute units0.00001 SOL',
+      'USDC-SOL, sell XMR with an approval window106,000 compute units0.000015 SOL',
+      'USDC-SOL, buy XMR84,000 compute units0.000015 SOL',
+      'Ethereum, sell XMR310,000 gas0.0124 ETH',
+      'Ethereum, buy XMR290,000 gas0.0116 ETH',
+    ]);
+    expect(text(screen.getByTestId('swap-cost'))).toContain('your gas cap of 40 gwei. A freeze on Ethereum costs 60,000 gas and delivering a parked payout 55,000.');
+  });
+
+  it('delivers a parked payout with the operator key and shows the outcome', async () => {
+    const m = mount(`#/swaps/${REF.done3}`, { prepare: (d) => d.parkPayout(REF.done3, 'PayoutAddressExample') });
+    const card = await screen.findByRole('region', { name: 'Parked payout' });
+    await m.user.click(within(card).getByRole('button', { name: 'Deliver parked payout' }));
+    expect(text(within(card).getByRole('alertdialog'))).toContain('Have the daemon push the parked payout to the address it is parked for, with its operator key. It cannot be sent anywhere else.');
+    await m.user.click(within(within(card).getByRole('alertdialog')).getByRole('button', { name: 'Deliver parked payout' }));
+    const result = await within(card).findByTestId('parked-result');
+    expect(text(result)).toMatch(/^Delivered\. The daemon sent one transaction with its operator key: 0x[0-9a-f]{8}… \(confirmed\)\. The payout went to the address it was parked for\.$/);
+    // Asked again: nothing is parked any more, said in place.
+    await m.user.click(within(card).getByRole('button', { name: 'Deliver parked payout' }));
+    await m.user.click(within(within(card).getByRole('alertdialog')).getByRole('button', { name: 'Deliver parked payout' }));
+    await waitFor(() => expect(text(within(card).getByTestId('parked-result'))).toBe('Nothing is parked for this swap. Every payout of this swap was delivered, or it has already been withdrawn.'));
+  });
+
+  it('says when a parked payout needs the owner key instead, and when the daemon is in dry run', async () => {
+    const m = mount(`#/swaps/${REF.done1}`, { prepare: (d) => d.parkPayout(REF.done1, 'MakerPayoutExample', { ownerOnly: true }) });
+    const card = await screen.findByRole('region', { name: 'Parked payout' });
+    await m.user.click(within(card).getByRole('button', { name: 'Deliver parked payout' }));
+    await m.user.click(within(within(card).getByRole('alertdialog')).getByRole('button', { name: 'Deliver parked payout' }));
+    const result = await within(card).findByTestId('parked-result');
+    expect(text(result)).toBe('Not delivered: this one needs the owner key. This payout is parked for the maker on Solana: only the owner key can withdraw it. Use “Withdraw parked payout” above and sign with the owner’s wallet.');
+    // Still parked: the owner path remains.
+    expect((await m.client.withdrawOwedTx(REF.done1)).unsigned.chain).toBe('solana');
+    const refused = await m.client.deliverOwed('no-such-swap').then(
+      () => null,
+      (e: unknown) => e as { status: number; code: string },
+    );
+    expect([refused?.status, refused?.code]).toEqual([404, 'unknown_swap']);
+  });
+
+  it('shows the withhold policy that is in effect: "price moved" for a sell-XMR offer with a freeze window', async () => {
+    const m = mount('#/config');
+    await screen.findByRole('region', { name: 'Markets and offers' });
+    await m.user.click(screen.getByRole('button', { name: 'Edit SOL Sell XMR settings' }));
+    const editor = screen.getByRole('region', { name: 'SOL Sell XMR settings' });
+    const policy = within(editor).getByLabelText('Withhold policy') as HTMLSelectElement;
+    expect(policy.value).toBe('never');
+    expect(text(within(editor).getByTestId('withhold-default'))).toBe('in effect: never withhold');
+    await m.user.type(within(editor).getByLabelText('Freeze window'), '24');
+    expect(policy.value).toBe('price_moved');
+    expect(text(within(editor).getByTestId('withhold-default'))).toBe('in effect: when the price moved against me, because this offer has a freeze window');
+    // Only the freeze window is written; the policy stays the daemon's default.
+    await m.user.click(within(screen.getByRole('region', { name: 'Save configuration' })).getByRole('button', { name: 'Review' }));
+    expect(text(within(screen.getByRole('region', { name: 'Save configuration' })).getByRole('table', { name: 'Unsaved changes' }))).toBe('KeySavedNewmarkets.sol.sell_xmr.freeze_window_hoursunset24');
+    // A buy-XMR offer has no deposit hold of its own to price: its default stays "never".
+    await m.user.click(screen.getByRole('button', { name: 'Edit USDC-SOL Buy XMR settings' }));
+    const buy = screen.getByRole('region', { name: 'USDC-SOL Buy XMR settings' });
+    await m.user.type(within(buy).getByLabelText('Freeze window'), '24');
+    expect((within(buy).getByLabelText('Withhold policy') as HTMLSelectElement).value).toBe('never');
+  });
+
+  it('tells the maker what the daemon does by itself, and offers no freeze control', async () => {
+    const m = mount('#/config');
+    await screen.findByRole('region', { name: 'Markets and offers' });
+    await m.user.click(screen.getByRole('button', { name: 'Edit USDC-SOL Buy XMR settings' }));
+    const note = text(within(screen.getByRole('region', { name: 'USDC-SOL Buy XMR settings' })).getByTestId('freeze-note'));
+    expect(note).toContain('a lock that is provably bad is refunded at once rather than frozen (freezing first would give up the hold on the deposit), and a lock that is real but still unconfirmed at the cutoff is frozen by the daemon. There is no freeze button; you never have to press one.');
+    expect(screen.queryByRole('button', { name: /freeze/i })).toBeNull();
   });
 });

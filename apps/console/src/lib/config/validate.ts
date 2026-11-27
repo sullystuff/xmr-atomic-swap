@@ -138,7 +138,7 @@ export function resolveOffer(cfg: Toml, market: Market, direction: MarketDirecti
   const file = isTable(raw) ? raw : {};
   const values: Record<string, unknown> = { ...offerDefaults(market), ...file };
   // With a freeze window the default withhold policy is "price moved" (SPEC 7.11): a refund after a freeze always leaves the deposit withholdable.
-  if (file.withhold_policy === undefined && typeof file.freeze_window_hours === 'number' && file.freeze_window_hours > 0) values.withhold_policy = 'price_moved';
+  if (direction === 'sell_xmr' && file.withhold_policy === undefined && typeof file.freeze_window_hours === 'number' && file.freeze_window_hours > 0) values.withhold_policy = 'price_moved';
   const wanted = values.enabled === true;
   const keptOff: string[] = [];
 

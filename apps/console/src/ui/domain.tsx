@@ -76,6 +76,18 @@ const DONE_TEXT: Record<SwapAction, string> = {
 
 /** Why an instruction was refused, in plain words, and what happens instead. */
 export const REFUSAL_TEXT: Record<RefusalReason, { why: string; instead: string }> = {
+  'freeze-not-available': {
+    why: 'This swap cannot be paused: it names no watcher, or its offer has no freeze window.',
+    instead: 'The swap carries on by its ordinary deadlines.',
+  },
+  'freeze-window-closed': {
+    why: 'The time in which this swap could be paused is over.',
+    instead: 'The swap carries on by its ordinary deadlines.',
+  },
+  'already-frozen': {
+    why: 'The swap is already paused, and a swap can be paused only once.',
+    instead: 'It stays paused until its frozen-final time, or until the locker sets ready or refunds.',
+  },
   'ready-already-set': {
     why: 'The taker has already set ready, so the swap can no longer be backed out of.',
     instead: 'The daemon claims inside the claim window; a missed claim would be recorded against you.',

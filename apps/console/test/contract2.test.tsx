@@ -17,9 +17,9 @@ function setup(opts: ConstructorParameters<typeof MockDaemon>[0] = {}) {
 const SIGNED_ETH = `0x02${'ab'.repeat(110)}`;
 
 describe('refusal reasons (A16)', () => {
-  it('is exactly the daemon’s documented list of ten, each with plain words', () => {
-    const documented = ['ready-already-set', 'refund-window-closed', 'abort-window-closed', 'already-settled', 'cannot-exit-after-funding', 'reject-not-available', 'hold-ended', 'no-deposit-held', 'not-available-in-state', 'dry-run'];
-    expect([...REFUSAL_REASONS]).toEqual(documented);
+  it('is exactly the daemon’s documented list (A16’s ten and the three freeze reasons of A26), each with plain words', () => {
+    const documented = ['ready-already-set', 'refund-window-closed', 'abort-window-closed', 'already-settled', 'cannot-exit-after-funding', 'reject-not-available', 'hold-ended', 'no-deposit-held', 'not-available-in-state', 'dry-run', 'freeze-not-available', 'freeze-window-closed', 'already-frozen'];
+    expect([...REFUSAL_REASONS].sort()).toEqual([...documented].sort());
     expect(Object.keys(REFUSAL_TEXT).sort()).toEqual([...documented].sort());
     // Every reason the daemon has its own sentence for is in the list.
     for (const r of Object.keys(REFUSALS)) expect(documented).toContain(r);

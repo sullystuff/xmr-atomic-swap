@@ -1,8 +1,9 @@
 /** Dashboard, Swaps, Approvals, Deposits and Inbox. */
-import { useId, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
+import type { FreezesResponse } from '../api/extensions.js';
 import { MARKETS, SWAP_STATE_NAMES, type ChainName, type Market, type SwapStateName } from '@xmrswap/protocol';
 import type { AdvanceApprovalRecord, Alert, DepositView, InboxItem, SwapDeadlines, SwapSummary, SwapsQuery } from '@xmrswap/protocol/daemon-api';
-import { ApiFailure } from '../api/client.js';
+import { ApiFailure, describeError } from '../api/client.js';
 import { useAction, useChainNow, useClient, useLive, useNow, useQuery } from '../api/hooks.js';
 import { chainLabel } from '../lib/config/schema.js';
 import { MARKET_LABEL, fmtDuration, fmtInt, fmtMarketAmount, fmtRate, fmtTime, fmtUnits, fmtUsd, fmtXmr, parseUnits } from '../lib/format.js';
@@ -413,7 +414,20 @@ export function SwapDetailPage({ swapRef }: { swapRef: string }) {
   const deposits = useQuery('deposits', undefined, ['swaps']);
   const all = useQuery('swaps', { body: { limit: 500 } }, ['swaps']);
   const counts = freezeCounts(all.data?.swaps ?? []);
-  const { status } = useLive();
+  const { status, ticks } = useLive();
+  const client = useClient();
+  const [freezeInfo, setFreezeInfo] = useState<FreezesResponse | null>(null);
+  const swapTick = ticks.swaps;
+  useEffect(() => {
+    let live = true;
+    client.freezes().then(
+      (r) => live && setFreezeInfo(r),
+      () => live && setFreezeInfo(null),
+    );
+    return () => {
+      live = false;
+    };
+  }, [client, swapTick]);
   const chainNow = useChainNow();
   return (
     <>
@@ -437,7 +451,7 @@ export function SwapDetailPage({ swapRef }: { swapRef: string }) {
               ) : null}
               {s.state === 'FROZEN' ? (
                 <Card title="Frozen">
-                  <FrozenPanel swap={s} frozenBy={s.frozen_by} />
+                  <FrozenPanel swap={s} frozenBy={s.frozen?.frozen_by ?? s.freeze?.frozen_by} />
                 </Card>
               ) : null}
               {s.direction === 'B' ? (
@@ -472,9 +486,9 @@ export function SwapDetailPage({ swapRef }: { swapRef: string }) {
                       <code style={{ overflowWrap: 'anywhere' }}>{s.taker}</code>
                       <div className="muted" data-testid="taker-freezes">
                         {(() => {
-                          const n = s.taker_freezes ?? counts.get(s.taker)?.frozen ?? 0;
-                          const of = counts.get(s.taker)?.swaps;
-                          return n === 0 ? 'No swap of this taker with you was ever frozen.' : `${n} of this taker’s ${of ?? 'swaps'}${of ? (of === 1 ? ' swap' : ' swaps') : ''} with you ${n === 1 ? 'was' : 'were'} frozen.`;
+                          // The daemon's own count (swaps paused by this taker's side); the console's count from the swap list only if the daemon gives none.
+                          const n = freezeInfo ? (freezeInfo.by_taker.find((t) => t.taker === s.taker)?.count ?? 0) : (counts.get(s.taker)?.frozen ?? 0);
+                          return n === 0 ? 'No swap of this taker with you was ever paused by its side.' : `${n} of this taker’s swaps with you ${n === 1 ? 'was' : 'were'} paused by its side.`;
                         })()}
                       </div>
                     </dd>
@@ -653,6 +667,7 @@ export function SwapDetailPage({ swapRef }: { swapRef: string }) {
 function ParkedPayout({ swapRef, chain }: { swapRef: string; chain: ChainName }) {
   const client = useClient();
   const [open, setOpen] = useState(false);
+  const [delivering, setDelivering] = useState(false);
   const [result, setResult] = useState<{ tone: 'ok' | 'bad' | 'info'; title: string; body: React.ReactNode } | null>(null);
   return (
     <Card title="Parked payout" note="When a payout cannot be delivered at settlement it is parked in the contract instead of failing the swap.">
@@ -667,6 +682,34 @@ function ParkedPayout({ swapRef, chain }: { swapRef: string; chain: ChainName })
           Withdraw parked payout
         </Button>
         <span className="muted">Asks the daemon for the withdrawal transaction, which you sign with the owner’s wallet. The daemon never holds that key.</span>
+      </div>
+      <div className="row" style={{ marginTop: 8 }}>
+        <ConfirmButton
+          label="Deliver parked payout"
+          busy={delivering}
+          disabled={open}
+          onConfirm={() => {
+            setResult(null);
+            setDelivering(true);
+            client.deliverOwed(swapRef).then(
+              (r) => {
+                setDelivering(false);
+                setResult({ tone: 'ok', title: 'Delivered.', body: `The daemon sent ${r.txs.length === 1 ? 'one transaction' : `${r.txs.length} transactions`} with its operator key: ${r.txs.map((t) => `${t.id.slice(0, 10)}… (${t.status})`).join(', ')}. The payout went to the address it was parked for.` });
+              },
+              (e: unknown) => {
+                setDelivering(false);
+                const code = e instanceof ApiFailure ? e.code : '';
+                if (code === 'nothing_owed') setResult({ tone: 'info', title: 'Nothing is parked for this swap.', body: 'Every payout of this swap was delivered, or it has already been withdrawn.' });
+                else if (code === 'delivery_refused') setResult({ tone: 'bad', title: 'Not delivered: this one needs the owner key.', body: `${describeError(e)} Use “Withdraw parked payout” above and sign with the owner’s wallet.` });
+                else if (code === 'dry_run') setResult({ tone: 'bad', title: 'Not delivered: dry run.', body: describeError(e) });
+                else setResult({ tone: 'bad', title: 'Not delivered.', body: describeError(e) });
+              },
+            );
+          }}
+        >
+          Have the daemon push the parked payout to the address it is parked for, with its operator key. It cannot be sent anywhere else. On Solana this works for a taker’s claim proceeds parked for its payout address; a payout parked for you there needs the owner key instead.
+        </ConfirmButton>
+        <span className="muted">No signature of yours is needed: the contract pins the destination.</span>
       </div>
       {open ? (
         <OwnerTransaction
@@ -761,9 +804,9 @@ export function ApprovalsPage() {
                                 names a watcher <Id value={p.watcher} /> {p.watcher_denied ? <Badge tone="bad">On your deny list</Badge> : <Badge tone="warn">May freeze</Badge>}
                               </div>
                             ) : null}
-                            {(counts.get(p.taker)?.frozen ?? 0) > 0 ? (
-                              <div className="msg warning">
-                                {counts.get(p.taker)?.frozen} of this taker’s {counts.get(p.taker)?.swaps} swaps with you were frozen
+                            {(p.taker_freezes ?? counts.get(p.taker)?.frozen ?? 0) > 0 ? (
+                              <div className="msg warning" data-testid="approval-freezes">
+                                {p.taker_freezes ?? counts.get(p.taker)?.frozen} of this taker’s swaps with you {(p.taker_freezes ?? counts.get(p.taker)?.frozen) === 1 ? 'was' : 'were'} paused by its side
                               </div>
                             ) : null}
                           </td>

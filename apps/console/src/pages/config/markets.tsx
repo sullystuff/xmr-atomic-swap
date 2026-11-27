@@ -179,6 +179,13 @@ function OfferEditor({ market, direction, blobEndpoint, onClose }: { market: Mar
     if (f.key === 'freeze_window_hours') {
       return <FreezeWindowNote market={market} direction={direction} claimDelaySecs={o.terms.claim_delay_secs} freezeWindowSecs={o.terms.freeze_window_secs} depositBps={o.terms.deposit_bps} />;
     }
+    if (f.key === 'withhold_policy' && getPath(draft, `${base}.withhold_policy`) === undefined) {
+      return (
+        <span className="unit" data-testid="withhold-default">
+          {o.values.withhold_policy === 'price_moved' ? 'in effect: when the price moved against me, because this offer has a freeze window' : 'in effect: never withhold'}
+        </span>
+      );
+    }
     if (f.key === 'deposit_pct') {
       return <span className="unit">of the locked amount, 5% at most</span>;
     }
@@ -213,7 +220,9 @@ function OfferEditor({ market, direction, blobEndpoint, onClose }: { market: Mar
           <h4 className="subhead">{g.title}</h4>
           <div className="fields">
             {g.keys.map((k) => {
-              const f = byKey.get(k);
+              const known = byKey.get(k);
+              // The control shows the default in effect: with a freeze window a sell-XMR offer withholds when the price moved.
+              const f = known && k === 'withhold_policy' ? { ...known, def: o.values.withhold_policy } : known;
               return f ? <Field key={k} base={base} def={f} extra={extra(f)} /> : null;
             })}
           </div>

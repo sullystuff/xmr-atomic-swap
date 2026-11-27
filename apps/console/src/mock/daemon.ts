@@ -134,6 +134,18 @@ export const REFUSALS: Record<string, string> = {
   'no-deposit-held': 'no deposit is held or withheld on this swap',
   'not-available-in-state': 'the swap is not in a state that accepts it',
   'dry-run': 'the daemon is in dry run and sends no transaction',
+  'freeze-not-available': 'this swap names no watcher, or its offer has no freeze window',
+  'freeze-window-closed': 'the time in which this swap could be paused is over',
+  'already-frozen': 'the swap is already paused; it can be paused once',
+};
+/** The operator's transactions of one ordinary swap (the daemon's A25), at the base fee and a 40 gwei cap. */
+export const SWAP_COST = {
+  solana: {
+    sol: { sell_xmr: { compute_units: 62_000, lamports: '10000' }, sell_xmr_window: { compute_units: 90_000, lamports: '15000' }, buy_xmr: { compute_units: 70_000, lamports: '15000' } },
+    usdc_sol: { sell_xmr: { compute_units: 78_000, lamports: '10000' }, sell_xmr_window: { compute_units: 106_000, lamports: '15000' }, buy_xmr: { compute_units: 84_000, lamports: '15000' } },
+  },
+  ethereum: { sell_xmr_gas: 310_000, buy_xmr_gas: 290_000, freeze_gas: 60_000, push_owed_gas: 55_000, max_fee_gwei: 40, sell_xmr_wei: '12400000000000000', buy_xmr_wei: '11600000000000000' },
+  taker_open_compute_units: { lock_or_take: 80_000, usdc_with_approval: 100_000 },
 };
 /** Compute units the daemon charges one offer update at (20,100 measured × 1.2). */
 export const REFRESH_CU = 24_120;
@@ -456,13 +468,18 @@ export class MockDaemon {
       },
       needs_review: this.swaps.filter((s) => s.needs_review).length,
       alerts: this.alerts,
-      caps: (['usdc_sol', 'sol', 'usdc_eth', 'eth'] as const).map((market) => ({ market, caps: this.capsOf(market) })),
+      caps: this.capsList(),
+      // Untyped additions (A18): the offers a cap stops right now, and how many swaps were ever paused.
+      ...({
+        cap_reached: this.offers().offers.filter((o) => (o as { cap_reached?: string | null }).cap_reached).map((o) => ({ market: o.market, direction: o.direction, code: (o as { cap_reached?: string }).cap_reached, reason: o.disabled_reason })),
+        freezes: this.swaps.filter((x) => x.deadlines.t_freeze !== null).length,
+      } as object),
       program_build: {
         program_id: ADDR.program,
         ...this.programBuild,
         matches: this.programBuild.expected_hash === null || this.programBuild.on_chain_hash === null ? null : this.programBuild.expected_hash === this.programBuild.on_chain_hash,
       },
-      watcher: { url: typeof getPath(this.parsed, 'watcher.url') === 'string' && getPath(this.parsed, 'watcher.url') !== '' ? (getPath(this.parsed, 'watcher.url') as string) : null, ...this.watcherState },
+      watcher: this.watcherStatus(),
     };
   }
 
@@ -501,7 +518,7 @@ export class MockDaemon {
             ? 'Dry run: computed but not published'
             : undefined;
     // Capacity: the inventory, then the maker's own daily cap, then the protocol's caps at the current price (SPEC 11.1).
-    const capacity = ((): { xmr: string; limit: OfferView['capacity_limit'] } => {
+    const capacity = ((): { xmr: string; limit: OfferView['capacity_limit']; stop: { code: string; reason: string } | null } => {
       let best = BigInt(o.direction === 'sell_xmr' ? this.inventory.capacity_xmr : xmr(Math.min(o.maxXmr ?? 0, 120)));
       let limit: OfferView['capacity_limit'] = 'inventory';
       if (typeof o.values.daily_cap_xmr === 'number' && BigInt(xmr(o.values.daily_cap_xmr)) < best) {
@@ -522,20 +539,30 @@ export class MockDaemon {
           best = one;
           limit = 'max_swap';
         }
+        // Below the offer's smallest swap nothing can open: the cap stops the offer.
+        const smallest = BigInt(xmr(typeof o.values.min_xmr === 'number' ? o.values.min_xmr : 0.1));
+        if (best < smallest && limit !== 'inventory' && limit !== 'config') {
+          const code = limit === 'max_open' ? 'OpenCapExceeded' : 'SwapCapExceeded';
+          const unit = o.market === 'sol' ? 'SOL' : o.market === 'eth' ? 'ETH' : 'USDC';
+          const show = (v: string): string => (Number(BigInt(v) / 10n ** BigInt(decimals - 6)) / 1e6).toLocaleString('en-US');
+          const reason = limit === 'max_open' ? `cap reached: ${show(c.open_value)} of ${show(c.max_open)} ${unit} is open, and the smallest swap of this offer does not fit in what is left` : `cap reached: the largest swap the protocol allows (${show(c.max_swap)} ${unit}) is below this offer's smallest swap`;
+          return { xmr: '0', limit, stop: { code, reason } };
+        }
       }
-      return { xmr: best.toString(), limit };
+      return { xmr: best.toString(), limit, stop: null };
     })();
+    const stopped = on && capacity.stop !== null;
     const view: OfferView = {
       market: o.market,
       direction: o.direction,
-      live,
-      enabled: on,
+      live: live && !stopped,
+      enabled: on && !stopped,
       reference_price: on ? toBase(REFERENCE_USD.xmr) : null,
       price_tiers: on ? tiers : [],
       deviation_pct: dev,
       min_xmr: xmr(typeof o.values.min_xmr === 'number' ? o.values.min_xmr : 0.1),
       max_xmr: xmr(o.maxXmr ?? 0),
-      capacity_xmr: on ? capacity.xmr : '0',
+      capacity_xmr: on && !stopped ? capacity.xmr : '0',
       capacity_limit: capacity.limit,
       terms: o.terms,
       key_pool: !on || o.direction === 'buy_xmr' ? null : eth ? { size: 64, available: 57 } : { size: 16, available: o.market === 'sol' ? 3 : 11 },
@@ -543,10 +570,11 @@ export class MockDaemon {
       updated_at: live ? now - 6 : null,
       valid_until: live ? now - 6 + (typeof o.values.offer_valid_seconds === 'number' ? o.values.offer_valid_seconds : 60) : null,
     };
-    if (reason !== undefined) view.disabled_reason = reason;
-    // The daemon's additions (A17): the file's choice, and what is pricing the offer right now.
+    if (stopped && capacity.stop) view.disabled_reason = capacity.stop.reason;
+    else if (reason !== undefined) view.disabled_reason = reason;
+    // The daemon's additions (A17, A19): the file's choice, and what is pricing the offer right now.
     const solOnly = o.market === 'sol' && pricedBy !== null && isPool(pricedBy) && !chainOfSources.some((src) => !isPool(src));
-    return { ...view, ...({ source: o.source, fallbacks: o.fallbacks, cross_check: o.crossCheck, priced_by: this.paused.operator || this.paused.owner ? null : pricedBy, price_unit: solOnly ? 'asset' : 'usd' } as object) };
+    return { ...view, ...({ source: o.source, fallbacks: o.fallbacks, cross_check: o.crossCheck, priced_by: this.paused.operator || this.paused.owner ? null : pricedBy, price_unit: solOnly ? 'asset' : 'usd', cap_reached: stopped && capacity.stop ? capacity.stop.code : null, freeze_window_secs: o.terms.freeze_window_secs } as object) };
   }
 
   private readonly windowFilling = new Map<string, { have: number; of: number }>();
@@ -576,6 +604,7 @@ export class MockDaemon {
       ],
       sol_usd: this.solUsd,
       compute_units_per_update: REFRESH_CU,
+      ...({ caps: this.capsList(), swap_cost: SWAP_COST } as object),
     };
   }
 
@@ -601,7 +630,18 @@ export class MockDaemon {
   }
   /** The swap as the API shows it: actions computed now, and the operator's latest instruction. */
   private view(s: SwapDetail): SwapDetail {
-    return { ...s, actions: this.actionsOf(s), ...({ instruction: this.instructionOf(s.ref) } as object) };
+    const frozen = this.frozenOf(s);
+    const ack = s.extras.watching_until !== null && s.extras.watcher !== null ? { watcher: s.extras.watcher, watching_until: s.extras.watching_until, sig: toBase64(new Uint8Array(64).map((_, i) => (i * 13 + s.ref.length) & 0xff)), at: s.opened_at + 30 } : null;
+    return {
+      ...s,
+      actions: this.actionsOf(s),
+      ...({
+        instruction: this.instructionOf(s.ref),
+        frozen,
+        freeze: frozen ? { swap_ref: s.ref, chain: s.chain, direction: s.direction, taker: s.taker, watcher: s.extras.watcher, ...frozen, at: frozen.t_freeze } : null,
+        watcher_ack: ack,
+      } as object),
+    };
   }
   private settle(s: SwapDetail, outcome: SwapDetail['outcome']): void {
     s.state = 'DONE';
@@ -623,6 +663,23 @@ export class MockDaemon {
     for (const m of market === 'all' ? (['usdc_sol', 'sol', 'usdc_eth', 'eth'] as const) : [market]) this.caps[m] = caps === null ? null : { frozen: false, ...caps };
     this.push('status', 'offers');
   }
+  private capsList(): StatusResponse['caps'] {
+    return (['usdc_sol', 'sol', 'usdc_eth', 'eth'] as const).map((market) => ({ market, caps: this.capsOf(market) }));
+  }
+  private watcherStatus(): StatusResponse['watcher'] {
+    const url = getPath(this.parsed, 'watcher.url');
+    return { url: typeof url === 'string' && url !== '' ? url : null, ...this.watcherState, ...({ reported: this.watcherState.solana || this.watcherState.ethereum ? { solana: this.watcherState.solana, ethereum: this.watcherState.ethereum } : null } as object) };
+  }
+  /** Who paused each frozen swap, as the daemon infers it. Tests may set `null` (not recorded yet). */
+  readonly frozenBy = new Map<string, 'taker_side' | 'maker' | 'maker_watcher' | null>();
+  private frozenOf(s: SwapDetail): { t_freeze: number; t_ff: number; frozen_by: string | null } | null {
+    if (s.deadlines.t_freeze === null || s.deadlines.t_ff === null) return null;
+    const by = this.frozenBy.has(s.ref) ? (this.frozenBy.get(s.ref) ?? null) : s.direction === 'A' ? 'taker_side' : 'maker_watcher';
+    return { t_freeze: s.deadlines.t_freeze, t_ff: s.deadlines.t_ff, frozen_by: by };
+  }
+  private takerFreezes(taker: string): number {
+    return this.swaps.filter((x) => x.direction === 'A' && x.taker === taker && x.deadlines.t_freeze !== null).length;
+  }
   private capsOf(market: Market): { on: boolean; max_swap: string; max_open: string; open_value: string; headroom: string; frozen: boolean } | null {
     const c = this.caps[market];
     if (c === null) return null;
@@ -643,10 +700,13 @@ export class MockDaemon {
   private readonly acknowledged = new Set<string>();
   /** Swaps with a payout parked on chain, and the address it is keyed to. */
   private readonly parked = new Map<string, string>();
+  /** Parked payouts only the owner key can withdraw (a maker payout on Solana). */
+  private readonly ownerOnly = new Set<string>();
   private readonly owedRequests = new Map<string, string>();
   /** Test seam: a payout of this swap could not be delivered and is parked in the contract. */
-  parkPayout(ref: string, keyedTo: string): void {
+  parkPayout(ref: string, keyedTo: string, opts: { ownerOnly?: boolean } = {}): void {
     this.parked.set(ref, keyedTo);
+    if (opts.ownerOnly) this.ownerOnly.add(ref);
   }
   private desired: { contacts?: { kind: number; value: string }[]; onion?: string | null } = {};
   /** Every recorded `LinkChanged`, as 0x-hex bytes. Seeded with the two first links. */
@@ -766,7 +826,7 @@ export class MockDaemon {
   private approvals(): ApprovalsResponse {
     const now = this.now();
     return {
-      pending: this.pending.filter((p) => p.deadline > now).map((p) => ({ ...p, watcher_denied: p.watcher !== null && Array.isArray(getPath(this.parsed, 'approvals.deny_watchers')) && (getPath(this.parsed, 'approvals.deny_watchers') as unknown[]).includes(p.watcher) })),
+      pending: this.pending.filter((p) => p.deadline > now).map((p) => ({ ...p, watcher_denied: p.watcher !== null && Array.isArray(getPath(this.parsed, 'approvals.deny_watchers')) && (getPath(this.parsed, 'approvals.deny_watchers') as unknown[]).includes(p.watcher), taker_freezes: this.takerFreezes(p.taker), freeze_window_secs: this.swaps.find((x) => x.ref === p.ref)?.extras.freeze_window_secs ?? 0 })),
       advance: this.advance.map((a) => ({ ...a, active: a.active && a.expires_at > now && a.epoch === this.epochs[a.chain].approval_epoch })),
       epochs: (['solana', 'ethereum'] as const).map((chain) => ({ chain, ...this.epochs[chain] })),
     };
@@ -873,7 +933,7 @@ export class MockDaemon {
       ],
       runway_days: o.runway_days,
       runway_alert_days: typeof alertDays === 'number' ? alertDays : 7,
-      ...({ sol_usd: this.solUsd, compute_units_per_update: REFRESH_CU } as object),
+      ...({ sol_usd: this.solUsd, compute_units_per_update: REFRESH_CU, swap_cost: SWAP_COST, daily_swap_lamports: '1200000', eth_runway_swaps: 310 } as object),
     };
   }
 
@@ -1031,7 +1091,7 @@ export class MockDaemon {
       if (body.base_revision !== revisionOf(this.toml)) return fail(409, 'revision_conflict', 'The configuration changed since you loaded it. Reload, then apply your edit again.');
       return this.applyConfig(body.toml, 'api');
     });
-    this.route('configValidate', ({ body }) => ({ ...this.validation(this.parseOr400(isTable(body) ? body.toml : undefined)), sol_usd: this.solUsd, compute_units_per_update: REFRESH_CU }));
+    this.route('configValidate', ({ body }) => ({ ...this.validation(this.parseOr400(isTable(body) ? body.toml : undefined)), sol_usd: this.solUsd, compute_units_per_update: REFRESH_CU, swap_cost: SWAP_COST }));
     this.route('configLog', () => ({ entries: [...this.log].reverse() }));
     this.route('configExport', () => ({ toml: this.toml, exported_at: this.now() }));
     this.route('configImport', ({ body }) => {
@@ -1121,6 +1181,43 @@ export class MockDaemon {
       return { swaps: page.map((x) => summary(this.view(x))), next_before: list.length > limit && last ? last.opened_at : null };
     });
     this.route('swap', ({ params }) => this.view(this.findSwap(params.ref ?? '')));
+    // A26: the operator delivers a parked payout itself, with no owner signature.
+    this.routeAt('deliverOwed', 'POST', '/api/swaps/:ref/deliver-owed', ({ params }) => {
+      const sw = this.findSwap(params.ref ?? '');
+      if (!this.parked.has(sw.ref)) return fail(409, 'nothing_owed', 'Nothing is parked for this swap.');
+      this.requireLive('the delivery');
+      if (this.ownerOnly.has(sw.ref)) return fail(409, 'delivery_refused', 'This payout is parked for the maker on Solana: only the owner key can withdraw it.');
+      this.parked.delete(sw.ref);
+      return { txs: [this.tx(sw.chain, sw.chain === 'ethereum' ? 'pushOwed' : 'withdraw_owed')] };
+    });
+    // A23, A24: freezes, the watcher and the caps, each read afresh.
+    this.routeAt('freezes', 'GET', '/api/freezes', () => {
+      const frozen = this.swaps.filter((x) => x.deadlines.t_freeze !== null);
+      const byTaker = new Map<string, number>();
+      for (const x of frozen) if (x.direction === 'A') byTaker.set(x.taker, (byTaker.get(x.taker) ?? 0) + 1);
+      const deny = getPath(this.parsed, 'approvals.deny_watchers');
+      const max = getPath(this.parsed, 'approvals.max_taker_freezes');
+      return {
+        freezes: frozen.map((x) => ({ ref: x.ref, chain: x.chain, direction: x.direction, taker: x.taker, watcher: x.extras.watcher, ...(this.frozenOf(x) as object), state: x.state })),
+        by_taker: [...byTaker].map(([taker, count]) => ({ taker, count })).sort((a, b) => b.count - a.count),
+        counters: (['solana', 'ethereum'] as const).map((chain) => ({ chain, freezes: frozen.filter((x) => x.chain === chain).length, refunds_after_freeze: frozen.filter((x) => x.chain === chain && x.outcome === 'refunds_after_freeze').length, backouts_after_freeze: 0, claims_after_freeze: frozen.filter((x) => x.chain === chain && x.outcome === 'claims_after_freeze').length })),
+        settings: { refuse_watchers: getPath(this.parsed, 'approvals.refuse_watchers') === true, deny_watchers: Array.isArray(deny) ? deny : [], max_taker_freezes: typeof max === 'number' ? max : null },
+      };
+    });
+    this.routeAt('watcher', 'GET', '/api/watcher', () => ({
+      status: this.watcherStatus(),
+      acks: this.swaps
+        .filter((x) => x.extras.watching_until !== null && x.extras.watcher !== null)
+        .map((x) => {
+          const v = this.view(x) as SwapDetail & { watcher_ack: { watcher: string; watching_until: number; sig: string; at: number } };
+          return { ref: x.ref, chain: x.chain, ...v.watcher_ack, open: x.state !== 'DONE' };
+        }),
+    }));
+    this.routeAt('caps', 'GET', '/api/caps', () => ({
+      caps: this.capsList(),
+      offers: this.offers().offers.map((o) => ({ market: o.market, direction: o.direction, enabled: o.enabled, capacity_xmr: o.capacity_xmr, capacity_limit: o.capacity_limit, cap_reached: (o as { cap_reached?: string | null }).cap_reached ?? null, reason: o.disabled_reason ?? null })),
+      refused_quotes: 0,
+    }));
     // A14: the unsigned transaction that withdraws a payout parked for this swap.
     this.routeAt('withdrawOwedTx', 'POST', '/api/swaps/:ref/withdraw-owed-tx', ({ params }) => {
       const sw = this.findSwap(params.ref ?? '');
@@ -1352,7 +1449,7 @@ function usdValue(r: RefillView): number {
 }
 
 function summary(s: SwapDetail): SwapSummary {
-  const x = s as SwapDetail & { instruction?: unknown };
+  const x = s as SwapDetail & { instruction?: unknown; frozen?: unknown };
   return {
     chain: s.chain,
     ref: s.ref,
@@ -1372,7 +1469,7 @@ function summary(s: SwapDetail): SwapSummary {
     actions: s.actions,
     extras: s.extras,
     // The daemon's additions (A13).
-    ...({ mode: s.mode, instruction: x.instruction ?? null } as object),
+    ...({ mode: s.mode, instruction: x.instruction ?? null, frozen: x.frozen ?? null } as object),
   };
 }
 

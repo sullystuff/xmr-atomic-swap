@@ -5,7 +5,7 @@ import type { AssetId, OfferView, RebalanceResponse, RefillView, VenueId } from 
 import type { OfferViewX, RefillViewX } from '../api/extensions.js';
 import { useAction, useClient, useLive, useQuery } from '../api/hooks.js';
 import { capacityLimitText, capsState } from '../lib/amendment.js';
-import { CapsPanel } from '../ui/amendment.js';
+import { CapsPanel, SwapCostTable } from '../ui/amendment.js';
 import { ASSETS, DIRECTION_LABEL, MODE_OPTIONS, VENUE_LABEL, chainLabel } from '../lib/config/schema.js';
 import { patchConfig } from '../lib/config/patch.js';
 import { getPath, isTable, setPath, type Toml } from '../lib/config/toml.js';
@@ -60,6 +60,7 @@ export function PricedBy({ o }: { o: OfferViewX }) {
 
 function OfferStatus({ o }: { o: OfferViewX }) {
   if (o.live) return <Badge tone="ok">Live</Badge>;
+  if (o.cap_reached) return <Badge tone="warn">Stopped by a protocol cap</Badge>;
   if (o.source !== undefined && o.priced_by === null && o.disabled_reason !== undefined && /averaging window|no price/i.test(o.disabled_reason)) return <Badge tone="warn">Waiting for a price</Badge>;
   if (o.enabled) return <Badge tone="info">{o.disabled_reason?.startsWith('Paused') ? 'Paused' : 'Dry run'}</Badge>;
   return <Badge>Off</Badge>;
@@ -140,8 +141,8 @@ export function OffersPage() {
                             {fmtUnits(o.min_xmr, 12, 2)} to {fmtUnits(o.max_xmr, 12, 2)}
                           </td>
                           <td className="num">
-                            {o.enabled ? fmtXmr(o.capacity_xmr, 2) : <span className="muted">none</span>}
-                            {o.enabled ? (
+                            {o.enabled || o.cap_reached ? fmtXmr(o.capacity_xmr, 2) : <span className="muted">none</span>}
+                            {o.enabled || o.cap_reached ? (
                               <div className={o.capacity_limit === 'max_swap' || o.capacity_limit === 'max_open' ? 'msg warning' : 'muted'} data-testid="capacity-limit" style={{ whiteSpace: 'normal', minWidth: '16ch' }}>
                                 {capacityLimitText(o.capacity_limit, status ? status.caps.filter((c) => c.market === o.market).map(capsState)[0] : undefined, o.market)}
                               </div>
@@ -187,6 +188,16 @@ export function OffersPage() {
             }}
           </Async>
         </Card>
+
+        <Async query={offers} what="the cost of a swap">
+          {(r) =>
+            r.swap_cost ? (
+              <Card title="Cost of one swap" note="What a swap costs you in fees, beside the cost of keeping offers fresh." flush>
+                <SwapCostTable cost={r.swap_cost} />
+              </Card>
+            ) : null
+          }
+        </Async>
 
         <Card title="Update cost" note="What refreshing offers on Solana costs per day. Change the interval or the priority fee under Configuration to see the estimate move before you save.">
           <Async query={offers} what="the update cost">
