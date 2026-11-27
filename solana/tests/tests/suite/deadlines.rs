@@ -262,7 +262,10 @@ fn enabled_by_the_table(s: &SwapAcc, now: i64) -> Enabled {
         READY if now < s.t_claim_deadline => Enabled::Claim,
         READY if now < s.t_final => Enabled::Refund,
         ABORTED_FREE | ABORTED_HOLD if now < s.t_final => Enabled::Refund,
-        NOTICED | READY | ABORTED_FREE | ABORTED_HOLD => after_final(now),
+        // SPEC 11.6: the locker's refund on [t_Z, T_ff), the claimer's claim on [T_ff, T_exp).
+        FROZEN if now < s.t_ff() => Enabled::Refund,
+        FROZEN if now < s.t_final => Enabled::Claim,
+        NOTICED | READY | ABORTED_FREE | ABORTED_HOLD | FROZEN => after_final(now),
         other => panic!("state {other}"),
     }
 }
@@ -277,6 +280,9 @@ fn scan(w: &mut World, m: &MakerFx, fx: &SwapFx, label: &str) -> usize {
         if boundary != 0 {
             times.extend([boundary - 1, boundary, boundary + 1]);
         }
+    }
+    if s.state == FROZEN {
+        times.extend([s.t_ff() - 1, s.t_ff(), s.t_ff() + 1, s.t_freeze + s.w_z as i64 - 1, s.t_freeze + s.w_z as i64]);
     }
     let (locker, claimer) = if fx.direction == DIR_A {
         (fx.taker.insecure_clone(), m.operator.insecure_clone())
@@ -320,6 +326,19 @@ fn at_no_instant_can_both_parties_reveal_a_secret() {
                 let (m, fx) = w.swap_at(asset, direction, &Terms::default(), stage);
                 probes += scan(&mut w, &m, &fx, &name(label));
             }
+            // FROZEN, by the watcher: with the shortest window right at the notice (T_ff is
+            // T_co), with a day's window (T_ff is t_Z + W_z), and in the last second before T_co.
+            for (w_z, last_second, label) in [(MIN_FREEZE_SECS, false, "FROZEN to T_co"), (86_400, false, "FROZEN a day"), (MAX_FREEZE_SECS, true, "FROZEN at the last second")] {
+                let mut w = World::new();
+                let (m, fx, watcher) = w.swap_watched(asset, direction, &Terms { w_z, ..Terms::default() }, Stage::Noticed);
+                if last_second {
+                    let t_co = w.swap(&fx.pda).unwrap().t_claim_open;
+                    w.set_time(t_co - 1);
+                }
+                ok(w.call(&m, &fx, &Call::Freeze, &watcher));
+                assert_eq!(w.swap(&fx.pda).unwrap().state, FROZEN);
+                probes += scan(&mut w, &m, &fx, &name(label));
+            }
             // ABORTED_HOLD: A, the maker aborts at T_co; B, the taker aborts.
             let mut w = World::new();
             let (m, fx) = w.swap_at(asset, direction, &Terms::default(), Stage::Noticed);
@@ -345,7 +364,7 @@ fn at_no_instant_can_both_parties_reveal_a_secret() {
         }
     }
     println!("invariant 1: {probes} instants probed, never two parties enabled");
-    assert!(probes > 250);
+    assert!(probes > 450);
 }
 
 #[test]

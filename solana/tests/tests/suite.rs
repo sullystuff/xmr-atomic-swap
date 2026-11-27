@@ -27,3 +27,11 @@ mod park;
 mod sizes;
 #[path = "suite/registry.rs"]
 mod registry;
+#[path = "suite/invariant3.rs"]
+mod invariant3;
+#[path = "suite/caps.rs"]
+mod caps;
+#[path = "suite/payout.rs"]
+mod payout;
+#[path = "suite/freeze.rs"]
+mod freeze;

@@ -1074,7 +1074,8 @@ impl World {
         Self::with(sha256(&[b"test cluster"]), 0)
     }
 
-    pub fn with(cluster_tag: [u8; 32], split_mode: u8) -> Self {
+    /// The program right after `initialize`, with nothing else done: caps on and zero.
+    pub fn boot(cluster_tag: [u8; 32], split_mode: u8) -> Self {
         let mut svm = base_svm();
         let admin = funded(&mut svm, 100 * SOL);
         let treasury_authority = funded(&mut svm, 100 * SOL);
@@ -1099,6 +1100,11 @@ impl World {
         };
         let admin = w.admin.insecure_clone();
         ok(w.send(&[ix], &[&admin]));
+        w
+    }
+
+    pub fn with(cluster_tag: [u8; 32], split_mode: u8) -> Self {
+        let mut w = Self::boot(cluster_tag, split_mode);
         // A fresh deployment is fail-closed (SPEC 11.1): the switch is on and every cap is zero.
         // The harness's one extra call: the switch on, caps no `u64` amount can reach, so every
         // open still goes through the accounting.
@@ -1106,11 +1112,9 @@ impl World {
         w
     }
 
-    /// As [`World::new`] without the harness's `set_caps`: the state right after `initialize`.
+    /// A fresh deployment: `initialize` and nothing else.
     pub fn fresh() -> Self {
-        let mut w = Self::new();
-        ok(w.set_caps(true, [0; 2], [0; 2]));
-        w
+        Self::boot(sha256(&[b"test cluster"]), 0)
     }
 
     pub fn set_caps_ix(&self, admin: &Pubkey, on: bool, max_swap: [u64; 2], max_open: [u64; 2]) -> Instruction {

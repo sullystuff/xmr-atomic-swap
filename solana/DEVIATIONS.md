@@ -1,12 +1,13 @@
-# WP2 deviations from `docs/SPEC.md`
+# Solana program: deviations from `docs/SPEC.md` (WP2, and A2 of Amendment 1)
 
 Recorded by work package 2 (the Solana program) while building M1. Same conventions as
 `docs/research/wp1-deviations.md`: **Deviation** = the program differs from the text;
 **Choice** = the text was silent or ambiguous; **Note** = built as written, but someone else
 needs to know. Where SPEC and the frozen interfaces or vectors disagreed, the frozen artifact won.
 
-Nothing under `interfaces/` was edited. No interface change is requested; the two items an
-architect may want to fold back are marked **(for SPEC)**.
+Nothing under `interfaces/` was edited. No interface change is requested; the items an
+architect may want to fold back are marked **(for SPEC)**. The Amendment 1 work (A2) is the
+section "Amendment 1" below; the older sections were brought up to date with it.
 
 ## Spike (SPEC 4.6)
 
@@ -21,6 +22,7 @@ architect may want to fold back are marked **(for SPEC)**.
 | # | Spec | Kind | What | Why |
 | --- | --- | --- | --- | --- |
 | B1 | 1.3 `solana/program` dependencies | Deviation | Added `solana-sha256-hasher = "2.3"` (the SHA-256 syscall). `Cargo.lock` gained that one dependency edge; the crate was already locked at 2.3.0 and the `blake3` pin is untouched. | Anchor 0.32.1's `solana_program` facade has no `hash` module. |
+| B1b | 11.7 | Note | A2 added `escrow-logic = { path = "../../crates/escrow-logic" }`. `Cargo.lock` was not regenerated: it gained one `[[package]]` entry (`escrow-logic 0.1.0`, no dependencies) and one edge from `xmr-swap`. The `blake3` pin and `build.rs` are untouched. | The program runs the proved rules instead of its own copy. |
 | B2 | 1.3 `solana/tests` dependencies | Deviation | Added `serde_json`, `hex`, `solana-account`, and the `precompiles` feature of `litesvm`. One test binary (`tests/suite.rs`, `autotests = false`); dependencies are built at `opt-level = 2` with no debug info. | Vectors are JSON; `set_account` needs the account type; one binary because each links LiteSVM statically. |
 | B3 | 4 "Box every typed token account" | Note | `RefreshOffers.eth_board` is `Option<Box<Account<EthBoard>>>` (the 1,333-byte struct must not sit on the SBF stack) and `OpenSwap.taker` is an `UncheckedAccount` with `signer @ Unauthorized`. The generated IDL is identical (`check-idl.mjs` passes). | See V1 for the second. |
 
@@ -32,7 +34,7 @@ architect may want to fold back are marked **(for SPEC)**.
 | V2 | 4.4 step 4, 4.8 `StaleEpoch` | Choice | Every reason an advance approval does not admit the lock (not yet valid, expired, wrong asset or direction, over `max_xmr`, stale epoch, wrong key, wrong bindings, wrong length or tag) is `ApprovalInvalid`. `SignatureInstructionInvalid` is only for an instruction that is not a single self-contained Ed25519 signature (or a missing sysvar account). `StaleEpoch` is used for quotes only. | `sol_signed.json` gives `ApprovalInvalid` for all of them, including `stale-epoch`. |
 | V3 | 4.5 "Session key lamports ... the lamports go to the swap account and are added to `owed_taker`" | Deviation **(for SPEC)** | When the taker cannot hold the swept lamports they go to the swap account and are **not** added to `owed_taker`. They return to the taker with the rent when the swap is closed. | The vector `parked/A/refund` (session-key caller, taker cannot receive) fixes `owed_taker` to exactly the parked payout. For a USDC swap `owed_taker` is in token units, so adding lamports to it would be wrong in any case. |
 | V4 | 3.4 "closed" rows | Choice | A row marked closed closes the swap (and its vault) in the same instruction only if nothing was parked, nothing is owed, the taker's wallet can hold lamports and, for USDC, the vault can be emptied. Otherwise it ends in DONE and `close_swap` finishes the job. | The first condition is the model's; the others only arise in states the model does not describe. |
-| V5 | 3.1 arithmetic | Note | **Superseded by M1 follow-up 2.** `lock`, `take` and `post_quote` refuse `xmr == 0` or `amount == 0` with `AmountOutOfRange` (a direction-B dust take whose floor is zero would lock the taker's XMR against nothing). The check is repeated where a quote is consumed. | SPEC 3.1; `transitions.json` rows "amount zero" / "xmr zero"; `amounts.json` op `swap`. Tests: `fees::zero_amount_and_zero_xmr_are_refused_by_lock_take_and_post_quote`, `fees::amounts_json_swap_refuses_zero_xmr_and_zero_amounts`. |
+| V5 | 3.1 arithmetic | Note | `lock`, `take` and `post_quote` refuse `xmr == 0` or `amount == 0` with `AmountOutOfRange` (a direction-B dust take whose floor is zero would lock the taker's XMR against nothing). The check is repeated where a quote is consumed. | SPEC 3.1; `transitions.json` rows "amount zero" / "xmr zero"; `amounts.json` op `swap`. Tests: `fees::zero_amount_and_zero_xmr_are_refused_by_lock_take_and_post_quote`, `fees::amounts_json_swap_refuses_zero_xmr_and_zero_amounts`. |
 | V6 | 4.4 step 3 | Choice | `lock`/`take` do not re-check that an offer's tiers are well formed (`set_offer` and `refresh_offers` do). A size with no used depth tier gives depth 0, which the bounds refuse with `DepthInvalid`; with no used price tier, `TiersInvalid`. | Row "depth zero" expects `DepthInvalid` from the lock. |
 
 ## Pay or park (SPEC 4.5)
@@ -43,7 +45,7 @@ architect may want to fold back are marked **(for SPEC)**.
 | P2 | Choice | **The maker's destination is soft.** If `maker_wallet` is not the wallet the instruction pays (`maker.payout` for a claim in A, `maker.operator` for a refund in B) or `maker_token` is not its associated token account, the payout is parked for the owner to `withdraw_owed`. | `set_payout` / `set_operator` can land between a claim's simulation and its execution; the claim's secret would be public either way. Test: `park::a_payout_address_changed_under_a_claim_in_flight_parks_instead_of_failing`. |
 | P3 | Choice | The incinerator is always able to receive (the runtime exempts it from rent), so a burned SOL half is never parked for being below the rent minimum. If a USDC burn is impossible (frozen vault) the half is parked in `owed_treasury`, and `withdraw_owed(2)` later delivers it to the treasury vault, not to a burn. | The runtime's rule; the second is the only consistent destination for a pinned withdrawal. |
 | P4 | Note | In burn mode (`split_mode = 1`) `split_deposit` on a SOL swap must be given the incinerator in the `treasury` slot; the Treasury PDA is refused there. Fees of a claim go to the Treasury PDA in both modes. | 4.5 table. |
-| P5 | Deviation (S5 of WP1) | `withdraw_owed` does not create the destination token account. | The Settle list has no associated-token program and no payer. The caller puts an idempotent ATA-create instruction before it in the same transaction. |
+| P5 | Deviation (S5 of WP1) | `withdraw_owed` does not create a destination token account for the taker's own wallet, the maker or the treasury. (Amendment 1: `claim` in B and `withdraw_owed(0)` create the **payout address's** token account when the associated-token program is passed; see A-P3.) | Those lists have no payer for it. The caller puts an idempotent ATA-create instruction before it in the same transaction. |
 | P6 | Note | Order of effects inside a settling instruction: token CPIs, then the session-key sweep (a system-program CPI), then lamports moved by hand (SOL payouts, closing the swap). | The runtime compares the caller's lamport total when a CPI starts; a hand-moved account that is not passed to that CPI has not been written back yet (`UnbalancedInstruction`). |
 | P7 | Note | A session key funded with exactly the rent minimum can never pay a fee (a fee payer must end a transaction rent-exempt or at zero, and the fee is taken first). The budget must be the rent minimum plus one fee per transaction; the last one sweeps the key to zero. | Test `session::session_key_lamport_rules`. Consequence: the sweep is always at least the rent minimum, so it only fails to reach a taker whose wallet is executable. |
 
@@ -64,50 +66,74 @@ architect may want to fold back are marked **(for SPEC)**.
 
 | # | Spec | What |
 | --- | --- | --- |
-| R1 | 4.3 `set_offer` "validates every bound ... against the deepest used depth tier" | `W_a` is checked only for a WINDOW offer. The final window is checked for every pending kind a swap from the offer can start in (WINDOW: `W_a`; direction B: also `W_n`, which an approved take waits). `price_above[0]` must be 0; the price tiers are checked for being well formed at `refresh_offers`, when an offer is enabled (prices arrive there). Depth tiers all unused is `DepthInvalid`; otherwise malformed tiers are `TiersInvalid`. |
+| R1 | 4.3 `set_offer` "validates every bound ... against the deepest used depth tier" | The bounds are `escrow_logic::bounds::check_bounds`. `W_a` is checked only for a WINDOW offer. The final window is checked for the one pending kind a swap from the offer starts in (WINDOW: `W_a`; otherwise direction B: `W_n`; direction A auto: none), with `W_z` added when it is not zero. `lock`/`take` check again with the pending kind of the swap being opened. (Before A2 `set_offer` checked a WINDOW direction-B offer against both kinds; the vector row "B1 freeze window: final window exactly at the bound" requires the single kind.) `price_above[0]` must be 0; the price tiers are checked for being well formed at `refresh_offers`, when an offer is enabled (prices arrive there). Depth tiers all unused is `DepthInvalid`; otherwise malformed tiers are `TiersInvalid`. |
 | R2 | 4.3 `refresh_offers` | Only a board slot that holds a quote (`set_eth_quote` was called for it) can be refreshed. `OffersRefreshed.count` is offers plus Ethereum entries. |
 | R3 | 4.3 `set_eth_link` | A second change before the pending one matures replaces it and restarts the 7-day delay. |
 | R4 | 4.4 quotes | A quote's swap stores `price = 0` (a quote has an amount, not a price). An advance approval presented together with a quote is still verified. Offer size limits and capacity do not apply to a quote. |
 | R5 | 4.4 step 5 | `approve` does not consume offer capacity (a pending lock reserves none and the maker chooses to approve). |
 | R6 | 4.3 `initialize` | The treasury vault bump is not stored; the vault address is re-derived where it is checked. |
 
-## SPEC 4.10 transaction sizes **(for SPEC)**
+## Transaction sizes (SPEC 4.10, 11.6) **(for SPEC)**
 
-Measured with one signature and the two compute-budget instructions, each transaction executed
-(`sizes::every_transaction_of_spec_4_10_fits_one_legacy_transaction`). Ten of the eleven rows are
-exactly the hand-computed figures. One differs:
+Measured with one signature and the two compute-budget instructions, each transaction built and
+executed (`sizes::every_transaction_of_spec_4_10_fits_one_legacy_transaction`, pinned exactly).
+The limit is 1,232 bytes.
 
-| Transaction | SPEC | Measured |
-| --- | --- | --- |
-| `lock`, USDC, against a `Quote` account | 15 keys, 875 bytes | **14 keys, 843 bytes** (the offer is dropped, the quote and its rent receiver are added: 13 − 1 + 2) |
+| Transaction | Keys | Bytes | SPEC |
+| --- | --- | --- | --- |
+| `lock`, SOL, offer | 9 | 684 | |
+| `lock`, USDC, offer / with a watcher | 13 | 812 / 844 | |
+| `lock`, USDC, against a `Quote` account | 14 | 844 | 4.10 says 15 keys (the offer is dropped, the quote and its rent receiver are added: 13 − 1 + 2) |
+| `take`, USDC, offer, with a payout address | 13 | 810 | |
+| `fund`, USDC, with a watcher | 11 | 688 | |
+| `lock`, SOL, advance approval | 11 | 1,055 | |
+| `lock`, USDC, advance approval | 15 | 1,183 | 1,183 |
+| **`lock`, USDC, advance approval, watcher** | 15 | **1,215** | 1,215: the largest; fits |
+| `take`, USDC, advance approval, payout address | 15 | 1,181 | 1,181 |
+| two SOL `lock`s with watchers, two makers | 13 | 1,150 | 1,150 |
+| two USDC `lock`s with watchers, two makers | 18 | 1,310 | does not fit, as before the amendment (two transactions) |
+| `freeze` | 6 | 329 | |
+| `claim`, USDC, direction A | 16 | 694 | |
+| `claim`, USDC, direction B, creating the payout's token account | 19 | 790 | |
+| `set_caps` | 4 | 296 | |
+| `set_eth_quote` (255-byte quote) | 6 | 651 | |
+| `refresh_offers`, 4 offers + 4 ETH quotes | 9 | 1,097 | |
+| `set_offer` | 6 | 429 | |
+| `refill_keys`, 8 slots | 5 | 1,078 | |
+| `post_message` (largest) | 5 | 1,201 | |
 
-The largest single-swap transaction is `lock`, USDC, with an advance approval: 1,182 bytes. Two
-USDC locks for two makers are 1,244 bytes and do not fit, as the text says.
+Nothing that grew exceeds the limit; no behaviour was trimmed.
 
 ## Compute units (SPEC 4.9)
 
 Measured by `sizes::compute_units_of_the_main_instructions` (address-dependent by a few hundred
-units; asserted as ceilings).
+units; asserted as ceilings). The opens cost about 20,000 units more than before A2: the rules
+now run in `escrow-logic`, whose amounts and bounds are 128-bit (`mul_div`, checked sums).
 
 | Instruction | SOL | USDC |
 | --- | --- | --- |
-| `lock` (offer, ACTIVE) | 38,000 | 47,900 |
-| `lock` + advance approval | 37,300 | 45,700 |
-| `take` | 40,900 | 46,300 |
-| `approve` / `fund` | 23,100 / 25,800 | 23,100 / 29,600 |
-| `post_notice` / `set_ready` | 14,800 / 14,700 | same |
-| `claim` (A) / `claim` (B, session key) | 25,100 / 27,200 | 33,900 / 36,000 |
-| `refund` (A, session key, held) / `refund` (B) | 24,300 / 22,900 | 30,000 / 33,300 |
-| `withhold` with evidence / `split_deposit` | 15,100 / 22,300 | 15,100 / 31,200 |
-| `close_swap` | 18,700 | 23,400 |
-| `refill_keys`, 8 slots | 73,700 | |
-| `refresh_offers`, 4 offers + 4 ETH quotes | 20,100 | |
+| `lock` (offer, ACTIVE) | 58,000 to 62,000 | 65,000 to 67,000 |
+| `lock` + advance approval | 57,000 | 66,000 to 72,000 |
+| `take` | 57,000 to 58,000 | 64,000 to 68,000 |
+| `approve` / `fund` | 24,000 / 27,000 | 24,000 / 31,000 |
+| `post_notice` / `set_ready` / `freeze` | 16,000 | same |
+| `claim` (A) | 27,000 | 41,000 to 48,000 |
+| `claim` (B, session key) | 29,000 | 39,000 to 42,000; 59,000 when it creates the payout's token account |
+| `refund` (A, session key, held) / `refund` (B) | 25,000 / 24,000 | 32,000 to 36,000 / 34,000 to 35,000 |
+| `withhold` with evidence / `split_deposit` | 16,500 / 23,000 | 16,500 / 35,000 to 38,000 |
+| `close_swap` | 18,000 | 23,000 |
+| `set_caps` | 4,500 | |
+| two SOL `lock`s in one transaction | 115,000 | |
+| `refill_keys`, 8 slots | 74,000 | |
+
+A client's compute-unit limit for an open should be at least 80,000 per `lock`/`take` (100,000
+with a USDC approval), not the 60,000 that was enough before.
 
 ## How the vectors are replayed
 
 | # | Vector | Note |
 | --- | --- | --- |
-| T1 | `transitions.json` | All 405 Solana rows and 182 sequences (729 steps) run against the built program, **twice**: with SOL and with USDC as the asset. `chain: both` never occurs (C15 of WP1). Compared per step: result or exact error, the whole swap record, the maker's counters and totals, and every lamport and token (escrow in, paid, parked, session sweep, rent on close). |
+| T1 | `transitions.json` | All 602 Solana rows, 325 sequences (41 of them the hostile invariant-3 walks) and both `multi_sequences` run against the built program, **twice**: with SOL and with USDC as the asset. A row's `env` is applied with real instructions (`set_caps`, both pause bits, `bump_epochs`, `set_split_mode`); the asset's open value is written directly only where a row starts from a given value, and is compared after every step. `chain: both` never occurs (C15 of WP1). Compared per step: result or exact error, the whole swap record, the maker's counters and totals, and every lamport and token (escrow in, paid, parked, session sweep, rent on close). |
 | T2 | `transitions.json`, terms out of bounds | `set_offer` refuses such terms (asserted, same error). To exercise the check in `lock`/`take` itself the offer account is then written directly with `set_account`. |
 | T2b | `transitions.json`, "amount zero" | No price turns a nonzero `xmr` into an amount of zero in direction A, and a price of zero marks a tier unused, so these rows are quotes: `post_quote` refuses them (asserted, same error), and the `Quote` account is then written directly so that `lock`/`take` itself refuses. `amounts.json` `swap-*-zero-price` is replayed the same way (a live offer cannot carry a zero price: `refresh_offers` answers `TiersInvalid`). |
 | T3 | `transitions.json`, "cannot receive" | USDC: the destination token account is frozen. SOL: the destination is replaced by an executable account (a payout address that is a program). LiteSVM refuses to mark an ordinary account executable, so the stand-in is owned by the native loader. The one exception is a direction-B refund on SOL: the destination is the operator, which signs and pays the fee and cannot be executable, so the maker's destination is made unusable by naming another wallet in `maker_wallet` (P2). |
@@ -118,7 +144,58 @@ units; asserted as ceilings).
 | T8 | `terms.json` | `extremes` uses values no offer may carry; its hash is checked against the harness only. The other six are published and compared with the stored `terms_hash`. |
 | T9 | `points.json` | All 18 invalid commitments at all six instructions; all 100 valid points locked and opened by a real refund; the six bad openings; Monero's 272 rows (256 locked and refunded with Monero's own key pairs, 16 unreduced secrets refused); the 14 low-order X25519 encodings at `register_maker`, `rotate_enc_key`, `lock`, `take`. |
 
+| T10 | `transitions.json`, payout and watcher | `payout: other` is a second wallet, `payout: invalid` is the program id. A sequence step by the `watcher` or the `payout` role is signed by that key. |
+
 No vector row or case was skipped, weakened or special-cased to pass.
+
+## Amendment 1 (A2): caps, payout address, freeze
+
+**What runs.** `open.rs` and `settle.rs` no longer hold the rules. Every state-changing call
+builds an `escrow_logic::machine::Swap` view of the account (`logic::view`), asks `gate` for the
+row, `plan` for where the payouts go, decides per payout whether its destination can receive
+(the one thing the model cannot know), and applies `execute_plan`; `lock`/`take` use `open`,
+`approve`/`fund` use `execute`. The program then writes the returned state back, moves exactly
+the amounts in the returned effects, and stores `open_value_after`. Bounds are `check_bounds`
+against `bounds::SOLANA`; the constants in `constants.rs` are asserted equal to it at compile
+time. What stays in the program: account and address checks, the proofs of knowledge and curve
+checks, quotes and approvals, the pool, token and lamport movement, events.
+
+| # | Spec | Kind | What | Why |
+| --- | --- | --- | --- | --- |
+| A-K1 | 11.6 `T_ff = t_Z + W_z` | Deviation **(for SPEC, Kani finding 1)** | The frozen-final time is `T_ff = max(t_Z + W_z, T_co)`. With a short window frozen early, `t_Z + W_z` falls before `T_co` and the text's formula would open the claim earlier than without a freeze. The `Frozen` event's `frozen_until` carries the max. | The model; `deadlines.json` frozen cases; `freeze::the_frozen_final_time_is_never_before_the_claim_delay…`. |
+| A-K2 | 3.5 B9 | Note (Kani finding 2) | The direction-B refund gates in NOTICED are the model's, not re-derived here. | `transitions.json` B9 rows. |
+| A-K3 | 11.1 | Note (Kani finding 3) | The open-value add is checked: a direction-B take whose `amount + deposit` does not fit `u64` is refused (`OpenCapExceeded` with the caps on, `MathOverflow` with them off), and so is an open that would carry the asset's open value past `u64::MAX`. The subtraction saturates, so no exit can fail on it. A claim's payout is a checked sum (`MathOverflow`), never saturating. | `caps::open_value_arithmetic_is_exact`. |
+| A-C1 | 11.1 | Choice | Order in `lock`/`take`: terms and amount bounds, then `SwapCapExceeded`, `OpenCapExceeded`, then `TooManyPending` and capacity. A refused open adds nothing and does not consume a quote. `fund`, `approve` and every later call never read the caps. | The model's `open`; `caps::a_quote_is_capped_like_an_offer…`. |
+| A-C2 | 11.1 | Note | `set_caps` is admin-only and refused with `ConfigFrozen` after `freeze_config`: caps frozen on stay on for good. `initialize` leaves `caps_on = 1` and zero caps, so nothing opens until the admin calls `set_caps`. | `caps::a_fresh_deployment_is_fail_closed…`. |
+| A-P1 | 11.2 `PayoutInvalid` | Choice | Refused at `take`: the default key (which is also the system program), the program id, and any address off the Ed25519 curve (every PDA of this or any program, so also every associated token account). **A token account or program at an on-curve address cannot be told apart from a wallet by its address and is accepted**; the proceeds would then be parked for that address's signer. `take` in direction A ignores the argument and stores zeros. | The Take list has no payout account to inspect; reading one would add 32 bytes to the largest take. |
+| A-P2 | 11.2 | Choice | `claim` in B: the `payout` slot must be `swap.payout` and `payout_token` its associated token account, else `Unauthorized` (they are fixed addresses, P1). In A the payout slots must be the taker (the SDK passes the taker and its token account) and are unused. | A wrong fixed address fails; only destination *state* parks. |
+| A-P3 | 11.2 | Choice | The payout's token account is created in `claim` or `withdraw_owed(0)` only when all hold: `associated_token_program` is passed and is that program; nothing lives at the address; the caller is a plain system account and keeps `rent(165) + rent(0)` lamports after the fee. Otherwise the proceeds are parked and the claim still succeeds. The creation happens before the session-key sweep, so a session key pays for it out of what would have been swept. | Tested to the lamport: `payout::a_missing_token_account_is_created_at_the_callers_cost_or_the_proceeds_are_parked`. |
+| A-P4 | 11.2 | Choice | `withdraw_owed(0)` when the proceeds belong to a payout address: signed by anyone, it pays only `swap.payout` (its ATA); signed by the payout address itself, it pays any destination named in the payout slots. The taking wallet has no special right over them. A parked refund or deposit (owed to the taker's own wallet) is as before: the taker signs and names the destination in the `taker` slots. Which of the two a balance is, is the model's `Swap::payout_owed` (a claim's proceeds in a swap whose payout is not the taker). | "Anyone can deliver parked proceeds to the payout." |
+| A-S1 | 11.1, 4.5 | Choice | `split_deposit` when `split_mode` changed after the transaction was built: the treasury's half is parked in `owed_treasury` if the slot does not hold what the current mode pays (wrong or missing `treasury`/`treasury_vault`); `withdraw_owed(2)` delivers it. One combination pays at once: USDC flipped from treasury to burn, since a burn needs only the mint and the swap's vault. | `invariant3::a_split_mode_flipped_mid_flight_parks_the_treasury_half`. |
+| A-F1 | 11.6 | Choice | `Some(Pubkey::default())` as a watcher is `WatcherNotAllowed` at `lock` and `fund`, with or without a window (zeros mean "none" in the record). A `freeze` by the locker on a swap that names no watcher is `BadState`; by anyone else `Unauthorized`; after `T_co`, `TooLate`. | The model's gate order: caller, state, time. |
+| A-F2 | 11.6 | Note | A signer that holds two roles (a taker that named its own wallet as watcher or payout) is tried in each; the first role's error is reported if none admits the call. | `logic::decide`. |
+| A-L1 | 11.8 | Note | `Swap` is 800 bytes with 30 reserved bytes at 770, zero in every state (`freeze::the_swap_account_is_800_bytes…`, and the harness's decoder asserts both on every read). `Config`'s 68 reserved bytes at 188 are zero. No migration exists or is needed. | No deployment. |
+
+**Invariant 3, by test** (`invariant3.rs`). 51 paths cover every exit call from every state it
+is allowed in, both directions, with parked payouts withdrawn by their owner and delivered by a
+stranger, to `close_swap`. Each path is run undisturbed and then once per position (223 walks
+per asset) with, at that position: every cap zero and the switch on, `split_mode` flipped, both
+pause bits, both epochs bumped, and the config frozen. Every later call must succeed at the same
+second, leave the same record after every step, and pay every party the same. A second swap
+stays open throughout and the asset's open value is checked after every step. Result: 0
+failures on SOL and on USDC.
+
+**For the SDK and the harness (in addition to the list below).**
+
+- `config` is writable in `lock`, `take` and every Settle-list call.
+- `claim` and `withdraw_owed` have 17 accounts: the Settle list, then `payout`, `payout_token`,
+  `associated_token_program` (each optional). Direction A: pass the taker and its token account.
+- `TakeArgs.payout` is mandatory in B (the taker's own wallet when the user names none);
+  `LockArgs.watcher` and `fund(…, watcher)` are `Option<Pubkey>`.
+- To have a missing payout token account created, pass the associated-token program and give
+  the claiming key `rent(165)` more than its usual budget; otherwise the proceeds park.
+- A new deployment opens nothing until `set_caps`; `tools/svm-rpc` worlds need that call.
+- Compute-unit limits: see the table above.
 
 ## What WP5 (SDK) and the end-to-end harness need to know
 
@@ -132,8 +209,8 @@ No vector row or case was skipped, weakened or special-cased to pass.
   (and its ATA) for `refund` in B. For `withdraw_owed(0)` the `taker` / `taker_token` slots are
   the destination the taker names; for `withdraw_owed(1)` (signer: the maker's **owner**) the
   `maker_wallet` / `maker_token` slots are; for `withdraw_owed(2)` the treasury slots are pinned.
-- Token destinations are never created by a payout. A missing or frozen taker ATA or payout ATA
-  parks the payout; `withdraw_owed` needs an existing destination token account.
+- Token destinations are never created by a payout, with the one exception of A-P3. A missing or
+  frozen destination token account parks the payout; `withdraw_owed` needs an existing one.
 - `fund` takes the operator's own token account in `operator_token`.
 - An offer is live only after `set_offer` **and** a `refresh_offers`, and direction A in auto mode
   needs pool keys (`refill_keys`, a slot that is filled and unused cannot be overwritten). Every
