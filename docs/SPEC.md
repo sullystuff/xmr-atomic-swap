@@ -1,6 +1,6 @@
 # XMR atomic swaps: implementation specification
 
-2026-11-23. Status: **all twelve work packages are merged and the end-to-end suite is green; this document describes what was built.** Nothing is audited, nothing has run on a live network, and several defaults await the owner's sign-off. `docs/STATUS.md` is the short honest summary; `docs/research/m1-followups.md` lists follow-ups (the M1 items are done; the open ones are under "Post-M4").
+2026-11-23. Status: **all twelve work packages are merged and the end-to-end suite is green; this document describes what was built.** Nothing is audited, nothing has run on a live network, and several defaults await the owner's sign-off. **Amendment 1 (section 11, 2026-11-27) is specified and not yet built**; text describing it says so. `docs/STATUS.md` is the short honest summary; `docs/research/m1-followups.md` lists follow-ups (the M1 items are done; the open ones are under "Post-M4").
 
 This is the single document engineers build from. It turns `docs/DESIGN.md` (product design; its Decisions table wins) and `docs/research/*.md` (verified findings) into exact interfaces. You do not need to read the research to implement a work package, but each section names the research file that holds the working snippet to lift.
 
@@ -12,7 +12,7 @@ How to read it:
 
 **Hard rule for every work package: no step in this specification deploys a program or sends a transaction to any live Solana cluster or any live Ethereum network.** The Solana CLI on the build machine points at mainnet with a funded wallet. Tests never read `solana config`, never use the CLI wallet, and never start `solana-test-validator`. A mainnet deployment is a separate step the project owner approves and performs; it is outside every work package.
 
-Contents: [1 Repository and versions](#1-repository-layout-and-exact-versions) · [2 Cryptography and encodings](#2-cryptography-and-encodings) · [3 State machine](#3-state-machine) · [4 Solana program](#4-solana-program) · [5 Ethereum contract](#5-ethereum-contract) · [6 Off-chain messages and relay](#6-off-chain-messages-transports-and-the-relay) · [7 Maker daemon](#7-maker-daemon) · [8 Console and taker UI](#8-maker-console-and-taker-web-ui) · [9 Tests](#9-test-strategy-and-the-end-to-end-harness) · [10 Work packages](#10-milestones-and-work-packages) · [Interpretations](#interpretations) · [Pending owner sign-off](#interpretations-pending-owner-sign-off) · [Open risks](#open-risks)
+Contents: [1 Repository and versions](#1-repository-layout-and-exact-versions) · [2 Cryptography and encodings](#2-cryptography-and-encodings) · [3 State machine](#3-state-machine) · [4 Solana program](#4-solana-program) · [5 Ethereum contract](#5-ethereum-contract) · [6 Off-chain messages and relay](#6-off-chain-messages-transports-and-the-relay) · [7 Maker daemon](#7-maker-daemon) · [8 Console and taker UI](#8-maker-console-and-taker-web-ui) · [9 Tests](#9-test-strategy-and-the-end-to-end-harness) · [10 Work packages](#10-milestones-and-work-packages) · [11 Amendment 1](#11-amendment-1-2026-11-27) · [Interpretations](#interpretations) · [Pending owner sign-off](#interpretations-pending-owner-sign-off) · [Open risks](#open-risks)
 
 ---
 
@@ -235,6 +235,8 @@ enc     e = okm("enc")[0..32]                        X25519 static secret (clamp
 | Maker | The daemon keystore seed | 16 random bytes generated per share and **written to the database before the share is published or used** | The database row. A restored old database generates new random ids, so it cannot re-issue an old share. |
 
 **Contact key.** Messages that concern no swap (a quote request, an approval request, a general inbox message) use a per-maker taker key so a reloaded tab can read the replies: `share_id = SHA256(DS("contact") ‖ maker PDA)[0..16]`, `chain_tag = 0x01`, key = `okm("enc")`.
+
+**Wallet-derived seed** (Amendment 1, section 11.3): as an option the taker's seed is `walletSeed(chain_tag, wallet, signature)` instead of a random seed from a recovery file; everything derived from the seed is unchanged.
 
 Never reuse a spend share: every swap publishes one of the two. The `chain_tag` in `info` keeps Solana and Ethereum shares disjoint.
 
@@ -508,6 +510,7 @@ pub async fn sweep_joint<D: MoneroDaemonRpc>(daemon: &D, p: SweepParams) -> Resu
 | `sweepJoint(params) → Promise<SweepOutcome>` | Section 2.11; uses the global `fetch` in both targets |
 | `init()`, `isReady()`, `coreVersion()`, `envelopeHeader(bytes)`, `ethSwapId(taker, swapNonce)`, `splitOf(deposit)` | Added by WP1. The web build needs `await init()` once. `payAmount`/`receiveAmount` take an optional `chain` (enforces that chain's amount width); `encodeEthQuoteCompact` an optional `sig`. Argument objects use camelCase keys. `deriveKeys` returns, on Solana, the 32-byte Ed25519 seed and public key as `sessionSecret`/`sessionPub`; on Ethereum the secp256k1 private key and the 20-byte address. |
 | `modelApply(state, call, caller, now, env, chain)`, `modelEnabled(state, now, chain)`, `tierValue(above, values, xmr)` | The reference model and tier lookup, exported through wasm. The SDK's `apply`, `enabled`, `errorOf` and `tierValue` call these; there is one implementation of the state machine. |
+| `walletSeed(chainTag, wallet, signature) → Uint8Array(32)` | Amendment 1, section 11.3 (to be added, with `wallet_seed.json`). The functions taking terms, open-hash and Ethereum-quote fields gain the fields of section 11.7. |
 | `passphraseSeal(passphrase, plaintext) → Uint8Array`, `passphraseOpen(passphrase, sealed) → Uint8Array` | scrypt (N = 2^17, r = 8, p = 1, 16-byte salt) + XChaCha20-Poly1305; layout `0x01 ‖ salt[16] ‖ nonce[24] ‖ ciphertext`. Used for the daemon keystore and the encrypted recovery file. |
 
 **Reference model.** `swap_core::model` is a pure implementation of the state machine of section 3: `fn apply(state: SwapState, call: Call, caller: Role, now: i64, env: &Env, consts: &ChainConsts) -> Result<Effects, ModelError>`. It has no I/O. `ChainConsts` carries every constant of section 3.1 **and the three behavioural switches that differ by chain**: `explicit_approve`, `open_secret_calls` (anyone may call `claim`/`refund`; true on Ethereum) and `lapse_is_fault` (false on Ethereum). `Env` carries what the model cannot know: which payout destinations can receive (to exercise pay-or-park). `Effects` lists the new state, every `t_*` field, each payout split into paid and parked, and the counter moved.
@@ -600,6 +603,8 @@ price(xmr) = price of the highest used tier with xmr >= tier threshold;  depth(x
 
 `price` is asset base units per 1 XMR. Tiers are well formed when `above[0] == 0`, tier 0 is used, used thresholds strictly increase and unused tiers trail; anything else is `TiersInvalid`, except a size with no used depth tier, which is `DepthInvalid`.
 
+**Amendment 1** adds: per-asset beta caps and invariant 3 (section 11.1: no admin or maker switch may touch an exit; caps and pause gate only `lock` and `take`); a payout address for direction-B claims (11.2); and the per-offer freeze window `W_z`, the state FROZEN and the rows Z1 to Z6 (11.6), which extend the `W_f` bound and `T_nl` by `W_z` when `W_z > 0`.
+
 **A swap whose `amount` or `xmr` is zero is refused on both chains** (`AmountOutOfRange`). Direction B rounds down, so a dust take can compute to zero; such a swap would lock the taker's XMR against nothing. The reference model, the Solana program (`lock`, `take`, `post_quote`), the Ethereum contract and the SDK's pricing all refuse it.
 
 ### 3.2 Deadlines, invariants and the two rules that remove races
@@ -677,6 +682,7 @@ So the order `t_lock <= t_A < t_N < T_cut < T_co`, `t_R < T_co`, `T_cd < T_final
 | 7 | HOLD | Refunded; the deposit is still in escrow until `T_hold`. |
 | 8 | WITHHELD | The maker withheld the deposit. |
 | 9 | DONE | Settled. On Solana the account stays, holding the revealed scalar, until closed (section 4.5). |
+| 10 | FROZEN | Amendment 1, section 11.6: a watcher or the locker paused the claimer's claim-without-ready until `T_ff`. |
 
 Value 0 means "no such swap". On Ethereum swaps are never deleted: rows marked "closed" below end in DONE there, and a `swapId` can never be reused. `outcome` records the counter id (section 3.7) of the transition that settled the swap. `deposit_state`: 0 none, 1 held, 2 withheld, 3 returned, 4 released by the maker, 5 split.
 
@@ -741,7 +747,7 @@ L = maker, C = taker. The maker escrows `amount`. The taker posts the take depos
 | B9f | `refund(s_M)` | Operator | ABORTED_HOLD, `now < T_final` | same | `amount` to the maker; `Dp` held | `refunds_after_abort` | HOLD |
 | B9g | `refund(s_M)` | Operator | NOTICED, READY or ABORTED_HOLD, `now >= T_exp` | same | `amount` to the maker; `Dp` to the taker | `expired_refunds` | DONE |
 | B11 | `expire_unnoticed` | Anyone | ACTIVE, `now >= T_exp` | none | `Dp` to the taker; `amount` parked for the maker (`owed_maker`) | `expired_refunds` | DONE |
-| B10a | `claim(s_T)` | Taker wallet or session | READY, `now < T_cd` | `s_T` vs `S_T` | `amount − fee + Dp` to the taker; `fee` to the treasury | `completed`; volume | DONE |
+| B10a | `claim(s_T)` | Taker wallet or session | READY, `now < T_cd` | `s_T` vs `S_T` | `amount − fee + Dp` to the taker's **payout address** (section 11.2; the taker's own wallet by default); `fee` to the treasury | `completed`; volume | DONE |
 | B10b | `claim(s_T)` | same | NOTICED, `T_co <= now < T_final` | same | same | `taker_claims_without_ready`; volume | DONE |
 | B10c | `claim(s_T)` | same | NOTICED, READY or ABORTED_HOLD, `T_final <= now < T_exp` | same | same | `claims_after_final`; volume | DONE |
 
@@ -792,7 +798,7 @@ Invariants (each MUST have a test):
 | 6 | `notices` | 14 | `aborts_pre_notice` | 22 | `refunds_after_abort` | 30 | `releases` |
 | 7 | `readies` | 15 | `aborts_early` | 23 | `taker_no_notice` | 31 | `splits` |
 
-Id 32 is `rejections_no_fault`; ids 33 to 39 are reserved. `reject` takes a reason byte: 0 = the maker's choice (`rejections`); 1 = unusable taker input (Ethereum: no valid DLEQ proof, a low-order encryption key, a commitment equal to one of the maker's own); 2 = the named pool leaf was consumed by another swap. Reasons 1 and 2 increment `rejections_no_fault` and are left out of the approval rate. The reason is the maker's own statement; the UI shows both counts so a maker cannot hide ordinary rejections there unnoticed.
+Id 32 is `rejections_no_fault`; ids 33 to 36 are `freezes`, `refunds_after_freeze`, `backouts_after_freeze`, `claims_after_freeze` (Amendment 1, section 11.6); 37 to 39 are reserved. `reject` takes a reason byte: 0 = the maker's choice (`rejections`); 1 = unusable taker input (Ethereum: no valid DLEQ proof, a low-order encryption key, a commitment equal to one of the maker's own); 2 = the named pool leaf was consumed by another swap. Reasons 1 and 2 increment `rejections_no_fault` and are left out of the approval rate. The reason is the maker's own statement; the UI shows both counts so a maker cannot hide ordinary rejections there unnoticed.
 
 Counter 13 (`missed_funds`) is reachable only where `EXPLICIT_APPROVE` is false, that is on Solana.
 
@@ -815,7 +821,7 @@ Rules common to all modes: a pending lock reserves no key and (apart from a dire
 
 ### 3.9 Session key
 
-Created in the page (derived, section 2.2), named in `lock`/`take`, which the taker's wallet signs. That signature is its only authorisation. It is valid for that one swap and may call: A: `cancel_pending`, `set_ready`, `refund`, `close_swap`. B: `cancel_pending`, `post_notice`, `abort`, `claim`, `publish_evidence`, `close_swap`. The taker's wallet can call everything the session key can. It can never choose a destination: every payout goes to the taker address stored at lock. It pays its own fees from a budget forwarded by `lock`/`take`, and the leftover returns to the taker (sections 4.5 and 5.4). It does not replace the spend share: a keyed call needs both.
+Created in the page (derived, section 2.2), named in `lock`/`take`, which the taker's wallet signs. That signature is its only authorisation. It is valid for that one swap and may call: A: `cancel_pending`, `set_ready`, `refund`, `close_swap`. B: `cancel_pending`, `post_notice`, `abort`, `claim`, `publish_evidence`, `close_swap`. The taker's wallet can call everything the session key can. It can never choose a destination: every payout goes to the taker address stored at lock, or in a direction-B claim to the payout address stored at take (section 11.2). It may also call `freeze` where a watcher is named. It pays its own fees from a budget forwarded by `lock`/`take`, and the leftover returns to the taker (sections 4.5 and 5.4). It does not replace the spend share: a keyed call needs both.
 
 ### 3.10 DESIGN's "Refunds and deposits" table, row by row
 
@@ -846,6 +852,7 @@ Maker daemon: (1) fresh share per swap, row written first; (2) direction A: buil
 Solana    SHA256( DS("open") ‖ swap PDA ‖ t_lock (i64) ‖ direction ‖ asset ‖ xmr (u64) ‖ amount (u64) ‖ deposit (u64)
                   ‖ taker_spend_pub ‖ locker_view as stored at lock (zeros in B) ‖ taker_enc_key ‖ maker_enc_key )
           recomputed by the program from the account; nothing extra is stored.
+          Amendment 1 appends ‖ payout ‖ watcher (as named by the taker; zeros when none) on both chains.
 Ethereum  sha256( abi.encodePacked( "xmrswap/v1/open", bytes1(0), swapId, uint64 tLock, uint8 direction, address token, uint64 xmr,
                   uint256 amount, uint256 deposit, bytes32 takerSpendPub, address takerKey, address takerKey2,
                   bytes32 takerView, bytes32 takerEncKey, bytes32 makerEncKey, bytes32 keyLeaf ) )
@@ -918,7 +925,8 @@ Borsh, fields in this order. Offsets are given where clients filter with `memcmp
 | `treasury_authority` | Pubkey | May sweep the treasury |
 | `cluster_tag` | [u8; 32] | Genesis hash of the cluster; binds signed objects |
 | `usdc_mint` | Pubkey | Asset 1 |
-| `split_mode` | u8 | 0 = treasury half goes to the treasury; 1 = burned |
+| `split_mode` | u8 | 0 = treasury half goes to the treasury; 1 = burned. It can never make `split_deposit` fail (section 11.1). |
+| `caps_on`, `max_swap`, `max_open`, `open_value` | u8, 3 × [u64; 2] | Amendment 1, section 11.1; taken from the reserved bytes, which become 68 |
 | `bump`, `treasury_bump` | u8, u8 | |
 | `reserved` | [u8; 117] | |
 
@@ -1009,7 +1017,7 @@ terms_hash = SHA256( DS("terms") ‖ asset (u8) ‖ direction (u8) ‖ mode (u8)
 | 542 | `revealed` | [u8; 32] | The revealed spend share |
 | 574 | `t_lock`, `t_pending_deadline`, `t_active`, `t_note_deadline`, `t_notice`, `t_cut`, `t_claim_open`, `t_ready`, `t_claim_deadline`, `t_final`, `t_refund`, `t_settled` | 12 × i64 | 0 = not set. `T_nl = t_final − d_c − w_c − 86,400`; `T_exp = t_final + EXPIRY_SECS`; `T_hold = t_refund + HOLD_SECS`; `T_split = t_refund + SPLIT_SECS`. |
 | 670 | `owed_taker`, `owed_maker`, `owed_treasury` | 3 × u64 | Parked payouts still in escrow |
-| 694 | `reserved` | [u8; 42] | |
+| 694 | `reserved` | [u8; 42] | Amendment 1 replaces this with `payout`, `watcher`, `w_z`, `t_freeze` and 30 reserved bytes; the account becomes 800 bytes (section 11.8) |
 
 Client queries: all makers = `memcmp(0, Maker discriminator)`; a maker's offers = Offer discriminator + `memcmp(8, makerPda)`; a taker's swaps = Swap discriminator + `memcmp(8, taker)`; a maker's swaps = `memcmp(40, makerPda)`, optionally `memcmp(72, state)`. `getProgramAccounts` must be allowed by the RPC endpoint; the self-hosting docs say so.
 
@@ -1122,7 +1130,7 @@ As `lock`, with the offer's or quote's direction B: `amount = floor(xmr × price
 | `claim` | A: operator. B: taker or session | `secret: [u8; 32]` | A11a-c, B10a-c | `scalar_matches` against the claimer's commitment; writes `revealed`, flag bit 2; sweeps the session key in B |
 | `release_deposit` | anyone, or operator | none | 3.6 | |
 | `withhold` | operator | `evidence: Option<Evidence>`, `Evidence { txid: [u8; 32], view: [u8; 32] }` | 3.6 | With evidence: recompute the commitment and compare; store the evidence; set flag bit 1 |
-| `split_deposit` | anyone | none | 3.6 | Burn mode: SOL to the incinerator address `1nc1nerator11111111111111111111111111111111`; USDC with the token program's `burn` signed by the swap PDA. In burn mode a SOL swap's `treasury` slot must be the incinerator (which can always receive). A USDC burn that is impossible parks the half in `owed_treasury`, later delivered to the treasury vault. |
+| `split_deposit` | anyone | none | 3.6 | Burn mode: SOL to the incinerator address `1nc1nerator11111111111111111111111111111111`; USDC with the token program's `burn` signed by the swap PDA. In burn mode a SOL swap's `treasury` slot should be the incinerator (which can always receive); if the slot does not match the current mode the treasury's half is parked rather than the call refused (Amendment 1, the invariant-3 fix). A USDC burn that is impossible parks the half in `owed_treasury`, later delivered to the treasury vault. |
 | `publish_evidence` | the claimer | `txid`, `view` | 3.6 | |
 | `withdraw_owed` | see below | `who: u8` | | |
 | `close_swap` | see below | none | | |
@@ -1137,6 +1145,8 @@ As `lock`, with the offer's or quote's direction B: `amount = floor(xmr × price
 `taker`, `maker_wallet` and all destination token accounts are `UncheckedAccount`s validated by hand; typed accounts would make a missing destination revert the instruction. The token destinations are the associated token accounts of `swap.taker`, of `maker.payout` or `maker.operator`, and the treasury vault. For a USDC swap all six token slots must be filled; for SOL all six are absent (the program id, read-only).
 
 **Addresses are requirements; destination state parks.** The `taker` account, the taker's associated token account, the Treasury PDA (or the incinerator for a burned SOL half) and the treasury vault are fixed at lock and must be the right addresses in every instruction, `claim` and `refund` included: a wrong one fails with `Unauthorized`, a token account missing from a USDC swap's instruction with `WrongAsset`. Otherwise anyone cranking a keyless instruction could force the taker's money to be parked by mis-naming an account; a simulation catches the caller's own mistake. Whether such an account exists, is initialised, frozen, executable or rent-exempt never fails anything. **The maker's destination is soft:** if `maker_wallet` or `maker_token` is not the address the instruction pays (`set_payout` or `set_operator` can land between a claim's simulation and its execution), the payout is parked for the owner.
+
+**Amendment 1** adds `set_caps` and `freeze`, makes `config` writable in `lock`, `take` and the Settle list, extends `claim` and `withdraw_owed` by `payout`, `payout_token` and `associated_token_program`, lets a direction-B claim create the payout's token account at the caller's cost, and lets anyone deliver parked direction-B proceeds to the payout address (sections 11.1, 11.2, 11.6, 11.8).
 
 **Pay or park (claims and refunds never revert on a payout).** `claim` and `refund` carry a secret in their arguments. If the transaction fails, the secret is public anyway and the escrow is still there for the other side. So these instructions, and for uniformity every instruction that pays out, do: verify, write state, emit, then for each payout:
 
@@ -1183,7 +1193,7 @@ Every swap event carries `swap: Pubkey`, `maker: Pubkey`, `counter: u8` and `at:
 
 Anchor error codes are `6000 + index` in this order (frozen in the IDL):
 
-`Unauthorized`, `Paused`, `BadState`, `TooEarly`, `TooLate`, `InvalidKeyCommitment`, `InvalidProofOfKnowledge`, `InvalidScalar`, `InvalidEncryptionKey`, `ScalarMismatch`, `OfferDisabled`, `OfferStale`, `SeqTooOld`, `TermsChanged`, `PriceMoved`, `AmountOutOfRange`, `CapacityExceeded`, `NoKeyAvailable`, `KeySlotBusy`, `ApprovalRequired`, `ApprovalInvalid`, `QuoteMismatch`, `QuoteExpired`, `StaleEpoch`, `StaleKeyVersion`, `SignatureInstructionInvalid`, `WrongDirection`, `WrongAsset`, `MintNotAllowed`, `DepositTooHigh`, `ApprovalWindowOutOfRange`, `NoticeWindowOutOfRange`, `ClaimDelayTooShort`, `ClaimWindowTooShort`, `FinalWindowOutOfRange`, `DepthInvalid`, `TiersInvalid`, `TooManyPending`, `SessionBudgetTooLow`, `EvidenceMismatch`, `EvidenceRequired`, `NothingOwed`, `NotClosable`, `VaultNotEmpty`, `MessageTooLarge`, `MessageMalformed`, `OnionInvalid`, `ContactsTooLong`, `ConfigFrozen`, `MathOverflow` (amount arithmetic at lock only; never reachable in a secret-bearing instruction).
+`Unauthorized`, `Paused`, `BadState`, `TooEarly`, `TooLate`, `InvalidKeyCommitment`, `InvalidProofOfKnowledge`, `InvalidScalar`, `InvalidEncryptionKey`, `ScalarMismatch`, `OfferDisabled`, `OfferStale`, `SeqTooOld`, `TermsChanged`, `PriceMoved`, `AmountOutOfRange`, `CapacityExceeded`, `NoKeyAvailable`, `KeySlotBusy`, `ApprovalRequired`, `ApprovalInvalid`, `QuoteMismatch`, `QuoteExpired`, `StaleEpoch`, `StaleKeyVersion`, `SignatureInstructionInvalid`, `WrongDirection`, `WrongAsset`, `MintNotAllowed`, `DepositTooHigh`, `ApprovalWindowOutOfRange`, `NoticeWindowOutOfRange`, `ClaimDelayTooShort`, `ClaimWindowTooShort`, `FinalWindowOutOfRange`, `DepthInvalid`, `TiersInvalid`, `TooManyPending`, `SessionBudgetTooLow`, `EvidenceMismatch`, `EvidenceRequired`, `NothingOwed`, `NotClosable`, `VaultNotEmpty`, `MessageTooLarge`, `MessageMalformed`, `OnionInvalid`, `ContactsTooLong`, `ConfigFrozen`, `MathOverflow` (amount arithmetic at lock only; never reachable in a secret-bearing instruction). Amendment 1 appends `SwapCapExceeded`, `OpenCapExceeded`, `PayoutInvalid`, `WatcherNotAllowed`, `FreezeWindowOutOfRange`.
 
 ### 4.9 Constants, parameters and authority
 
@@ -1216,6 +1226,7 @@ Every instruction fits a legacy transaction of at most 1,232 bytes with one sign
 Rules that follow:
 
 - A single `lock` or `take` is always a legacy transaction, with or without an approval or quote. `take` is 33 bytes smaller than `lock`.
+- With Amendment 1: a `lock` naming a watcher is 33 bytes larger (the largest, USDC with an approval and a watcher, is **1,215 bytes**; 1,183 without a watcher); the largest `take` is 1,181 bytes with its payout field; two SOL legs with watchers are 1,150.
 - Batches (the large-swap tool): **two SOL legs per legacy transaction; one USDC leg per legacy transaction.** Three legs never fit. A leg that uses an advance approval travels alone.
 - Optional optimisation, not required for correctness: two USDC legs fit a v0 transaction that loads `config`, the System program, the USDC mint and the Token program from a **protocol lookup table**. The table is created at deployment (an owner step) and its address pinned next to the program id; in tests `svm-rpc` creates one with `svm_createLookupTable`. v0 transactions and lookup tables were not run under LiteSVM 0.16.0; WP5 spikes this and falls back to one USDC leg per transaction if it does not work.
 - The byte counts above are now measured, not estimated: a program test executes each transaction and an SDK unit test builds each and asserts its serialised length. The v0 two-leg USDC transaction (1,156 bytes, 14 static keys, a four-address lookup table) was run in `svm-rpc` by the SDK's integration suite. The taker UI still opens USDC legs one per transaction, because no protocol lookup-table address is pinned until a deployment exists.
@@ -1239,7 +1250,8 @@ contract XmrSwap is IXmrSwap, Initializable, UUPSUpgradeable, Ownable2StepUpgrad
 ```
 
 - **UUPS**, not a transparent proxy. The contract becomes immutable when the owner calls `renounceOwnership()`.
-- **The owner's only power is upgrading.** Treasury address, the USDC address and every constant are fixed at initialisation or in the implementation, so renouncing freezes them too.
+- **The owner's powers are upgrading and, with Amendment 1, the beta caps** (`setCaps`, `setCapsOn`; section 11.1), which can refuse only `lock` and `take`.
+- Otherwise nothing is adjustable: Treasury address, the USDC address and every constant are fixed at initialisation or in the implementation, so renouncing freezes them too.
 - All state lives in one ERC-7201 namespaced struct, namespace `xmrswap.storage.v1`.
 - `nonReentrant` on every function that moves funds. Tokens: `address(0)` (ETH) and the one USDC address only.
 - `foundry.toml`: `solc = "0.8.31"`, `evm_version = "osaka"`, optimizer on (200 runs), `via_ir = true`, `ffi = true` (one test runs `cast wallet sign`), the interface imported through the remapping `xmrswap-interfaces/=../interfaces/`, remappings as in the research note, and `fs_permissions = [{ access = "read", path = "../interfaces/vectors" }]` so tests can read the vectors.
@@ -1294,7 +1306,7 @@ mapping(address => address) makerOfOperator;            // an operator address s
 address treasury;  address usdc;
 ```
 
-Swaps are never deleted; a settled swap costs nothing to keep and its `revealed` value, nonce, notice ciphertext and evidence stay readable with `eth_call`. Counter and volume updates saturate.
+Swaps are never deleted; a settled swap costs nothing to keep and its `revealed` value, nonce, notice ciphertext and evidence stay readable with `eth_call`. Counter and volume updates saturate. Amendment 1 appends root slots 13 and 14 (caps) and record slots 24 and 25 (`payout`, `tFreeze`, `freezeSecs`, `watcher`); see section 11.8.
 
 **Storage is packed, and the layout is recorded in `ethereum/STORAGE.md`; it must not change once a proxy is deployed** (an upgrade may only append). The stored swap is an internal struct of 24 slots (`amount`, `deposit` and `price` as `uint128`; anything above `2^128 − 1` is refused with `AmountOutOfRange`); `lock` writes 17 fresh slots, `take` 13. `getSwap` returns the interface struct, so the ABI is unchanged. Measured gas for a whole transaction, ETH / USDC: `lock` 528,905 / 564,646; `take` 432,390 / 468,119; `approve` 98,293; `fund` 176,819 / 203,498; `postNotice` about 221,000; `setReady` about 67,900; `claim` about 110,500 / 130,200; `refund` after `T_cd` 126,291 to 162,817.
 
@@ -1358,7 +1370,7 @@ The session key is an ordinary externally owned account derived in the page. `lo
 
 Events (all swap events index `swapId` and `maker`, and carry `uint8 counter`): `Locked(swapId, maker, taker (indexed), token, direction, mode, amount, deposit, xmr, depth, bytes16 swapNonce, TakerKeys keys, bytes32 leaf)`, `Approved`, `Funded(…, key, key2, spendPub, view)`, `Rejected(…, reason)`, `PendingCancelled`, `PendingExpired`, `NoticePosted(…, commitment, ciphertext, late)`, `ReadySet`, `Aborted(…, newState)`, `RefundedKeyless`, `ExpiredUnnoticed`, `Refunded(…, secret, depositHeld)`, `Claimed(…, secret, paid, fee)`, `DepositReleased`, `DepositWithheld(…, txid, view)`, `DepositSplit`, `EvidencePublished(…, txid, view)`, `PayoutDeferred(token, account, amount)`, `MakerRegistered`, `OperatorChanged`, `PayoutChanged`, `LinkChanged(maker, old, new, effectiveAt)`, `PausedChanged`, `EpochsBumped`, `QuoteCancelled`, `ApprovalRevoked`, and the messaging fallback `Message(address indexed from, address indexed to, bytes32 indexed swapId, bytes payload)`.
 
-Custom errors: `NotRegistered`, `AlreadyRegistered`, `Unauthorized`, `Paused`, `BadSigner`, `Expired`, `StaleEpoch`, `Cancelled`, `Revoked`, `WrongParty`, `WrongDirection`, `TokenNotAllowed`, `TiersInvalid`, `AmountOutOfRange`, `PriceMoved`, `ApprovalRequired`, `BadKey`, `KeyAlreadyUsed`, `BadState`, `TooEarly`, `TooLate`, `BadSecret`, `BadValue`, `ShortTransfer`, `DepositTooHigh`, `ApprovalWindowOutOfRange`, `NoticeWindowOutOfRange`, `ClaimDelayTooShort`, `ClaimWindowTooShort`, `FinalWindowOutOfRange`, `DepthInvalid`, `ViewInvalid`, `TooManyPending`, `EvidenceMismatch`, `EvidenceRequired`, `NothingOwed`, `MessageTooLarge`.
+Custom errors: `NotRegistered`, `AlreadyRegistered`, `Unauthorized`, `Paused`, `BadSigner`, `Expired`, `StaleEpoch`, `Cancelled`, `Revoked`, `WrongParty`, `WrongDirection`, `TokenNotAllowed`, `TiersInvalid`, `AmountOutOfRange`, `PriceMoved`, `ApprovalRequired`, `BadKey`, `KeyAlreadyUsed`, `BadState`, `TooEarly`, `TooLate`, `BadSecret`, `BadValue`, `ShortTransfer`, `DepositTooHigh`, `ApprovalWindowOutOfRange`, `NoticeWindowOutOfRange`, `ClaimDelayTooShort`, `ClaimWindowTooShort`, `FinalWindowOutOfRange`, `DepthInvalid`, `ViewInvalid`, `TooManyPending`, `EvidenceMismatch`, `EvidenceRequired`, `NothingOwed`, `MessageTooLarge`. Amendment 1 adds `SwapCapExceeded`, `OpenCapExceeded`, `WatcherNotAllowed`, `FreezeWindowOutOfRange`, the functions `setCaps`, `setCapsOn`, `capsOf`, `pushOwed`, `freeze`, a trailing `address watcher` on `lock` and `fund`, a trailing `address payout` on `take`, `Quote.freezeWindow`, and the events `CapsChanged`, `CapsSwitched`, `Frozen`.
 
 ### 5.6 Identity link across chains
 
@@ -1719,6 +1731,10 @@ Decisions the flows make where sections 3.11 and 7.5 left room (the daemon and t
 
 The integration suite (`pnpm --filter @xmrswap/sdk test:integration`) runs the SDK against the built program in `svm-rpc`, the contract on anvil and the regtest; it found no bug in the program, the contract or the facade. Sweeps need a regtest chain of at least 720 blocks (decoy selection fails intermittently on a shorter one).
 
+### 7.11 Amendment 1 in the daemon (not yet built)
+
+Per offer `freeze_window_hours` (default 0 = no watcher accepted; 1 to 72 otherwise; with it the default withhold policy is `price_moved`). `capacity_xmr` is also capped by the on-chain headroom and `max_swap` at the current price, and a taker refused by a cap is reported as that. The daemon handles FROZEN: in direction A it claims at `T_ff` (or aborts, by `without_ready`); in direction B, on return, it verifies the lock and sets ready or refunds before `T_ff − M`. `[watcher] url` names a watcher for the maker's own direction-B swaps; the daemon names its key at `fund` and posts the notice key. `[approvals].deny_watchers` lists watcher keys it will not serve. The open hash it signs into `approve`/`fund` covers the taker's payout and watcher. Status reports caps, open value and the expected and on-chain program hash.
+
 ### 7.10 The daemon as built
 
 Additions and decisions made while building and while fixing the bugs the end-to-end suite found (`packages/daemon/DEVIATIONS.md`, `tests/e2e/BUGS.md`).
@@ -1810,7 +1826,7 @@ One file covers every swap, because every per-swap secret is derived from the se
 - Created and downloaded before the first lock; the lock button stays disabled until the user has saved it (download completed and a checkbox confirming it). Optionally passphrase-encrypted (`"seed_enc"`: scrypt + XChaCha20-Poly1305).
 - Resume after a reload: list the wallet's swaps from chain state (Solana: `memcmp` on `taker`, the nonce is in the account; Ethereum: `swapsOf(taker, …)` then `getSwap`, which returns `swapNonce`; logs are only an index), re-derive each swap's keys from the seed and its nonce, decrypt the notice with the `maker_enc_key` stored in the swap, and continue.
 - Escape hatch: for any swap whose two spend shares are known, "Export keys" writes address, private view key, private spend key, lock txid and height, which restore in standard Monero wallet software.
-- Deriving the seed from a wallet signature (DESIGN's alternative) is **not offered in this version**: any site that obtained the same signature would hold every spend share and session key. The recovery file is the only backup.
+- Deriving the seed from a wallet signature (DESIGN's alternative) is offered by Amendment 1 as an option the taker chooses, off by default, with a determinism check and its own warnings (section 11.3). The recovery file stays the default and stays exportable in that mode.
 
 ### 8.5 Mandatory warnings
 
@@ -1874,6 +1890,8 @@ The order itself (plan, remainder, worst rate, destination address, deadline) is
 `deploy/` holds two equivalent one-command starts, both bound to localhost: `pnpm --filter @xmrswap/deploy start` (a static file server for the web UI on `127.0.0.1:8780` and the relay; needs only Node; it **does not start Tor**: it probes the configured SOCKS port and prints how to start a client if nothing answers), and a compose file for people who use containers. Acceptance uses the first; Docker is never required to build or test anything. The UI and the relay are served from **one origin** (the static server proxies `/relay/` and `/monero/` to the relay), because the relay sends no CORS headers by default; a deployment that separates them sets the relay's `allowed_origins`. The relay's `program_id` has no default and must be set to the release's id. And `docs/self-hosting/` covers: quick start; configuration reference (Solana RPC URL, Ethereum RPC URL, relay URL, Monero nodes, Tor proxy `127.0.0.1:9050`, relay bind `127.0.0.1`, pinned program id and contract address); safe defaults and a separate page on exposing the relay publicly with the rules of section 6.5 as requirements; who sees what in each connection mode; verifying the download (checksums, and checking the program id against the published one); the status page; troubleshooting (Tor unreachable and the on-chain fallback, RPC rate limits and the `getProgramAccounts` requirement, a Monero node out of sync, `--rpc-access-control-origins` for people running their own node); backups and upgrades without losing an in-flight swap.
 
 ### 8.9 The console, the taker UI and the bundle as built
+
+**Amendment 1 (not yet built).** Taker UI: caps and headroom on the offers and swap pages; a payout-address field when selling XMR (11.2); the wallet-key mode (11.3); the watcher option and the changed "Safe to close" rules (11.6); the expected and on-chain program hash on Status, with locking disabled on a mismatch (11.5). Console: caps and open value, the freeze window per offer with its cost explained, frozen swaps, the program-hash check.
 
 **Console.** The daemon is the judge of the configuration: the console's own schema is a second copy, so a key it does not know is never an error locally; it is kept untouched, listed under "Settings not editable here" with the daemon's verdict, and a save is blocked only by the daemon's validation. A save changes only the edited lines (comments and unknown keys stay byte for byte); a file with multi-line values or arrays of tables is written afresh and the save bar says so. Every operator action shows its outcome where it was given. Owner actions on Ethereum: common wallets refuse `eth_signTransaction`, so the console always offers a paste box for a transaction signed offline. "Withdraw parked payout" is offered on every swap page. A light theme follows the system setting. Tests are vitest (no Playwright); wallet signing was tested with fake wallets only.
 
@@ -1979,6 +1997,16 @@ Markets: `sol`, `usdc_sol`, `eth`, `usdc_eth`. "All" means each of the four.
 | E-1 | Ethereum specifics: pool leaves fetched through the relay and checked against `keyRoot`; lock refused without a verified maker proof; maker rejects (reason 1) without a valid taker proof; **direction B: maker funds with a rogue `spendPub` or mismatched twins and the page refuses to show the address**; two takers name the same leaf (second rejected with reason 2); maker waits for `finalized` before sending XMR and before claiming | As stated; `rejections_no_fault` moves, the approval rate does not |
 | T-1 | Relay: forward to a listed onion; a full-size DLEQ upload and a pool fetch pass; an oversize `/msg` body, an unlisted onion and a disallowed path are refused; a later inbox reply is read from the replies route after a reload; fallback to on-chain messaging when the relay is down | As stated |
 | L-1 | Large swap (UI): three makers, two waves, one maker stalls | Remainder re-planned; report lists filled and unfilled |
+| C-1 | Amendment 1, caps: a lock exactly at `max_swap` and at `max_open` succeeds, one unit above fails with the right error, on all four markets; the UI shows open value and headroom | As stated |
+| C-2 | Caps lowered to zero and the maker paused while swaps are open in every state: every exit still runs to its end (invariant 3); new locks are refused; headroom returns as swaps settle | Open value returns to zero exactly |
+| C-3 | Fail-closed start: a fresh deployment refuses every lock until caps are set | As stated |
+| Y-1 | Amendment 1, payout: sell XMR to a fresh address with no balance and no token account (Solana USDC, ETH, USDC on Ethereum); claim sent by the session key | The fresh address receives `amount − fee + Dp`; the taking wallet receives nothing |
+| Y-2 | Payout that cannot receive (frozen token account; ETH-rejecting contract): proceeds parked, then delivered by a stranger's call | Delivered only to the payout address |
+| W-1 | Amendment 1, wallet key (UI): enrol with a deterministic test wallet, swap, clear the browser, return with the wallet alone and collect; a wallet that signs differently each time is refused | As stated |
+| Z-1 | Amendment 1, freeze, direction A: false notice, tab closed, the watcher freezes before `T_co − M`; the maker's claim at `T_co` fails; the taker returns before `T_ff` and refunds | Taker keeps its funds less a withholdable deposit |
+| Z-2 | Watcher freezes a good lock (forced): the taker returns, sets ready, the swap completes; and the taker does not return: the maker claims at `T_ff` | No funds lost either way |
+| Z-3 | Direction B: the daemon is stopped during a funded swap with a false notice; its watcher freezes; the restarted daemon refunds before `T_ff`; the take deposit returns at once | Maker escrow intact; `backouts_after_freeze` |
+| Z-4 | A watcher tries everything else (refund, ready, claim, a second freeze, a swap that does not name it); a lock naming a watcher against `W_z = 0` | All refused |
 | U-1 | UI gates: lock impossible without backup and checkbox; banner and leave prompt while at risk; "Safe to close" only when allowed; reload resumes and auto-refunds | As stated |
 
 ### 9.5 What the end-to-end suite covers
@@ -2056,7 +2084,289 @@ WP1's hand-over states that it ran these and records the versions. Each command 
 | M3 Daemon and UIs | WP8, WP9, WP10 | All three in parallel | Their acceptance commands |
 | M4 System | WP11, WP12 | In parallel | End-to-end suite green |
 
+**Amendment 1** has its own packages A1 to A10 and their order in section 11.9. The existing commands above stay valid.
+
 After M4 and outside this specification: audit, a stagenet run of the browser sweep, and the owner's decision to deploy.
+
+---
+
+## 11. Amendment 1 (2026-11-27)
+
+Six additions approved by the owner. Sections 2 to 10 above are updated wherever they would otherwise contradict this section; where an earlier sentence and this section still differ, this section wins. Nothing here is built yet. Items A, B and F change the frozen interfaces and are delivered in **one** interface update (section 11.8). Nothing is deployed, so layouts may still change; after this amendment they are frozen again.
+
+| Item | What | Touches |
+| --- | --- | --- |
+| A | On-chain beta caps | Both chains, model, vectors, SDK, daemon, UIs |
+| B | Fresh payout address when selling XMR | Both chains, model, vectors, SDK, taker UI |
+| C | Optional wallet-derived key | Core (one KDF), SDK, taker UI |
+| D | Model checking | Core, a new shared logic crate, both chains' tests |
+| E | Published verified build | Deploy, a new `releases/` directory, taker UI and console |
+| F | Keyless freeze by a watcher | Both chains, model, vectors, SDK, a new watcher package, daemon, taker UI |
+
+### 11.1 A: on-chain beta caps
+
+**Rule.** Per escrowed asset the admin sets `max_swap` (largest `amount` of one swap) and `max_open` (largest open value at once), and a global switch `caps_on`. With the switch on, an opening call that would exceed either is refused. With it off nothing is checked; the accounting continues so UIs can still show the open value.
+
+**Invariant 3: admin switches gate only new exposure.** No cap, pause, epoch bump, `split_mode`, freeze of the configuration or any other admin or maker switch may block, delay or alter `approve`, `fund`, `reject`, `cancel_pending`, `expire_pending`, `post_notice`, `set_ready`, `freeze`, `abort`, `refund_unnoticed`, `expire_unnoticed`, `refund`, `claim`, `release_deposit`, `withhold`, `split_deposit`, `publish_evidence`, `withdraw_owed`/`pushOwed` or `close_swap`. The only calls an admin or maker switch may refuse are `lock` and `take`. Each chain MUST have a test that opens one swap per reachable state, then sets every cap to zero with the switch on, sets both pause bits (Solana) or `paused` (Ethereum), bumps both epochs, and walks every exit of sections 3.4 to 3.6 and 11.6 to its end.
+
+*Audit of the existing switches against this rule.* Pause is checked only in `lock`/`take` on both chains (confirmed in the code): compliant. `MAX_OPEN_PENDING` gates only opens: compliant. **One violation existed:** on Solana the admin's `split_mode` decides which account `split_deposit` expects in its `treasury` slot, and the program refuses the other one; an admin flipping the mode therefore makes an in-flight keyless `split_deposit` fail, and alters where the treasury's half goes. Fix (in this amendment): `split_deposit` never fails on that slot. The taker's half is paid as always; if the `treasury` account is not the one the current mode names, the treasury's half is parked in `owed_treasury`. The upgrade key itself can of course change anything until the contracts are frozen; that is the standing trust assumption, not a switch.
+
+**What counts.** A swap's *counted value* is `amount` in direction A and `amount + deposit` in direction B (the taker's deposit is escrowed too). It is added to `open_value[asset]` when the swap is opened (`lock`, `take`), and subtracted **exactly once**, at the transition that takes the swap out of the open states PENDING, ACTIVE, NOTICED, READY, FROZEN, ABORTED_* (that is, on entering HOLD or DONE, or closing). A flag bit on the swap (`counted`: Solana flags bit 5, Ethereum flags value 32) is set by the add and cleared by the subtract, so a second subtract is impossible; the subtraction saturates at zero and MUST NOT be able to fail an exit. A held or withheld deposit (at most 5% of a capped swap) and parked payouts are settled obligations and are not counted: the contract's balance can exceed the open value by exactly those.
+
+In direction B the whole `amount` is reserved at `take`, so **`fund` is never refused by a cap** (otherwise a cap change between take and fund would give the maker a `missed_funds` fault it did not cause). Changing a cap never touches an open swap; lowering `max_open` below the current open value only refuses new opens until exits bring it back under.
+
+Checks in `lock`/`take`, after the bounds of section 3.1 and before `TooManyPending`, only when `caps_on`: `amount > max_swap[asset]` → `SwapCapExceeded`; `open_value[asset] + counted > max_open[asset]` → `OpenCapExceeded`. Exactly at a cap is allowed.
+
+**Initial state: fail closed.** After `initialize` the switch is on and every cap is zero: nothing can open until the admin sets caps. Test harnesses add one call; `DeployAnvil.s.sol` switches caps off for the test chain. If the configuration is frozen (Solana `freeze_config`, Ethereum `renounceOwnership`) while caps are on, they stay as they are for good; the UIs show that.
+
+| | Solana | Ethereum |
+| --- | --- | --- |
+| Who | `Config.admin` | The contract owner (the owner's powers are now: upgrading and caps) |
+| Storage | In `Config`, from its reserved bytes (size stays 256): `caps_on: u8`, `max_swap: [u64; 2]`, `max_open: [u64; 2]`, `open_value: [u64; 2]`, `reserved: [u8; 68]`. **`config` becomes writable** in `lock`, `take` and the Settle list (it was already in every list, so no transaction grows). | Appended to `SwapStore.Layout`: slot 13 `mapping(address token => Cap) caps` with `Cap { uint128 maxSwap; uint128 maxOpen; uint128 openValue; }` (two slots per token); slot 14 `bool capsOn`. |
+| Set | `set_caps(caps_on: bool, max_swap: [u64; 2], max_open: [u64; 2])`; accounts `admin` (signer), `config` (writable). Fails with `ConfigFrozen` after a freeze. | `setCaps(address token, uint128 maxSwap, uint128 maxOpen)` and `setCapsOn(bool on)`, both `onlyOwner` |
+| Read | The `Config` account | `capsOf(address token) returns (bool on, uint128 maxSwap, uint128 maxOpen, uint128 openValue)` |
+| Events | `CapsChanged { caps_on, max_swap, max_open }` | `CapsChanged(address indexed token, uint128 maxSwap, uint128 maxOpen)`, `CapsSwitched(bool on)` |
+| Errors | `SwapCapExceeded`, `OpenCapExceeded` (appended to the list of 4.8, so existing codes keep their numbers) | `SwapCapExceeded()`, `OpenCapExceeded()` |
+
+Clients show "X of Y open" and the headroom `max(0, max_open − open_value)` per asset, and the largest swap allowed, on the offers page, the swap page and the console. The daemon caps each offer's `capacity_xmr` by the headroom and by `max_swap` at the current price, and reports a cap refusal of a taker as what it is.
+
+### 11.2 B: fresh payout address when selling XMR
+
+**Rule.** In direction B the taker names a `payout` address at `take`. It is stored in the swap, covered by the open hash (so the maker funds knowing it), and can never change. `claim` pays `amount − fee + Dp` to that address and to no other, whoever submits the transaction. The default is the taker's own address.
+
+Decisions:
+
+- **Only direction B gets the field.** In direction A the taker receives XMR at any Monero address it likes already, and its refunds must return to the wallet that locked. The maker's direction-A proceeds already go to its registry `payout` address, which the cold key sets; a per-swap maker payout would add a field to every lock for a party whose identity is public by design.
+- **Everything that is not a claim returns to the taker's own wallet**: the take deposit on a cancel, rejection, lapse, maker refund, release, split or B11. The maker's refunds return to the maker as before.
+- **Who signs.** Solana: `claim` is signed by the taker's wallet or the session key, as today (the secret is the taker's; nobody else has it before the claim lands). The payout address never signs anything. The transaction's fee payer may be any account, which leaves the door open for a fee-covering relayer; none is specified. Ethereum: `claim` stays open to anyone holding the secret.
+- **Missing token account (Solana).** The claim **may create** the payout's associated token account, paid by the `caller`, when the caller passes the associated-token program and holds enough lamports for the account's rent and its own; the program checks every precondition first (address derivation, mint, the caller's balance) so the creation cannot fail the instruction. If any precondition is missing the proceeds are parked, as before. The SDK adds the rent to the session budget when the payout has no token account.
+- **Parked proceeds are not stranded.** Solana: `withdraw_owed(0)` on a direction-B swap that ended in a claim may be signed by the payout address (any destination), or by **anyone** with the destination pinned to the payout address or its associated token account (the caller puts an idempotent account creation before it). The taker's wallet has no power to redirect them. Ethereum: proceeds are parked under the payout address; the new permissionless `pushOwed(address token, address account)` retries the push to `account` itself, so an address with no ETH is never stuck; `withdrawOwed` by the payout address still works.
+
+Interface:
+
+| | Solana | Ethereum |
+| --- | --- | --- |
+| Argument | `TakeArgs.payout: Pubkey` (appended; must not be the default key, the program id or a token account: `PayoutInvalid`) | `take(…, address payout)` appended; zero is `BadValue` |
+| Storage | `Swap.payout: Pubkey` (section 11.8); zeros in direction A | `Record` slot 24, offset 0 (section 11.8); the interface struct gains `address payout` |
+| Claim accounts | `claim` and `withdraw_owed` use the Settle list plus three: `payout` (writable; must equal `swap.payout`, or the taker in direction A), `payout_token` (writable, optional), `associated_token_program` (optional) | n/a |
+| Events | `SwapOpened` gains `payout` | `Locked` gains `payout`; `PayoutDeferred` unchanged |
+| Open hash | `payout` appended (section 3.12) | `address payout` appended |
+
+Privacy, stated plainly: the payout address is public in the swap the taking wallet opened, so an observer links the taking wallet, the payout address, the amount and the time. What the field buys is that the wallet holding the deposit and paying fees need not be the wallet that receives the proceeds, and the receiving address needs no balance. It does not hide the relation, and nothing links either address to the Monero side.
+
+### 11.3 C: optional wallet-derived key (off-chain only)
+
+An alternative to the recovery file, chosen by the taker, **off by default**. The swap seed is derived from one wallet signature over a fixed message, so swaps can be resumed and XMR collected from any device that has the wallet.
+
+**Messages.** `SITE` is `WALLET_KEY_SITE` in `@xmrswap/protocol`, one fixed string per release (the project's canonical site name; a placeholder until the owner chooses it). It is deliberately **not** the page's origin: a self-hosted copy must derive the same keys. A page whose host is neither `SITE` nor loopback says so before asking for the signature.
+
+Solana, `signMessage` over these UTF-8 bytes (LF line ends, no trailing newline):
+
+```
+Sign this only on {SITE} to unlock your XMR swap keys.
+Anyone who gets this signature can take XMR you have not collected and act on your open swaps.
+
+xmrswap wallet key v1
+cluster: {genesis hash, base58}
+program: {program id, base58}
+wallet: {wallet address, base58}
+```
+
+Ethereum, `eth_signTypedData_v4` with the contract's own domain (`name "XmrAtomicSwap"`, `version "1"`, `chainId`, `verifyingContract`), so wallets display the domain:
+
+```
+WalletKey(string notice,string site,uint32 keyVersion,address wallet)
+notice     = "Sign this only on the site named below. Anyone who gets this signature can take XMR you have not collected and act on your open swaps."
+site       = SITE        keyVersion = 1        wallet = the signing address
+```
+
+The contract has no function that accepts a `WalletKey`, and its type hash differs from `Quote` and `Approval`.
+
+**Derivation** (in the core, new export `walletSeed(chainTag, wallet, signature)`):
+
+```
+sig   = Solana: the 64 signature bytes.  Ethereum: r ‖ s ‖ v with s normalised to the low half and v to 27/28 (65 bytes)
+seed  = HKDF-SHA256(ikm = sig, salt = DS("wallet-seed"), info = chain_tag ‖ wallet address bytes, L = 32)
+```
+
+From the seed on, everything is section 2.2 unchanged (`share_id` = the swap's nonce). The seed is per chain and wallet: Solana swaps use the Solana wallet's seed, Ethereum swaps the Ethereum wallet's. Vectors: `wallet_seed.json`.
+
+**Rules.**
+
+- **Determinism check, mandatory.** A signer that returns a different signature for the same message would lose the key. On first use with a wallet the page asks for the signature twice and compares; different bytes refuse the mode for that wallet. A returning user signs once and the page proves the seed by re-deriving, for each of the wallet's swaps found on chain, the taker's spend commitment from the swap's nonce and comparing it with the one stored in the swap; a mismatch refuses the mode and asks for the recovery file. A wallet with no swaps yet gets the two-signature check.
+- **Wallet requirements.** Solana: the Wallet Standard feature `solana:signMessage` (Ed25519 signatures are deterministic by construction; a hardware wallet qualifies only if it signs the exact bytes above, which the determinism check and the commitment check establish). Ethereum: an externally owned account that supports `eth_signTypedData_v4` with RFC 6979 nonces; contract wallets (ERC-1271), multi-party signers and any wallet that fails the check are refused.
+- **The signature is never sent anywhere and never stored.** It is passed to `walletSeed` and dropped. The derived seed follows the session rules already in force (memory, `sessionStorage` for the tab, and the optional passphrase-sealed copy).
+- **Warnings the page MUST show before the first signature**, with a checkbox: "Anyone who obtains this signature, for example a phishing site that asks you to sign the same message, can take XMR you have not yet collected and act on your open swaps." "If you lose this wallet you lose access to those swaps unless you also export a recovery file." "Only sign this message on {SITE}."
+- **The recovery file remains the default** and remains available in this mode as "Export recovery file" (the same format, holding the derived seed).
+- **Returning user:** connect the wallet, choose "Use my wallet key", sign once; the page lists the wallet's swaps from chain state and resumes them as in section 8.4.
+
+### 11.4 D: model checking
+
+**Shared logic crate.** New `crates/escrow-logic`: `#![no_std]`, no dependencies, `rust-version = "1.84"`, so the Solana program can use it by path. It holds the pure rules both the reference model and the program need: the amount arithmetic (pay, receive, deposit, fee, split), the bounds of section 3.1, the gate function `enabled(state, flags, call, role, now, deadlines) -> Result<Row, GateError>` for every row of sections 3.4 to 3.6 and 11.6, the payout plan of each row (who gets how much), the cap accounting of 11.1, and the byte-level validators (`is_canonical_scalar`, `is_identity_encoding`, `is_low_order_x25519`). `swap_core::model` is rewritten on top of it; the Solana program calls it in place of its own copies (A2). The contract cannot share Rust code; it is held to the same rules by the vectors.
+
+**Harnesses** live in `crates/escrow-logic/src/proofs/` (`#[cfg(kani)]`, one file per group) and `crates/swap-core/src/model_proofs.rs`. Single-step properties take fully symbolic inputs within the accepted bounds; sequence properties are bounded to 8 calls with symbolic callers, calls and non-decreasing times (`#[kani::unwind(9)]`).
+
+| Group | Property |
+| --- | --- |
+| `conservation` | For every row that moves funds: payouts paid plus parked plus what stays held equals what the swap escrowed; nothing is paid to a party the row does not name; the deposit never reaches the maker. Over sequences: total paid and parked never exceeds what was locked, and no portion leaves twice. |
+| `windows` | For every state and every `now`, secret-bearing calls are enabled for at most one party (invariant 1), with symbolic parameters inside the bounds, including FROZEN. |
+| `exits` | From every funded state, for each party with funds in it, some call it may make (or anyone may) is enabled at some time before `T_exp`, and the locker's at or after it (invariant 2). |
+| `switches` | With caps at zero and every pause set, `enabled` gives the same answer for every call except `lock` and `take` (invariant 3). `open_value` after any sequence equals the sum of the counted values of the swaps still open; it never underflows. |
+| `freeze` | A watcher's only enabled call is `freeze`; after it the locker's `refund` and `set_ready` are enabled until `T_ff`; no payout names the watcher (section 11.6). |
+| `arith` | No overflow for any accepted input; a nonzero `xmr` at a nonzero price never yields a zero `amount`; fee, deposit and split never exceed the amount they are taken from; split halves sum to the deposit. |
+| `encodings` | `is_canonical_scalar` accepts exactly the values below `ℓ`; the identity encoding and all 14 low-order X25519 encodings are rejected. |
+
+Command (acceptance of A1): `cargo kani -p escrow-logic && cargo kani -p swap-core`. Kani is **not installed on the build machine** (`cargo install --locked kani-verifier && cargo kani setup`, which downloads a toolchain); the harnesses are specified here and unrun until it is.
+
+**Not covered:** curve arithmetic and the on-chain point check (syscalls), the proof-of-knowledge and DLEQ verification, account handling, PDA derivation, token transfers and anything else in the Solana runtime, the Monero side, and all Solidity.
+
+**Ethereum.** The nearest equivalent that fits the toolchain is forge's stateful invariant testing, which already exists (`ethereum/test/Invariant.t.sol`). A3 adds invariants for: `capsOf(token).openValue` equals the sum of counted values of open swaps; the contract's balance per token is at least open value plus held deposits plus `owed` plus `treasuryAccrued`; no handler sequence with caps at zero and makers paused makes an exit revert; a frozen swap's watcher never receives funds. Symbolic checking is **not added now**: neither Halmos nor an SMT solver for solc's SMTChecker is installed, and neither could be run offline here. Halmos over the same invariant handlers is recorded as a follow-up for a machine that has it.
+
+### 11.5 E: published verified build
+
+Constraints, stated first: Docker is not installed on the build machine, nothing is deployed, and a third-party verification record can exist only after a deployment. What follows separates what can be run and checked here from what is specified but unrun.
+
+**Solana program.**
+
+| Step | Command | Status |
+| --- | --- | --- |
+| Local build and executable hash | `(cd solana/program && cargo build-sbf) && solana-verify get-executable-hash solana/program/target/deploy/xmr_swap.so` | Runnable here (`solana-verify` is installed). Gives the hash of this machine's build. Not a reproducibility proof. |
+| Deterministic build | `solana-verify build --library-name xmr_swap` (in `solana/program`), then the same `get-executable-hash` | **Specified, not run** (needs Docker). The release hash MUST come from this step. |
+| Compare with a deployment | `solana-verify get-program-hash <program id>`; `solana-verify verify-from-repo --program-id <program id> <repository URL> --commit-hash <commit> --library-name xmr_swap --mount-path solana/program` | Possible only after the owner deploys; read-only. |
+
+**Front ends.** `pnpm --filter @xmrswap/web build` and `pnpm --filter @xmrswap/console build` with the committed lockfile, then `pnpm --filter @xmrswap/deploy run release`, which is extended to produce, for each front end, a `SHA256SUMS` over the build tree and a single **tree hash** (SHA-256 of the sorted `SHA256SUMS` file). An IPFS CID (`ipfs add -r --only-hash --cid-version 1 --raw-leaves <dir>`) is recorded when the tool is present; it is **specified, not run** (no IPFS tool here). Reproducibility of the wasm step across machines is unproven (follow-up P8).
+
+**Where the hashes live.** New tracked directory `releases/<version>/`: `release.json` (`version`, `commit`, toolchain versions, `program_id`, `program_executable_hash`, `program_hash_source` = `"docker"` or `"local"`, `contract` and its implementation and library addresses when deployed, `web_tree_hash`, `console_tree_hash`, optional CIDs), `web.SHA256SUMS`, `console.SHA256SUMS`. A release whose program hash is `"local"` says so in its notes. `@xmrswap/protocol`'s `DEPLOYMENT` gains `programHash` (null until a release sets it).
+
+**What the UIs show.** The Status pages of the taker UI and the console show the program id and the executable hash this build expects, and compute the hash of the deployed program themselves: read the ProgramData account, drop its 45-byte header, strip trailing zero bytes, SHA-256 (the rule `solana-verify` uses). Equal: "matches the published build". Different or unreadable: a red warning that the page and the chain disagree, and locking is disabled in the taker UI. With no expected hash (today): "no published build to compare with".
+
+**The check a user runs.** `pnpm --filter @xmrswap/deploy run verify <release directory>` (files against `SHA256SUMS`, tree hashes against `release.json`), and for the program the two `solana-verify` commands above against the id shown in the UI.
+
+### 11.6 F: keyless freeze by a watcher
+
+**Verdict.** It holds up as an opt-in, per-offer feature, and is specified here. It is narrower than "fixes the closed tab": it turns the hour or so in which an absent locker loses everything to a false notice into a window the maker chose (24 to 72 hours by default range), and it does so by giving the locker a longer free option against the counterparty, which the maker must price. In the sell direction it also covers maker downtime, at a cost to takers that the offer must disclose.
+
+**Mechanism.** A swap may name one `watcher` key. While the swap is NOTICED and the locker's refund window is open, the watcher (or the locker itself) may call `freeze` once. It reveals nothing and moves nothing. Its one effect is to push the opening of the claimer's claim-without-ready from `T_co` to `T_ff = t_Z + W_z`, where `t_Z` is the freeze time and `W_z` the offer's **freeze window**.
+
+| Symbol | Meaning | Bound |
+| --- | --- | --- |
+| `W_z` (`w_z`, `freezeWindow`) | Per-offer freeze window. **0 = this offer accepts no watcher.** | 0, or `MIN_FREEZE_SECS = 3,600 <= W_z <= MAX_FREEZE_SECS = 259,200` |
+| | When `W_z > 0` the final-window bound becomes `W_p + W_n + D_c + W_z + W_c + 86,400 <= W_f`, and `T_nl = T_final − D_c − W_z − W_c − 86,400` | |
+
+New state **10 FROZEN**. Rows (direction A; B mirrors with locker = maker's operator, claimer = taker):
+
+| # | Call | Caller | From, and time gate | Funds | Counter | To |
+| --- | --- | --- | --- | --- | --- | --- |
+| Z1 | `freeze` | Watcher; or the locker (A: taker wallet or session; B: operator) | NOTICED, `now < T_co`, a watcher is named | none | `freezes` (33) | FROZEN; sets `t_Z` |
+| Z2 | `set_ready` | Locker | FROZEN, `t_N + d × READY_MIN_SECS_PER_CONF <= now < T_ff` | none | `readies` | READY; `T_cd = t_R + W_c` |
+| Z3 | `refund(s_L)` | Locker | FROZEN, `now < T_ff` | A: `amount − D` to the taker, `D` held. B: `amount` to the maker, `Dp` to the taker **at once** | A: `refunds_after_freeze` (34). B: `backouts_after_freeze` (35) | A: HOLD. B: DONE |
+| Z4 | `claim(s_C)` | Claimer | FROZEN, `T_ff <= now < T_final` | as any claim | `claims_after_freeze` (36) | DONE |
+| Z5 | `abort` | Claimer | FROZEN, `now < T_final` | none | A: `aborts_late`. B: `taker_aborts` | ABORTED_HOLD |
+| Z6 | `claim`, `refund` at the final deadline and expiry | as A11c/A10f, B10c/B9g | FROZEN joins the states those rows list | | | |
+
+Deadline algebra. `t_Z < T_co`, so `T_ff < T_co + W_z < T_final − W_c − 86,400` by the extended bound. A ready set in FROZEN has `t_R < T_ff`, so `T_cd < T_final − 86,400` as before. `T_final` and `T_exp` are unchanged. Invariant 1 holds: in FROZEN the locker's refund is enabled on `[t_Z, T_ff)` and the claimer's claim on `[T_ff, T_exp)`, never both. Invariant 2 holds: the locker can refund until `T_ff` and again from `T_exp`; the claimer can claim from `T_ff`. A freeze is possible only after a notice (before one, the keyless refund already protects the locker) and only once.
+
+**Unfreezing is allowed (Z2).** If the watcher froze a good lock, the returning locker sets ready and the swap completes normally; without that a wrong freeze would force a refund and a withheld deposit.
+
+**Griefing, quantified.** Today a taker can keep a maker's XMR tied up, with an option to walk away, until `T_co`: `D_c` after the notice, 1.5 to 3 hours. With a freeze that becomes up to `D_c + W_z`: at `W_z` = 24 hours and `D_c` = 1.5 hours, 17 times longer; at 72 hours, 49 times. The taker's own funds are locked for the same time. Chosen mitigations, all in the offer rather than in constants:
+
+1. **The maker sets `W_z` per offer and zero means no watcher.** A `lock` naming a watcher against such an offer is refused (`WatcherNotAllowed`). The taker sees `W_z` before locking; it is in `terms_hash` and in the Ethereum quote.
+2. **Freezing shortens, never removes, the maker's wait**: at `T_ff` the maker claims.
+3. **A refund or abort after a freeze always leaves the deposit withholdable** (Z3 in A, Z5), so the maker prices the longer option with `dep_bps` and its withhold policy (default policy `price_moved` for offers with `W_z > 0`).
+4. **Public record**: counters `freezes`, `refunds_after_freeze`, `backouts_after_freeze`, `claims_after_freeze` on the maker, and the `Frozen` event carries the taker and the watcher, so indexers can count per taker and per watcher. The daemon's approval rules can refuse a taker or a watcher key by list (`[approvals].deny_watchers`), in window mode and on Ethereum before the fact.
+
+**What a watcher can and cannot do** (each an invariant with a test on both chains and a Kani property in group `freeze`): it can call `freeze` once on a swap that names it; it can never receive funds, never block or delay the locker's `refund` or `set_ready`, never extend a swap past `T_final`, and it holds no spend share. A malicious watcher that freezes an honest swap costs the claimer at most `W_z` of delay and the locker nothing if it returns and sets ready (if it does not return, the claimer claims at `T_ff` and the swap completes). A watcher that fails to freeze leaves the locker exactly where it is today.
+
+**Sell direction.** The same mechanism, with the maker as locker: the maker names a watcher at `fund` (a second machine holding view data only), which freezes the taker's claim-without-ready when the taker's XMR lock does not verify, giving the maker `W_z` to bring its daemon back and refund. This is sound and is specified, with one asymmetry: there is no maker bond, so **a maker refund after a freeze returns the take deposit at once and can never hold it** (Z3), and is counted as `backouts_after_freeze`. The cost is the taker's: its XMR can stay locked up to `W_z` longer at the maker's option. A direction-B offer with `W_z > 0` therefore shows a warning before the take, and the taker UI's filters can exclude such offers.
+
+**What the watcher is given.** Only the swap's notice key `K("notice")` (section 2.8): a 32-byte key that decrypts that one swap's notice and nothing else. The locker's client can compute it at lock or fund time, before any notice exists, which is the point: the tab may be closed when the notice arrives. With it the watcher reads `notice_ct` from the chain, checks that it opens `notice_commitment`, takes `txid` and the claimer's view share, adds the locker's view share (already in clear on-chain) and both spend commitments (on-chain), and runs `verifyLock`. It never sees a spend share or the encryption secret. The key travels over HTTPS to the watcher the user chose; it does not go through the relay or the chain. A hosted watcher therefore learns, for each swap it watches: the swap, the amount, the joint address and the Monero lock transaction. The UI says so.
+
+**Interface.**
+
+| | Solana | Ethereum |
+| --- | --- | --- |
+| Offer and quote | `OfferTerms.w_z: u32`, `Offer.w_z`, `QuoteTerms.w_z`, `Quote.w_z` (from reserved bytes); `terms_hash` appends `w_z` (u32). | `Quote.freezeWindow: uint32`, appended as the last field of the struct, of the type string (`…,uint64 quoteId,uint32 freezeWindow`) and of the compact form, which grows from 251 to **255** bytes; the offsets of the dynamic fields do not move. `EthQuoteSlot.quote` and `set_eth_quote` take `[u8; 255]`. |
+| Naming the watcher | `LockArgs.watcher: Option<Pubkey>` (A, by the taker); `fund(…, watcher: Option<Pubkey>)` (B, by the operator). A watcher with `w_z == 0` is `WatcherNotAllowed`. | `lock(…, address watcher)`, `fund(…, address watcher)`; zero = none |
+| Call | `freeze()`, Short account list (`caller`, `swap`, `maker`, `config`) | `freeze(bytes32 swapId)` |
+| Storage | `Swap.watcher: Pubkey`, `w_z: u32`, `t_freeze: i64` (section 11.8) | `Record` slot 24 (`tFreeze`, `freezeSecs`), slot 25 (`watcher`); interface struct gains `address watcher; uint32 freezeSecs; uint64 tFreeze` |
+| Events | `Frozen { taker, watcher, frozen_until }`; `SwapOpened` gains `watcher` | `Frozen(bytes32 indexed swapId, address indexed maker, uint8 counter, address taker, address watcher, uint64 frozenUntil)`; `Locked` and `Funded` gain `watcher` |
+| Errors | `WatcherNotAllowed`, `FreezeWindowOutOfRange` (appended); a wrong caller is `Unauthorized`, a second freeze `BadState` | `WatcherNotAllowed()`, `FreezeWindowOutOfRange()` |
+| Open hash | `watcher` appended (zeros when none; in B the maker's watcher is not part of it) | `address watcher` appended |
+
+**Transaction size (Solana).** The watcher key fits in `lock`: 33 bytes as `Option<Pubkey>` when present, 1 when absent. The largest single-swap transaction, a USDC `lock` with an advance approval, goes from 1,182 to **1,215 bytes with a watcher** (1,183 without), inside the 1,232 limit. `take` gains the 32-byte payout and loses nothing: 1,181 bytes at its largest. Two SOL legs in one transaction: 1,084 + 2 × 33 = 1,150 with watchers. No follow-up instruction is needed.
+
+**Watcher service** (new package `packages/watcher`, `@xmrswap/watcher`). One Node process holding one Solana key and one Ethereum key with a small fee balance, and no other secret.
+
+| Route | Body | Effect |
+| --- | --- | --- |
+| `GET /watch/v1/info` | | `{ solana, ethereum, max_swaps, monero_nodes: n }`: the keys to name as watcher |
+| `POST /watch/v1/swaps` | `{ chain, swap_ref, notice_key }` | Accepted only if the swap exists at `finalized`, names this watcher and is not settled. Returns a signed acknowledgement `{ swap_ref, watching_until: T_co, sig }`. |
+| `GET /watch/v1/swaps/<swap_ref>` | | What it has seen and done |
+
+Behaviour, and nothing else: follow each accepted swap; when a notice appears, decrypt and check it; run the SDK's `verifyLock` under the two-node rule; **freeze** when the notice does not open its commitment, or when the lock is not `confirmed` at `T_cut`, sending no later than `T_co − M`; stop watching when the swap is READY, FROZEN or settled. It never refunds, never sets ready, and keeps no key material after a swap ends. Settings: bind address (loopback by default), chain endpoints by environment variable, two or more Monero nodes (or one own node), a cap on watched swaps, rate limits. The daemon can be pointed at one for its direction-B swaps (`[watcher] url`, and it posts the notice key at `fund`).
+
+**Taker UI.** Off by default: "your tab is your watcher" stays the default. Settings offers a self-hosted watcher URL, or the site's hosted one with this statement: "The watcher sees which swap you are in, its amount, its timing and the Monero transaction that pays you. It cannot move funds. It can fail." The option appears only for offers with `W_z > 0`. Changes to the mandatory warnings of section 8.5:
+
+- Item 8, "Safe to close", may appear before READY **only** when a watcher has acknowledged the swap, and then reads: "A watcher will pause this swap if the lock does not check out. If it does, come back before {T_ff − M} to refund; coming back late, or a watcher that fails, can still cost you your payment. A refund after a pause can cost the deposit of {D}." Without an acknowledgement nothing changes.
+- Item 3, the standing banner, stays until the acknowledgement arrives.
+- Item 9, on return to a FROZEN swap: the page verifies the lock itself, then sets ready (lock good) or refunds (lock bad), and says which and why.
+- Item 10 gains: for an offer with `W_z > 0` in the sell direction, "this maker can pause the swap for up to {W_z}; your XMR stays locked meanwhile".
+
+### 11.7 Model and vector changes
+
+`swap_core::model` (on `escrow-logic`): state FROZEN; swap fields `payout`, `watcher`, `w_z`, `t_freeze`, flag `counted`; `Env` gains per-asset `caps { on, max_swap, max_open, open_value }` and the maker's pause; `Effects` gains `open_value_after` and names `payout` as a recipient; errors `SwapCapExceeded`, `OpenCapExceeded`, `WatcherNotAllowed`, `FreezeWindowOutOfRange`; role `watcher`. Counters 33 to 36 take the names above (37 to 39 stay reserved). The core exports `walletSeed`; `termsHash`, both open hashes, `encodeEthQuoteCompact`/`decode…` and `quoteDigest` take the new fields.
+
+New rows and sequences in `transitions.json` (per chain, as before):
+
+- **Caps:** a lock with `amount` exactly `max_swap` (accepted) and one unit above (`SwapCapExceeded`); `open_value + counted` exactly `max_open` (accepted) and one above (`OpenCapExceeded`); the same four in direction B at `take`; `fund` accepted after the caps were set to zero; caps switched off (anything opens). Sequences: for **each** exit type (reject, cancel, expiry, keyless refund, `expire_unnoticed`, abort then refund, each keyed refund row into HOLD and into DONE, each claim row, release, withhold then split, a parked payout then `withdraw_owed`) the open value before and after, proving one subtraction and none at release, split or withdrawal; caps lowered below the current open value, existing swaps run every exit, new opens refused until the value falls; the invariant-3 walk (caps zero, pauses set, epochs bumped).
+- **Payout:** direction-B claims paid to a payout different from the taker, by each claim row; proceeds parked when the payout cannot receive, then delivered by a stranger's call and by the payout's own; every non-claim exit paying the deposit to the taker, not the payout; an invalid payout refused.
+- **Freeze:** Z1 by the watcher, by the locker, by a stranger (`Unauthorized`), with no watcher named, a second time, in READY, and one second either side of `T_co`; Z2 to Z5 one second either side of `T_ff`; freeze then ready then claim; freeze then refund then withhold (A) and then deposit returned at once (B); a watcher named against `W_z = 0`; `W_z` out of range; the latest reachable `T_cd` after a freeze at `T_co − 1` and a ready at `T_ff − 1`.
+
+Other vectors: `terms.json`, `eip712.json` (new type string, 255-byte compact form), `deadlines.json` (bounds with `W_z`), `sol_signed.json` (open hashes), new `wallet_seed.json` (both chains; a high-s Ethereum signature normalised).
+
+### 11.8 Layout summary (the one interface update)
+
+**Solana.** `Config` (256 bytes, unchanged size): after `treasury_bump`: `caps_on: u8`, `max_swap: [u64; 2]`, `max_open: [u64; 2]`, `open_value: [u64; 2]`, `reserved: [u8; 68]`. `Offer` (768, unchanged size): `w_z: u32` taken from the start of the reserved bytes; `reserved: [u8; 30]`. `Quote` (192): `w_z: u32` from reserved; `reserved: [u8; 26]`. `EthQuoteSlot.quote: [u8; 255]` (`EthBoard` stays 1,408). **`Swap` grows from 736 to 800 bytes**; everything up to offset 694 is unchanged:
+
+| Offset | Field | Type |
+| --- | --- | --- |
+| 694 | `payout` | Pubkey |
+| 726 | `watcher` | Pubkey |
+| 758 | `w_z` | u32 |
+| 762 | `t_freeze` | i64 |
+| 770 | `reserved` | [u8; 30] |
+
+`flags` bit 5 = counted in the open value. `state` 10 = FROZEN. New instructions `set_caps`, `freeze`. Changed arguments: `LockArgs` (+ `watcher`), `TakeArgs` (+ `payout`), `fund` (+ `watcher`), `OfferTerms` and `QuoteTerms` (+ `w_z`), `set_eth_quote` (255 bytes). Changed account flags and lists: `config` writable in `lock`, `take` and the Settle list; `claim` and `withdraw_owed` gain `payout`, `payout_token`, `associated_token_program`. Errors appended in this order: `SwapCapExceeded`, `OpenCapExceeded`, `PayoutInvalid`, `WatcherNotAllowed`, `FreezeWindowOutOfRange`. Events: new `CapsChanged`, `Frozen`; `SwapOpened` gains `payout`, `watcher`.
+
+**Ethereum.** `SwapStore.Layout` gains slot 13 (`caps` mapping) and slot 14 (`capsOn`). `SwapStore.Record` grows from 24 to 26 slots, appended only:
+
+| Slot | Offset | Bytes | Field | First written by |
+| --- | --- | --- | --- | --- |
+| 24 | 0 | 20 | `payout` | `take`, only when it differs from the taker |
+| 24 | 20 | 8 | `tFreeze` | `freeze` |
+| 24 | 28 | 4 | `freezeSecs` | `lock`/`take`, only when the quote's `freezeWindow > 0` |
+| 25 | 0 | 20 | `watcher` | `lock` or `fund`, only when one is named |
+
+`flags` value 32 = counted. A swap with the default payout, no freeze window and no watcher writes neither new slot, so its gas is unchanged apart from the cap accounting (one warm slot per open and per first exit). `ethereum/STORAGE.md` is updated by A3. Interface: structs `Swap` (+ `payout`, `watcher`, `freezeSecs`, `tFreeze`) and `Quote` (+ `freezeWindow`); functions `setCaps`, `setCapsOn`, `capsOf`, `pushOwed`, `freeze`; changed signatures `lock` (+ `address watcher`), `take` (+ `address payout`), `fund` (+ `address watcher`); errors `SwapCapExceeded`, `OpenCapExceeded`, `WatcherNotAllowed`, `FreezeWindowOutOfRange`; events `CapsChanged`, `CapsSwitched`, `Frozen`, and `Locked` (+ `payout`, `watcher`), `Funded` (+ `watcher`).
+
+### 11.9 Work packages for this amendment
+
+Same ownership rules as section 10.1. Every acceptance command of section 10.3 stays valid and must stay green; the commands below are additional, and where one names an existing command it means that command with the new tests in it.
+
+| Id | Owns | Depends on | Deliverable | Acceptance (in addition to the package's existing command) |
+| --- | --- | --- | --- | --- |
+| A1 | `crates/swap-core/`, new `crates/escrow-logic/`, `interfaces/`, `packages/core-wasm/`, `packages/protocol/`, root files | none | Section 11.7 and 11.8 as frozen artifacts: `escrow-logic` and the model on it; the updated IDL (edited by hand in `interfaces/solana/`, since the program is no longer WP1's), `IXmrSwap.sol` and ABI; regenerated vectors; `walletSeed`; protocol constants (`WALLET_KEY_SITE`, `DEPLOYMENT.programHash`, freeze bounds), codecs and daemon-API types (caps, watcher); the Kani harnesses of 11.4 | The WP1 command up to the vector check, `pnpm --filter @xmrswap/core-wasm test`, `pnpm --filter @xmrswap/protocol test`; and, on a machine with Kani, `cargo kani -p escrow-logic && cargo kani -p swap-core` (recorded as not run otherwise) |
+| A2 | `solana/` | A1 | Items A, B, F in the program on `escrow-logic`; the `split_deposit` fix; the invariant-3 walk | The WP2 command (now against the new IDL and vectors) |
+| A3 | `ethereum/` | A1 | Items A, B, F in the contract; `STORAGE.md`; `DeployAnvil` switching caps off; the forge invariants of 11.4; re-measured gas | The WP3 command |
+| A4 | `packages/sdk/` | A2, A3 | Caps reading and headroom; payout in `planEthereumOpen`/`planSolanaOpen` and claim building with optional account creation; watcher naming, `freeze` in the flows (`takerStep`/`makerStep` know FROZEN), notice-key export; wallet-derived key (messages, determinism check, commitment check); program-hash computation; size test updated (1,215) | `pnpm --filter @xmrswap/sdk test` and `test:integration` |
+| A5 | new `packages/watcher/` | A4 | Section 11.6 service | `pnpm --filter @xmrswap/watcher test` (unit on the SDK fakes; one integration test: a false notice on `svm-rpc` and on anvil is frozen before `T_co − M`, a good lock is not) |
+| A6 | `packages/daemon/` | A4 | Offer `w_z` and its config key (`freeze_window_hours`, default 0), capacity under caps, payout and watcher in the open hash, FROZEN handling in both directions, `[watcher]` client for direction B, `deny_watchers`, status fields | `pnpm --filter @xmrswap/daemon test` and `test:integration` |
+| A7 | `apps/console/` | A1; A6 for the final check | Caps and open value, freeze window per offer with the cost explained, frozen swaps, expected and on-chain program hash | `pnpm --filter @xmrswap/console test && pnpm --filter @xmrswap/console build` |
+| A8 | `apps/web/` | A4; A5 for the watcher option | Caps display and refusals, payout field when selling, wallet-key mode with its warnings, watcher option and the changed warnings, program-hash check on Status | `pnpm --filter @xmrswap/web test && pnpm --filter @xmrswap/web build && pnpm --filter @xmrswap/web test:browser` |
+| A9 | `deploy/`, new `releases/`, `docs/self-hosting/` | A8, A7 | Section 11.5: extended `run release` and `run verify`, the `releases/` format, docs for the checks and for running a watcher | `pnpm --filter @xmrswap/deploy test` (includes: a release built twice on this machine has equal tree hashes; `solana-verify get-executable-hash` of the local build equals the recorded local hash) |
+| A10 | `tests/e2e/` | A2 to A9 | Section 9.4 scenarios C-1 to C-3, Y-1, Y-2, W-1, Z-1 to Z-4 | `pnpm --filter @xmrswap/e2e test` |
+
+Order: **A1** alone → **A2 and A3** in parallel → **A4** → **A5, A6, A8** in parallel, **A7** alongside (it starts from A1's types) → **A9** → **A10**. The relay, the rebalancer and `svm-rpc` are not changed.
 
 ---
 
@@ -2090,7 +2400,7 @@ How each ambiguity or contradiction in `docs/DESIGN.md` was resolved. The Decisi
 | 22 | "Ethereum events are the fallback" for messaging | True for inbox messages and requests. Not for DLEQ proofs, which are too large for any chain; Ethereum markets need a blob endpoint. |
 | 23 | "Short-lived signed quotes posted on Solana, checked by the contract" | The Ethereum contract verifies the EIP-712 signature itself and never reads Solana. The Solana board carries the same quote for discovery only. |
 | 24 | The example configuration uses `source = "wxmr_pool"` for one market | Resolved by the owner on 2026-11-26: the maker chooses its price sources, so the file means what it says and the pool is that market's primary. The Decisions-table row "a wXMR pool is a cross-check only" in `docs/DESIGN.md` no longer applies (section 7.2). |
-| 25 | "One recovery file, or shares derived from a wallet signature" | Recovery file only in this version; a signature over a fixed message would hand the seed to any site that obtained the same signature. |
+| 25 | "One recovery file, or shares derived from a wallet signature" | The recovery file is the default. Amendment 1 adds the wallet-derived key as an opt-in with a determinism check and explicit warnings (section 11.3). |
 | 26 | Direction B: when the taker's XMR may be sent, and what a late notice means | The address is shown only once the maker's escrow is funded and final (and, on Ethereum, the maker's proof verified); the notice follows the payment. A notice after the notice deadline is still accepted, so the taker never depends on the maker's good will; it only forfeits protection against a withheld deposit. |
 | 27 | Identity link "with a delay" | 7 days for a change or removal; the first link is immediate. |
 | 28 | DESIGN cites `eigenwallet.org/eigenswap.html` | That page returns 404; cite docs.eigenwallet.org and the repository instead when DESIGN is next edited. |
@@ -2131,7 +2441,7 @@ Each is the research's recommended resolution, adopted as the default, and isola
 | 20 | Sell direction: a notice after the deadline is still accepted, and a maker refund after it always holds the deposit | Accepted until `T_nl` | Rows B6, B9h |
 | 21 | Sell direction: after the expiry anyone can return a stranded take deposit; the maker's escrow is parked for it | On | Row B11 |
 | 22 | Rejections the maker attributes to unusable taker input or a leaf collision are counted apart from ordinary rejections and left out of the approval rate (the maker's own statement, shown beside the ordinary count) | On | Counter 32 `rejections_no_fault`; `reason` byte |
-| 23 | Seed derived from a wallet signature | Not offered | UI |
+| 23 | Seed derived from a wallet signature | Offered as an option, **off by default** (Amendment 1, section 11.3) | Taker UI |
 | 24 | Solana quotes on request are public on-chain accounts paid for by the maker, not signed blobs | On-chain `Quote` account | `post_quote` |
 | 25 | Third parties can never close a settled Solana swap that holds a revealed share; the taker can after 30 days | As stated | `close_swap` |
 | 26 | Zero-amount swaps are refused on both chains (a dust take that rounds to zero would lock the taker's XMR against nothing) | Refused, `AmountOutOfRange` | Section 3.1 |
@@ -2149,6 +2459,13 @@ Each is the research's recommended resolution, adopted as the default, and isola
 | 38 | Solana wallets through the Wallet Standard only; no vendor adapters | As built | `apps/web` |
 | 39 | Opposite-side flow is an alert only, and measured refill cost is not fed into the offer deviation automatically | As built (listed as a follow-up) | Daemon |
 | 40 | Not adopted, for the owner to decide whether to cost: verifying ed25519 directly in the EVM on the taker's refund path, which would remove the taker's DLEQ proof and allow true auto-accept on Ethereum | Not built | n/a |
+| 41 | Amendment 1: a fresh deployment starts with caps on and zero, so nothing can open until the admin sets them; caps left on when the configuration is frozen are permanent | Fail closed | `set_caps` / `setCaps` |
+| 42 | Amendment 1: the cap values themselves, per asset | None chosen (the owner sets them at deployment) | `max_swap`, `max_open` |
+| 43 | Amendment 1: held deposits and parked payouts do not count toward the open value; a direction-B take reserves the maker's whole amount | As specified | Section 11.1 |
+| 44 | Amendment 1: only the sell direction gets a payout address; on a claim the take deposit goes to it too; anyone may deliver parked proceeds to it | As specified | Section 11.2 |
+| 45 | Amendment 1: the site name inside the wallet-key message (one fixed string for hosted and self-hosted copies) | Placeholder until chosen | `WALLET_KEY_SITE` |
+| 46 | Amendment 1: freeze window per offer, 0 (no watcher) by default, 1 to 72 hours otherwise; unfreezing by setting ready is allowed; the maker may name a watcher in the sell direction, where a refund after a freeze can never hold the take deposit | As specified | `w_z` / `freezeWindow` |
+| 47 | Amendment 1: whether the site operator runs a hosted watcher (it would see each watched swap's amount, timing and Monero lock transaction) | Not decided; the software supports it | `packages/watcher` |
 
 ## Open risks
 
@@ -2173,10 +2490,19 @@ Unverified or not run here:
 - The wXMR bridge: upgrade authority unknown; the config authority can change the fee and reverse pending withdrawals; the deployed program must be confirmed to match the source before the adapter relies on `cancel_withdrawal`. Each instant-swap service's XMR terms must be re-read before its adapter is enabled by default (HoudiniSwap XMR payout and the StealthEX currency list were not confirmed).
 - Exact patch versions for the packages marked "L" in section 1.4 are fixed by WP1's lockfile, not by this document.
 
+Amendment 1:
+
+- None of Amendment 1 is built. Kani is not installed here, so the harnesses of 11.4 are unrun; Halmos and the SMTChecker are not used at all. The Docker step of the verified build and the IPFS CID are specified but unrun, and there is no deployment to verify against.
+- The Solana program's adoption of `escrow-logic` replaces working, tested code; the vector replay is the safety net.
+- Creating the payout's token account inside a claim adds a CPI to a secret-bearing instruction; its preconditions must make failure impossible, and that belongs on the audit list.
+- A watcher is a new party: a hosted one learns the Monero lock transaction of every swap it watches, and can fail silently.
+- A signature-derived key is only as safe as the user's refusal to sign the same message elsewhere; wallets do not bind `signMessage` to an origin.
+- `config` becomes writable in every open and settling instruction on Solana, so all swaps of the program contend for one account's write lock; acceptable for a capped beta, a throughput limit later.
+
 Inherent in the design:
 
-- **Closed tab.** A taker paying SOL, ETH or USDC whose tab is closed between `T_cut` and `T_co` loses everything to a maker that posted a false notice. Warnings and the automatic refund reduce this; nothing removes it.
-- **Maker downtime in direction B.** A daemon that is offline through `[T_cut, T_co − M]` of a funded swap (roughly 45 minutes) can lose the escrow to a false notice.
+- **Closed tab.** A taker paying SOL, ETH or USDC whose tab is closed between `T_cut` and `T_co` loses everything to a maker that posted a false notice. Warnings and the automatic refund reduce this; nothing removes it. With a watcher (Amendment 1, section 11.6, on offers that allow it) the taker instead has until `T_ff` to return and refund; what remains is a taker away longer than the freeze window, a watcher that fails, and the deposit and delay a freeze costs.
+- **Maker downtime in direction B.** A daemon that is offline through `[T_cut, T_co − M]` of a funded swap (roughly 45 minutes) can lose the escrow to a false notice. With its own watcher (section 11.6) the maker has until `T_ff`; what remains is an outage longer than the freeze window or a watcher that fails too, and takers of such offers bear a longer lock of their XMR at the maker's option.
 - **Shallow depth.** Multi-block Monero reorgs have happened. Depth 2 protects only against one-block races; whoever relied on the lock carries the loss.
 - **Browser compromise.** A compromised page holds the session key and the spend share; with a colluding maker it can set ready early and lose the funds. Self-hosting and a strict CSP are the mitigations.
 - **Operator-key theft** exposes the maker's direction-B paying balance; keep it capped.

@@ -123,10 +123,15 @@ for _ in $(seq 1 20); do
   [[ -S "/run/user/${TARGET_UID}/bus" ]] && break
   sleep 0.5
 done
-if [[ ! -S "/run/user/${TARGET_UID}/bus" ]]; then
-  echo "The user's systemd session bus (/run/user/${TARGET_UID}/bus) is not up." >&2
-  echo "Log in as $TARGET_USER and run:  dockerd-rootless-setuptool.sh install" >&2
-  exit 1
+# A socket file can be left behind by a user manager that is no longer running, so test
+# the manager itself, not the file.
+if ! systemctl is-active --quiet "user@${TARGET_UID}.service"; then
+  echo "==> Packages are installed, but the systemd user manager for $TARGET_USER is not running"
+  echo "    (systemctl status user@${TARGET_UID}.service). The rootless daemon cannot be managed by"
+  echo "    systemd until it is. Start it by hand instead, as $TARGET_USER, without sudo:"
+  echo "      bash $(dirname "$0")/docker-rootless-start.sh"
+  echo "    System docker.service: $(systemctl is-enabled docker.service 2>/dev/null || true) / $(systemctl is-active docker.service 2>/dev/null || true)"
+  exit 0
 fi
 
 # 6. The rootless daemon, installed and started as the user.
