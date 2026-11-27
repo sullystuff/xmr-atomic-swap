@@ -17,6 +17,18 @@ export const AbortedCodec: StructCodec<Aborted> = struct<Aborted>('Aborted', [
   ['newState', 'new_state', u8],
 ]);
 
+/** Amendment 1 (SPEC 11.1): `set_caps`. */
+export interface CapsChanged {
+  capsOn: boolean;
+  maxSwap: bigint[];
+  maxOpen: bigint[];
+}
+export const CapsChangedCodec: StructCodec<CapsChanged> = struct<CapsChanged>('CapsChanged', [
+  ['capsOn', 'caps_on', bool],
+  ['maxSwap', 'max_swap', array(u64, 2)],
+  ['maxOpen', 'max_open', array(u64, 2)],
+]);
+
 export interface Claimed {
   swap: string;
   maker: string;
@@ -50,6 +62,14 @@ export interface Config {
   splitMode: number;
   bump: number;
   treasuryBump: number;
+  /** Amendment 1 (SPEC 11.1). 1 = the caps are enforced in `lock` and `take`. 1 after `initialize` (fail closed). */
+  capsOn: number;
+  /** Largest `amount` of one swap, per asset (0 SOL, 1 USDC). */
+  maxSwap: bigint[];
+  /** Largest open value at once, per asset. */
+  maxOpen: bigint[];
+  /** Sum of the counted values (A: amount; B: amount + deposit) of the swaps in an open state, per asset. */
+  openValue: bigint[];
   reserved: Uint8Array;
 }
 export const ConfigCodec: StructCodec<Config> = struct<Config>('Config', [
@@ -60,7 +80,11 @@ export const ConfigCodec: StructCodec<Config> = struct<Config>('Config', [
   ['splitMode', 'split_mode', u8],
   ['bump', 'bump', u8],
   ['treasuryBump', 'treasury_bump', u8],
-  ['reserved', 'reserved', fixedBytes(117)],
+  ['capsOn', 'caps_on', u8],
+  ['maxSwap', 'max_swap', array(u64, 2)],
+  ['maxOpen', 'max_open', array(u64, 2)],
+  ['openValue', 'open_value', array(u64, 2)],
+  ['reserved', 'reserved', fixedBytes(68)],
 ]);
 
 /** Emitted by `set_treasury_authority`, `set_split_mode`, `transfer_admin` and `freeze_config` with the values after the change (`admin` is the default key once frozen). */
@@ -198,7 +222,7 @@ export interface EthQuoteSlot {
 export const EthQuoteSlotCodec: StructCodec<EthQuoteSlot> = struct<EthQuoteSlot>('EthQuoteSlot', [
   ['used', 'used', u8],
   ['updatedAt', 'updated_at', i64],
-  ['quote', 'quote', fixedBytes(251)],
+  ['quote', 'quote', fixedBytes(255)],
   ['sig', 'sig', fixedBytes(65)],
 ]);
 
@@ -278,6 +302,27 @@ export const ExpiredUnnoticedCodec: StructCodec<ExpiredUnnoticed> = struct<Expir
   ['at', 'at', i64],
 ]);
 
+/** Amendment 1 (SPEC 11.6): `freeze` (Z1). */
+export interface Frozen {
+  swap: string;
+  maker: string;
+  counter: number;
+  at: bigint;
+  taker: string;
+  watcher: string;
+  /** `T_ff = max(t_freeze + w_z, t_claim_open)`. */
+  frozenUntil: bigint;
+}
+export const FrozenCodec: StructCodec<Frozen> = struct<Frozen>('Frozen', [
+  ['swap', 'swap', pubkey],
+  ['maker', 'maker', pubkey],
+  ['counter', 'counter', u8],
+  ['at', 'at', i64],
+  ['taker', 'taker', pubkey],
+  ['watcher', 'watcher', pubkey],
+  ['frozenUntil', 'frozen_until', i64],
+]);
+
 export interface InboxPolicyChanged {
   maker: string;
   policy: number;
@@ -346,6 +391,8 @@ export interface LockArgs {
   keyHint: number;
   /** Index of the Ed25519 instruction carrying an advance approval. */
   approvalIx: number | null;
+  /** Amendment 1 (SPEC 11.6). The watcher key; `WatcherNotAllowed` against `w_z == 0`. */
+  watcher: string | null;
 }
 export const LockArgsCodec: StructCodec<LockArgs> = struct<LockArgs>('LockArgs', [
   ['swapNonce', 'swap_nonce', fixedBytes(16)],
@@ -362,6 +409,7 @@ export const LockArgsCodec: StructCodec<LockArgs> = struct<LockArgs>('LockArgs',
   ['makerEncVersion', 'maker_enc_version', u32],
   ['keyHint', 'key_hint', u8],
   ['approvalIx', 'approval_ix', option(u8)],
+  ['watcher', 'watcher', option(pubkey)],
 ]);
 
 /** PDA `["maker", owner]`, 1,280 bytes. Fixed fields first; variable data last. */
@@ -500,6 +548,8 @@ export interface Offer {
   poolUsed: number;
   /** Maker spend commitments (direction A only). */
   pool: Uint8Array[];
+  /** Amendment 1 (SPEC 11.6). Freeze window; 0 = this offer accepts no watcher. */
+  wZ: number;
   reserved: Uint8Array;
 }
 export const OfferCodec: StructCodec<Offer> = struct<Offer>('Offer', [
@@ -529,7 +579,8 @@ export const OfferCodec: StructCodec<Offer> = struct<Offer>('Offer', [
   ['poolFilled', 'pool_filled', u16],
   ['poolUsed', 'pool_used', u16],
   ['pool', 'pool', array(fixedBytes(32), 16)],
-  ['reserved', 'reserved', fixedBytes(34)],
+  ['wZ', 'w_z', u32],
+  ['reserved', 'reserved', fixedBytes(30)],
 ]);
 
 export interface OfferRefresh {
@@ -577,6 +628,8 @@ export interface OfferTerms {
   dC: number;
   wC: number;
   wF: number;
+  /** Amendment 1 (SPEC 11.6). Freeze window: 0, or 3,600 to 259,200. */
+  wZ: number;
 }
 export const OfferTermsCodec: StructCodec<OfferTerms> = struct<OfferTerms>('OfferTerms', [
   ['mode', 'mode', u8],
@@ -592,6 +645,7 @@ export const OfferTermsCodec: StructCodec<OfferTerms> = struct<OfferTerms>('Offe
   ['dC', 'd_c', u32],
   ['wC', 'w_c', u32],
   ['wF', 'w_f', u32],
+  ['wZ', 'w_z', u32],
 ]);
 
 export interface OffersRefreshed {
@@ -734,6 +788,8 @@ export interface Quote {
   expiresAt: bigint;
   epoch: number;
   quoteId: bigint;
+  /** Amendment 1 (SPEC 11.6). Freeze window; 0 = no watcher accepted. */
+  wZ: number;
   reserved: Uint8Array;
 }
 export const QuoteCodec: StructCodec<Quote> = struct<Quote>('Quote', [
@@ -754,7 +810,8 @@ export const QuoteCodec: StructCodec<Quote> = struct<Quote>('Quote', [
   ['expiresAt', 'expires_at', i64],
   ['epoch', 'epoch', u32],
   ['quoteId', 'quote_id', u64],
-  ['reserved', 'reserved', fixedBytes(30)],
+  ['wZ', 'w_z', u32],
+  ['reserved', 'reserved', fixedBytes(26)],
 ]);
 
 export interface QuoteCancelled {
@@ -796,6 +853,8 @@ export interface QuoteTerms {
   makerPok: Uint8Array;
   /** At most 120 s after posting; valid while `now <= expires_at`. */
   expiresAt: bigint;
+  /** Amendment 1 (SPEC 11.6). Freeze window: 0, or 3,600 to 259,200. */
+  wZ: number;
 }
 export const QuoteTermsCodec: StructCodec<QuoteTerms> = struct<QuoteTerms>('QuoteTerms', [
   ['quoteId', 'quote_id', u64],
@@ -813,6 +872,7 @@ export const QuoteTermsCodec: StructCodec<QuoteTerms> = struct<QuoteTerms>('Quot
   ['makerSpendPub', 'maker_spend_pub', fixedBytes(32)],
   ['makerPok', 'maker_pok', fixedBytes(64)],
   ['expiresAt', 'expires_at', i64],
+  ['wZ', 'w_z', u32],
 ]);
 
 export interface ReadySet {
@@ -858,7 +918,7 @@ export const RefundedKeylessCodec: StructCodec<RefundedKeyless> = struct<Refunde
   ['at', 'at', i64],
 ]);
 
-/** PDA `["swap", taker, swap_nonce[16]]`, 736 bytes. Offsets in comments are frozen. */
+/** PDA `["swap", taker, swap_nonce[16]]`, 800 bytes. Offsets in comments are frozen. */
 export interface Swap {
   /** 8 */
   taker: string;
@@ -938,7 +998,15 @@ export interface Swap {
   owedTaker: bigint;
   owedMaker: bigint;
   owedTreasury: bigint;
-  /** 694 */
+  /** 694. Amendment 1 (SPEC 11.2). Direction B: where a claim pays; zeros in direction A. */
+  payout: string;
+  /** 726. Amendment 1 (SPEC 11.6). The key that may freeze; zeros = none. */
+  watcher: string;
+  /** 758. Freeze window copied from the offer or quote. */
+  wZ: number;
+  /** 762. When the swap was frozen; 0 = never. */
+  tFreeze: bigint;
+  /** 770 */
   reserved: Uint8Array;
 }
 export const SwapCodec: StructCodec<Swap> = struct<Swap>('Swap', [
@@ -991,7 +1059,11 @@ export const SwapCodec: StructCodec<Swap> = struct<Swap>('Swap', [
   ['owedTaker', 'owed_taker', u64],
   ['owedMaker', 'owed_maker', u64],
   ['owedTreasury', 'owed_treasury', u64],
-  ['reserved', 'reserved', fixedBytes(42)],
+  ['payout', 'payout', pubkey],
+  ['watcher', 'watcher', pubkey],
+  ['wZ', 'w_z', u32],
+  ['tFreeze', 't_freeze', i64],
+  ['reserved', 'reserved', fixedBytes(30)],
 ]);
 
 export interface SwapApproved {
@@ -1034,6 +1106,10 @@ export interface SwapOpened {
   deposit: bigint;
   xmr: bigint;
   depth: number;
+  /** Direction B: the payout address; zeros in direction A. */
+  payout: string;
+  /** The watcher named at lock; zeros = none. */
+  watcher: string;
 }
 export const SwapOpenedCodec: StructCodec<SwapOpened> = struct<SwapOpened>('SwapOpened', [
   ['swap', 'swap', pubkey],
@@ -1049,6 +1125,8 @@ export const SwapOpenedCodec: StructCodec<SwapOpened> = struct<SwapOpened>('Swap
   ['deposit', 'deposit', u64],
   ['xmr', 'xmr', u64],
   ['depth', 'depth', u8],
+  ['payout', 'payout', pubkey],
+  ['watcher', 'watcher', pubkey],
 ]);
 
 export interface SwapRejected {
@@ -1078,6 +1156,8 @@ export interface TakeArgs {
   takerEncKey: Uint8Array;
   makerEncVersion: number;
   approvalIx: number | null;
+  /** Amendment 1 (SPEC 11.2). Where the claim pays; the taker's own address by default. `PayoutInvalid` for the default key, the program id or a token account. */
+  payout: string;
 }
 export const TakeArgsCodec: StructCodec<TakeArgs> = struct<TakeArgs>('TakeArgs', [
   ['swapNonce', 'swap_nonce', fixedBytes(16)],
@@ -1092,6 +1172,7 @@ export const TakeArgsCodec: StructCodec<TakeArgs> = struct<TakeArgs>('TakeArgs',
   ['takerEncKey', 'taker_enc_key', fixedBytes(32)],
   ['makerEncVersion', 'maker_enc_version', u32],
   ['approvalIx', 'approval_ix', option(u8)],
+  ['payout', 'payout', pubkey],
 ]);
 
 /** PDA `["treasury"]`, 16 bytes. Holds SOL fees as lamports above rent; authority of the treasury token vault. */
@@ -1141,6 +1222,7 @@ export interface AccountTypes {
 
 export const EVENTS = {
   Aborted: { discriminator: Uint8Array.of(174, 37, 127, 34, 59, 60, 173, 65), codec: AbortedCodec },
+  CapsChanged: { discriminator: Uint8Array.of(233, 72, 254, 203, 226, 180, 161, 36), codec: CapsChangedCodec },
   Claimed: { discriminator: Uint8Array.of(217, 192, 123, 72, 108, 150, 248, 33), codec: ClaimedCodec },
   ConfigChanged: { discriminator: Uint8Array.of(147, 25, 86, 98, 98, 77, 78, 192), codec: ConfigChangedCodec },
   ConfigInitialized: { discriminator: Uint8Array.of(181, 49, 200, 156, 19, 167, 178, 91), codec: ConfigInitializedCodec },
@@ -1153,6 +1235,7 @@ export const EVENTS = {
   EthQuoteSet: { discriminator: Uint8Array.of(164, 172, 233, 151, 147, 69, 128, 32), codec: EthQuoteSetCodec },
   EvidencePublished: { discriminator: Uint8Array.of(23, 174, 187, 16, 70, 197, 36, 174), codec: EvidencePublishedCodec },
   ExpiredUnnoticed: { discriminator: Uint8Array.of(66, 248, 141, 17, 103, 171, 178, 38), codec: ExpiredUnnoticedCodec },
+  Frozen: { discriminator: Uint8Array.of(115, 77, 189, 83, 81, 71, 245, 232), codec: FrozenCodec },
   InboxPolicyChanged: { discriminator: Uint8Array.of(250, 91, 100, 134, 242, 102, 135, 84), codec: InboxPolicyChangedCodec },
   KeysRefilled: { discriminator: Uint8Array.of(77, 86, 173, 113, 28, 96, 223, 172), codec: KeysRefilledCodec },
   LinkChanged: { discriminator: Uint8Array.of(112, 70, 201, 24, 90, 229, 142, 1), codec: LinkChangedCodec },
@@ -1182,6 +1265,7 @@ export const EVENTS = {
 export type EventName = keyof typeof EVENTS;
 export interface EventTypes {
   Aborted: Aborted;
+  CapsChanged: CapsChanged;
   Claimed: Claimed;
   ConfigChanged: ConfigChanged;
   ConfigInitialized: ConfigInitialized;
@@ -1194,6 +1278,7 @@ export interface EventTypes {
   EthQuoteSet: EthQuoteSet;
   EvidencePublished: EvidencePublished;
   ExpiredUnnoticed: ExpiredUnnoticed;
+  Frozen: Frozen;
   InboxPolicyChanged: InboxPolicyChanged;
   KeysRefilled: KeysRefilled;
   LinkChanged: LinkChanged;
@@ -1295,6 +1380,12 @@ export interface ExpireUnnoticedIxArgs {
 export const ExpireUnnoticedIxArgsCodec: StructCodec<ExpireUnnoticedIxArgs> = struct<ExpireUnnoticedIxArgs>('expire_unnoticed', [
 ]);
 
+/** Z1 (SPEC 11.6). The watcher the swap names, or the locker: NOTICED, before `T_co`, once. */
+export interface FreezeIxArgs {
+}
+export const FreezeIxArgsCodec: StructCodec<FreezeIxArgs> = struct<FreezeIxArgs>('freeze', [
+]);
+
 /** Sets `admin` to the default key; afterwards the four admin setters fail forever. */
 export interface FreezeConfigIxArgs {
 }
@@ -1307,12 +1398,14 @@ export interface FundIxArgs {
   makerSpendPub: Uint8Array;
   makerPok: Uint8Array;
   makerView: Uint8Array;
+  watcher: string | null;
 }
 export const FundIxArgsCodec: StructCodec<FundIxArgs> = struct<FundIxArgs>('fund', [
   ['expectedOpen', 'expected_open', fixedBytes(32)],
   ['makerSpendPub', 'maker_spend_pub', fixedBytes(32)],
   ['makerPok', 'maker_pok', fixedBytes(64)],
   ['makerView', 'maker_view', fixedBytes(32)],
+  ['watcher', 'watcher', option(pubkey)],
 ]);
 
 /** Signer MUST be the program's upgrade authority. Creates `Config` (admin = signer), `Treasury` and the USDC treasury vault. */
@@ -1438,6 +1531,18 @@ export const RotateEncKeyIxArgsCodec: StructCodec<RotateEncKeyIxArgs> = struct<R
   ['prevExpiresAt', 'prev_expires_at', i64],
 ]);
 
+/** Amendment 1 (SPEC 11.1). Admin: the global switch and the per-asset caps. `ConfigFrozen` after `freeze_config`. */
+export interface SetCapsIxArgs {
+  capsOn: boolean;
+  maxSwap: bigint[];
+  maxOpen: bigint[];
+}
+export const SetCapsIxArgsCodec: StructCodec<SetCapsIxArgs> = struct<SetCapsIxArgs>('set_caps', [
+  ['capsOn', 'caps_on', bool],
+  ['maxSwap', 'max_swap', array(u64, 2)],
+  ['maxOpen', 'max_open', array(u64, 2)],
+]);
+
 /** Replaces the list. */
 export interface SetContactsIxArgs {
   contacts: Contact[];
@@ -1461,7 +1566,7 @@ export interface SetEthQuoteIxArgs {
 }
 export const SetEthQuoteIxArgsCodec: StructCodec<SetEthQuoteIxArgs> = struct<SetEthQuoteIxArgs>('set_eth_quote', [
   ['slot', 'slot', u8],
-  ['quote', 'quote', fixedBytes(251)],
+  ['quote', 'quote', fixedBytes(255)],
   ['sig', 'sig', fixedBytes(65)],
 ]);
 
@@ -1588,7 +1693,7 @@ export const INSTRUCTIONS = {
       { name: 'caller', writable: true, signer: true, optional: false },
       { name: 'swap', writable: true, signer: false, optional: false },
       { name: 'maker', writable: true, signer: false, optional: false },
-      { name: 'config', writable: false, signer: false, optional: false },
+      { name: 'config', writable: true, signer: false, optional: false },
       { name: 'taker', writable: true, signer: false, optional: false },
       { name: 'maker_wallet', writable: true, signer: false, optional: false },
       { name: 'treasury', writable: true, signer: false, optional: false },
@@ -1629,7 +1734,7 @@ export const INSTRUCTIONS = {
       { name: 'caller', writable: true, signer: true, optional: false },
       { name: 'swap', writable: true, signer: false, optional: false },
       { name: 'maker', writable: true, signer: false, optional: false },
-      { name: 'config', writable: false, signer: false, optional: false },
+      { name: 'config', writable: true, signer: false, optional: false },
       { name: 'taker', writable: true, signer: false, optional: false },
       { name: 'maker_wallet', writable: true, signer: false, optional: false },
       { name: 'treasury', writable: true, signer: false, optional: false },
@@ -1661,7 +1766,7 @@ export const INSTRUCTIONS = {
       { name: 'caller', writable: true, signer: true, optional: false },
       { name: 'swap', writable: true, signer: false, optional: false },
       { name: 'maker', writable: true, signer: false, optional: false },
-      { name: 'config', writable: false, signer: false, optional: false },
+      { name: 'config', writable: true, signer: false, optional: false },
       { name: 'taker', writable: true, signer: false, optional: false },
       { name: 'maker_wallet', writable: true, signer: false, optional: false },
       { name: 'treasury', writable: true, signer: false, optional: false },
@@ -1672,6 +1777,9 @@ export const INSTRUCTIONS = {
       { name: 'maker_token', writable: true, signer: false, optional: true },
       { name: 'treasury_vault', writable: true, signer: false, optional: true },
       { name: 'token_program', writable: false, signer: false, optional: true },
+      { name: 'payout', writable: true, signer: false, optional: false },
+      { name: 'payout_token', writable: true, signer: false, optional: true },
+      { name: 'associated_token_program', writable: false, signer: false, optional: true },
     ] as readonly AccountMeta[],
   },
   closeSwap: {
@@ -1682,7 +1790,7 @@ export const INSTRUCTIONS = {
       { name: 'caller', writable: true, signer: true, optional: false },
       { name: 'swap', writable: true, signer: false, optional: false },
       { name: 'maker', writable: true, signer: false, optional: false },
-      { name: 'config', writable: false, signer: false, optional: false },
+      { name: 'config', writable: true, signer: false, optional: false },
       { name: 'taker', writable: true, signer: false, optional: false },
       { name: 'maker_wallet', writable: true, signer: false, optional: false },
       { name: 'treasury', writable: true, signer: false, optional: false },
@@ -1703,7 +1811,7 @@ export const INSTRUCTIONS = {
       { name: 'caller', writable: true, signer: true, optional: false },
       { name: 'swap', writable: true, signer: false, optional: false },
       { name: 'maker', writable: true, signer: false, optional: false },
-      { name: 'config', writable: false, signer: false, optional: false },
+      { name: 'config', writable: true, signer: false, optional: false },
       { name: 'taker', writable: true, signer: false, optional: false },
       { name: 'maker_wallet', writable: true, signer: false, optional: false },
       { name: 'treasury', writable: true, signer: false, optional: false },
@@ -1724,7 +1832,7 @@ export const INSTRUCTIONS = {
       { name: 'caller', writable: true, signer: true, optional: false },
       { name: 'swap', writable: true, signer: false, optional: false },
       { name: 'maker', writable: true, signer: false, optional: false },
-      { name: 'config', writable: false, signer: false, optional: false },
+      { name: 'config', writable: true, signer: false, optional: false },
       { name: 'taker', writable: true, signer: false, optional: false },
       { name: 'maker_wallet', writable: true, signer: false, optional: false },
       { name: 'treasury', writable: true, signer: false, optional: false },
@@ -1735,6 +1843,17 @@ export const INSTRUCTIONS = {
       { name: 'maker_token', writable: true, signer: false, optional: true },
       { name: 'treasury_vault', writable: true, signer: false, optional: true },
       { name: 'token_program', writable: false, signer: false, optional: true },
+    ] as readonly AccountMeta[],
+  },
+  freeze: {
+    name: 'freeze',
+    discriminator: Uint8Array.of(255, 91, 207, 84, 251, 194, 254, 63),
+    args: FreezeIxArgsCodec,
+    accounts: [
+      { name: 'caller', writable: true, signer: true, optional: false },
+      { name: 'swap', writable: true, signer: false, optional: false },
+      { name: 'maker', writable: true, signer: false, optional: false },
+      { name: 'config', writable: false, signer: false, optional: false },
     ] as readonly AccountMeta[],
   },
   freezeConfig: {
@@ -1786,7 +1905,7 @@ export const INSTRUCTIONS = {
       { name: 'taker', writable: true, signer: true, optional: false },
       { name: 'swap', writable: true, signer: false, optional: false },
       { name: 'maker', writable: true, signer: false, optional: false },
-      { name: 'config', writable: false, signer: false, optional: false },
+      { name: 'config', writable: true, signer: false, optional: false },
       { name: 'session_key', writable: true, signer: false, optional: false },
       { name: 'system_program', writable: false, signer: false, optional: false },
       { name: 'offer', writable: true, signer: false, optional: true },
@@ -1870,7 +1989,7 @@ export const INSTRUCTIONS = {
       { name: 'caller', writable: true, signer: true, optional: false },
       { name: 'swap', writable: true, signer: false, optional: false },
       { name: 'maker', writable: true, signer: false, optional: false },
-      { name: 'config', writable: false, signer: false, optional: false },
+      { name: 'config', writable: true, signer: false, optional: false },
       { name: 'taker', writable: true, signer: false, optional: false },
       { name: 'maker_wallet', writable: true, signer: false, optional: false },
       { name: 'treasury', writable: true, signer: false, optional: false },
@@ -1891,7 +2010,7 @@ export const INSTRUCTIONS = {
       { name: 'caller', writable: true, signer: true, optional: false },
       { name: 'swap', writable: true, signer: false, optional: false },
       { name: 'maker', writable: true, signer: false, optional: false },
-      { name: 'config', writable: false, signer: false, optional: false },
+      { name: 'config', writable: true, signer: false, optional: false },
       { name: 'taker', writable: true, signer: false, optional: false },
       { name: 'maker_wallet', writable: true, signer: false, optional: false },
       { name: 'treasury', writable: true, signer: false, optional: false },
@@ -1922,7 +2041,7 @@ export const INSTRUCTIONS = {
       { name: 'caller', writable: true, signer: true, optional: false },
       { name: 'swap', writable: true, signer: false, optional: false },
       { name: 'maker', writable: true, signer: false, optional: false },
-      { name: 'config', writable: false, signer: false, optional: false },
+      { name: 'config', writable: true, signer: false, optional: false },
       { name: 'taker', writable: true, signer: false, optional: false },
       { name: 'maker_wallet', writable: true, signer: false, optional: false },
       { name: 'treasury', writable: true, signer: false, optional: false },
@@ -1943,7 +2062,7 @@ export const INSTRUCTIONS = {
       { name: 'caller', writable: true, signer: true, optional: false },
       { name: 'swap', writable: true, signer: false, optional: false },
       { name: 'maker', writable: true, signer: false, optional: false },
-      { name: 'config', writable: false, signer: false, optional: false },
+      { name: 'config', writable: true, signer: false, optional: false },
       { name: 'taker', writable: true, signer: false, optional: false },
       { name: 'maker_wallet', writable: true, signer: false, optional: false },
       { name: 'treasury', writable: true, signer: false, optional: false },
@@ -1963,6 +2082,15 @@ export const INSTRUCTIONS = {
     accounts: [
       { name: 'operator', writable: false, signer: true, optional: false },
       { name: 'maker', writable: true, signer: false, optional: false },
+    ] as readonly AccountMeta[],
+  },
+  setCaps: {
+    name: 'set_caps',
+    discriminator: Uint8Array.of(173, 204, 47, 125, 102, 192, 240, 161),
+    args: SetCapsIxArgsCodec,
+    accounts: [
+      { name: 'admin', writable: false, signer: true, optional: false },
+      { name: 'config', writable: true, signer: false, optional: false },
     ] as readonly AccountMeta[],
   },
   setContacts: {
@@ -2087,7 +2215,7 @@ export const INSTRUCTIONS = {
       { name: 'caller', writable: true, signer: true, optional: false },
       { name: 'swap', writable: true, signer: false, optional: false },
       { name: 'maker', writable: true, signer: false, optional: false },
-      { name: 'config', writable: false, signer: false, optional: false },
+      { name: 'config', writable: true, signer: false, optional: false },
       { name: 'taker', writable: true, signer: false, optional: false },
       { name: 'maker_wallet', writable: true, signer: false, optional: false },
       { name: 'treasury', writable: true, signer: false, optional: false },
@@ -2122,7 +2250,7 @@ export const INSTRUCTIONS = {
       { name: 'taker', writable: true, signer: true, optional: false },
       { name: 'swap', writable: true, signer: false, optional: false },
       { name: 'maker', writable: true, signer: false, optional: false },
-      { name: 'config', writable: false, signer: false, optional: false },
+      { name: 'config', writable: true, signer: false, optional: false },
       { name: 'session_key', writable: true, signer: false, optional: false },
       { name: 'system_program', writable: false, signer: false, optional: false },
       { name: 'offer', writable: true, signer: false, optional: true },
@@ -2152,7 +2280,7 @@ export const INSTRUCTIONS = {
       { name: 'caller', writable: true, signer: true, optional: false },
       { name: 'swap', writable: true, signer: false, optional: false },
       { name: 'maker', writable: true, signer: false, optional: false },
-      { name: 'config', writable: false, signer: false, optional: false },
+      { name: 'config', writable: true, signer: false, optional: false },
       { name: 'taker', writable: true, signer: false, optional: false },
       { name: 'maker_wallet', writable: true, signer: false, optional: false },
       { name: 'treasury', writable: true, signer: false, optional: false },
@@ -2163,6 +2291,9 @@ export const INSTRUCTIONS = {
       { name: 'maker_token', writable: true, signer: false, optional: true },
       { name: 'treasury_vault', writable: true, signer: false, optional: true },
       { name: 'token_program', writable: false, signer: false, optional: true },
+      { name: 'payout', writable: true, signer: false, optional: false },
+      { name: 'payout_token', writable: true, signer: false, optional: true },
+      { name: 'associated_token_program', writable: false, signer: false, optional: true },
     ] as readonly AccountMeta[],
   },
   withhold: {
@@ -2188,6 +2319,7 @@ export interface InstructionArgs {
   closeSwap: CloseSwapIxArgs;
   expirePending: ExpirePendingIxArgs;
   expireUnnoticed: ExpireUnnoticedIxArgs;
+  freeze: FreezeIxArgs;
   freezeConfig: FreezeConfigIxArgs;
   fund: FundIxArgs;
   initialize: InitializeIxArgs;
@@ -2204,6 +2336,7 @@ export interface InstructionArgs {
   reject: RejectIxArgs;
   releaseDeposit: ReleaseDepositIxArgs;
   rotateEncKey: RotateEncKeyIxArgs;
+  setCaps: SetCapsIxArgs;
   setContacts: SetContactsIxArgs;
   setEthLink: SetEthLinkIxArgs;
   setEthQuote: SetEthQuoteIxArgs;
@@ -2278,6 +2411,11 @@ export const ERROR_NAMES = [
   'ContactsTooLong',
   'ConfigFrozen',
   'MathOverflow',
+  'SwapCapExceeded',
+  'OpenCapExceeded',
+  'PayoutInvalid',
+  'WatcherNotAllowed',
+  'FreezeWindowOutOfRange',
 ] as const;
 export type ProgramErrorName = (typeof ERROR_NAMES)[number];
 export const ERROR_CODE_BASE = 6000;

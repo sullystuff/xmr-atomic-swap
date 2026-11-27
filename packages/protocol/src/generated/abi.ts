@@ -79,6 +79,40 @@ export const IXmrSwapAbi = [
   },
   {
     "type": "function",
+    "name": "capsOf",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "on",
+        "type": "bool",
+        "internalType": "bool"
+      },
+      {
+        "name": "maxSwap",
+        "type": "uint128",
+        "internalType": "uint128"
+      },
+      {
+        "name": "maxOpen",
+        "type": "uint128",
+        "internalType": "uint128"
+      },
+      {
+        "name": "openValue",
+        "type": "uint128",
+        "internalType": "uint128"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "claim",
     "inputs": [
       {
@@ -155,6 +189,19 @@ export const IXmrSwapAbi = [
   },
   {
     "type": "function",
+    "name": "freeze",
+    "inputs": [
+      {
+        "name": "swapId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "fund",
     "inputs": [
       {
@@ -186,6 +233,11 @@ export const IXmrSwapAbi = [
         "name": "viewShare",
         "type": "bytes32",
         "internalType": "bytes32"
+      },
+      {
+        "name": "watcher",
+        "type": "address",
+        "internalType": "address"
       }
     ],
     "outputs": [],
@@ -532,6 +584,26 @@ export const IXmrSwapAbi = [
             "name": "tSettled",
             "type": "uint64",
             "internalType": "uint64"
+          },
+          {
+            "name": "payout",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "watcher",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "freezeSecs",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "tFreeze",
+            "type": "uint64",
+            "internalType": "uint64"
           }
         ]
       }
@@ -717,6 +789,11 @@ export const IXmrSwapAbi = [
             "name": "quoteId",
             "type": "uint64",
             "internalType": "uint64"
+          },
+          {
+            "name": "freezeWindow",
+            "type": "uint32",
+            "internalType": "uint32"
           }
         ]
       }
@@ -915,6 +992,11 @@ export const IXmrSwapAbi = [
             "name": "quoteId",
             "type": "uint64",
             "internalType": "uint64"
+          },
+          {
+            "name": "freezeWindow",
+            "type": "uint32",
+            "internalType": "uint32"
           }
         ]
       },
@@ -1078,6 +1160,11 @@ export const IXmrSwapAbi = [
         "name": "approvalSig",
         "type": "bytes",
         "internalType": "bytes"
+      },
+      {
+        "name": "watcher",
+        "type": "address",
+        "internalType": "address"
       }
     ],
     "outputs": [
@@ -1184,6 +1271,24 @@ export const IXmrSwapAbi = [
   },
   {
     "type": "function",
+    "name": "pushOwed",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "account",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "refund",
     "inputs": [
       {
@@ -1280,6 +1385,42 @@ export const IXmrSwapAbi = [
         "name": "approvalId",
         "type": "bytes32",
         "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setCaps",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "maxSwap",
+        "type": "uint128",
+        "internalType": "uint128"
+      },
+      {
+        "name": "maxOpen",
+        "type": "uint128",
+        "internalType": "uint128"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setCapsOn",
+    "inputs": [
+      {
+        "name": "on",
+        "type": "bool",
+        "internalType": "bool"
       }
     ],
     "outputs": [],
@@ -1505,6 +1646,11 @@ export const IXmrSwapAbi = [
             "name": "quoteId",
             "type": "uint64",
             "internalType": "uint64"
+          },
+          {
+            "name": "freezeWindow",
+            "type": "uint32",
+            "internalType": "uint32"
           }
         ]
       },
@@ -1636,6 +1782,11 @@ export const IXmrSwapAbi = [
         "name": "approvalSig",
         "type": "bytes",
         "internalType": "bytes"
+      },
+      {
+        "name": "payout",
+        "type": "address",
+        "internalType": "address"
       }
     ],
     "outputs": [
@@ -1864,6 +2015,44 @@ export const IXmrSwapAbi = [
         "type": "uint8",
         "indexed": false,
         "internalType": "uint8"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "CapsChanged",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "maxSwap",
+        "type": "uint128",
+        "indexed": false,
+        "internalType": "uint128"
+      },
+      {
+        "name": "maxOpen",
+        "type": "uint128",
+        "indexed": false,
+        "internalType": "uint128"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "CapsSwitched",
+    "inputs": [
+      {
+        "name": "on",
+        "type": "bool",
+        "indexed": false,
+        "internalType": "bool"
       }
     ],
     "anonymous": false
@@ -2111,6 +2300,49 @@ export const IXmrSwapAbi = [
   },
   {
     "type": "event",
+    "name": "Frozen",
+    "inputs": [
+      {
+        "name": "swapId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "maker",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "counter",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "uint8"
+      },
+      {
+        "name": "taker",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
+      },
+      {
+        "name": "watcher",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
+      },
+      {
+        "name": "frozenUntil",
+        "type": "uint64",
+        "indexed": false,
+        "internalType": "uint64"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "Funded",
     "inputs": [
       {
@@ -2154,6 +2386,12 @@ export const IXmrSwapAbi = [
         "type": "bytes32",
         "indexed": false,
         "internalType": "bytes32"
+      },
+      {
+        "name": "watcher",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
       }
     ],
     "anonymous": false
@@ -2313,6 +2551,18 @@ export const IXmrSwapAbi = [
         "type": "bytes32",
         "indexed": false,
         "internalType": "bytes32"
+      },
+      {
+        "name": "payout",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
+      },
+      {
+        "name": "watcher",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
       }
     ],
     "anonymous": false
@@ -2795,6 +3045,11 @@ export const IXmrSwapAbi = [
   },
   {
     "type": "error",
+    "name": "FreezeWindowOutOfRange",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "KeyAlreadyUsed",
     "inputs": []
   },
@@ -2820,6 +3075,11 @@ export const IXmrSwapAbi = [
   },
   {
     "type": "error",
+    "name": "OpenCapExceeded",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "Paused",
     "inputs": []
   },
@@ -2841,6 +3101,11 @@ export const IXmrSwapAbi = [
   {
     "type": "error",
     "name": "StaleEpoch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SwapCapExceeded",
     "inputs": []
   },
   {
@@ -2876,6 +3141,11 @@ export const IXmrSwapAbi = [
   {
     "type": "error",
     "name": "ViewInvalid",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "WatcherNotAllowed",
     "inputs": []
   },
   {

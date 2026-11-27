@@ -23,6 +23,13 @@ export const PICONERO_PER_XMR = 1_000_000_000_000n;
 export const BPS_DENOMINATOR = 10_000n;
 export const DAY_SECS = 86_400;
 export const MIN_APPROVAL_SECS = 30;
+/**
+ * Bounds of a nonzero freeze window `W_z` (Amendment 1, SPEC 11.6). `W_z = 0` means the offer
+ * accepts no watcher. With `W_z > 0` the final-window bound is
+ * `W_p + W_n + D_c + W_z + W_c + 86,400 <= W_f` and `T_nl = T_final − D_c − W_z − W_c − 86,400`.
+ */
+export const MIN_FREEZE_SECS = 3_600;
+export const MAX_FREEZE_SECS = 259_200;
 
 /** Every constant of SPEC 3.1 for one chain, plus the three behavioural switches. Seconds are numbers. */
 export interface ChainConsts {
@@ -55,6 +62,9 @@ export interface ChainConsts {
   readonly openSecretCalls: boolean;
   /** A lapsed take outside window mode is the fault `missed_funds`. */
   readonly lapseIsFault: boolean;
+  /** Bounds of a nonzero freeze window (the same on both chains). */
+  readonly minFreezeSecs: number;
+  readonly maxFreezeSecs: number;
 }
 
 export const SOLANA_CONSTS: ChainConsts = {
@@ -79,6 +89,8 @@ export const SOLANA_CONSTS: ChainConsts = {
   explicitApprove: false,
   openSecretCalls: false,
   lapseIsFault: true,
+  minFreezeSecs: MIN_FREEZE_SECS,
+  maxFreezeSecs: MAX_FREEZE_SECS,
 };
 
 export const ETHEREUM_CONSTS: ChainConsts = {
@@ -103,11 +115,13 @@ export const ETHEREUM_CONSTS: ChainConsts = {
   explicitApprove: true,
   openSecretCalls: true,
   lapseIsFault: false,
+  minFreezeSecs: MIN_FREEZE_SECS,
+  maxFreezeSecs: MAX_FREEZE_SECS,
 };
 
 export const CHAIN_CONSTS: Readonly<Record<ChainName, ChainConsts>> = { solana: SOLANA_CONSTS, ethereum: ETHEREUM_CONSTS };
 
-/** Swap states (SPEC 3.3). 0 = no such swap. */
+/** Swap states (SPEC 3.3; FROZEN is Amendment 1, SPEC 11.6). 0 = no such swap. */
 export const SWAP_STATE = {
   NONE: 0,
   PENDING: 1,
@@ -119,10 +133,14 @@ export const SWAP_STATE = {
   HOLD: 7,
   WITHHELD: 8,
   DONE: 9,
+  /** A watcher or the locker paused the claimer's claim-without-ready until `T_ff`. */
+  FROZEN: 10,
 } as const;
 export type SwapStateName = keyof typeof SWAP_STATE;
 export type SwapStateCode = (typeof SWAP_STATE)[SwapStateName];
-export const SWAP_STATE_NAMES: readonly SwapStateName[] = ['NONE', 'PENDING', 'ACTIVE', 'NOTICED', 'READY', 'ABORTED_FREE', 'ABORTED_HOLD', 'HOLD', 'WITHHELD', 'DONE'];
+export const SWAP_STATE_NAMES: readonly SwapStateName[] = ['NONE', 'PENDING', 'ACTIVE', 'NOTICED', 'READY', 'ABORTED_FREE', 'ABORTED_HOLD', 'HOLD', 'WITHHELD', 'DONE', 'FROZEN'];
+/** The states whose swap is counted in its asset's open value (SPEC 11.1). */
+export const OPEN_SWAP_STATES: readonly SwapStateName[] = ['PENDING', 'ACTIVE', 'NOTICED', 'READY', 'FROZEN', 'ABORTED_FREE', 'ABORTED_HOLD'];
 
 /** Offer and quote modes, and the effective mode stored in a swap. */
 export const APPROVAL_MODE = { AUTO: 0, WINDOW: 1, ADVANCE: 2, QUOTE: 3 } as const;
@@ -139,6 +157,8 @@ export const SWAP_FLAG = {
   REVEALER_LOCKER: 1 << 3,
   /** Direction B: the notice arrived at or after `T_note`. */
   LATE_NOTICE: 1 << 4,
+  /** The swap is counted in its asset's open value (Amendment 1, SPEC 11.1). */
+  COUNTED: 1 << 5,
 } as const;
 
 /** Values of `deposit_state`. */
@@ -147,7 +167,7 @@ export const DEPOSIT_STATE = { NONE: 0, HELD: 1, WITHHELD: 2, RETURNED: 3, RELEA
 /** `maker.paused` bits on Solana. */
 export const PAUSE_BIT = { OWNER: 1, OPERATOR: 2 } as const;
 
-/** Counter names by id (SPEC 3.7). The id is also the `outcome` code. Ids 33 to 39 are reserved. */
+/** Counter names by id (SPEC 3.7, 11.6). The id is also the `outcome` code. Ids 37 to 39 are reserved. */
 export const COUNTER_NAMES = [
   'locks',
   'takes',
@@ -182,6 +202,10 @@ export const COUNTER_NAMES = [
   'releases',
   'splits',
   'rejections_no_fault',
+  'freezes',
+  'refunds_after_freeze',
+  'backouts_after_freeze',
+  'claims_after_freeze',
 ] as const;
 export type CounterName = (typeof COUNTER_NAMES)[number];
 export const COUNTER: Readonly<Record<CounterName, number>> = Object.fromEntries(COUNTER_NAMES.map((n, i) => [n, i])) as Record<CounterName, number>;
@@ -194,7 +218,10 @@ export const FAULT_COUNTERS: readonly CounterName[] = ['missed_notices', 'missed
 /** `reject` reasons (SPEC 3.7). Reasons 1 and 2 count as `rejections_no_fault`. */
 export const REJECT_REASON = { MAKER_CHOICE: 0, UNUSABLE_INPUT: 1, LEAF_CONSUMED: 2 } as const;
 
-/** `withdraw_owed(who)` on Solana, and `who` in `PayoutParked`. */
+/**
+ * `withdraw_owed(who)` on Solana, and `who` in `PayoutParked`. On a direction-B swap that ended
+ * in a claim, `TAKER` is the payout address's balance (Amendment 1, SPEC 11.2).
+ */
 export const OWED = { TAKER: 0, MAKER: 1, TREASURY: 2 } as const;
 
 /** Maker contact kinds (SPEC 4.2). */
@@ -213,6 +240,12 @@ export interface Deployment {
   readonly contract: `0x${string}` | null;
   /** EVM chain id the contract lives on, or `null`. */
   readonly chainId: number | null;
+  /**
+   * Executable hash of the published program build (Amendment 1, SPEC 11.5): SHA-256 of the
+   * ProgramData account without its 45-byte header and trailing zero bytes, lowercase hex.
+   * `null` until a release sets it ("no published build to compare with").
+   */
+  readonly programHash: string | null;
 }
 
 /**
@@ -230,8 +263,73 @@ export const CONTRACT_ADDRESS: `0x${string}` | null = null;
 /** Chain id of `CONTRACT_ADDRESS`, or `null`. */
 export const CONTRACT_CHAIN_ID: number | null = null;
 
+/** Executable hash of the published program build, or `null` until a release sets it. */
+export const PROGRAM_HASH: string | null = null;
+
 /** The pinned deployment of this release. */
-export const DEPLOYMENT: Deployment = { programId: PROGRAM_ID, contract: CONTRACT_ADDRESS, chainId: CONTRACT_CHAIN_ID };
+export const DEPLOYMENT: Deployment = { programId: PROGRAM_ID, contract: CONTRACT_ADDRESS, chainId: CONTRACT_CHAIN_ID, programHash: PROGRAM_HASH };
+
+// ------------------------------------------------------------------ beta caps (Amendment 1, SPEC 11.1)
+
+/** The caps of one escrowed asset as a client reads them (Solana: the `Config` account; Ethereum: `capsOf(token)`). */
+export interface AssetCaps {
+  /** The global switch. Off: nothing is checked; the open value is still kept. */
+  readonly on: boolean;
+  /** Largest `amount` of one swap, base units. */
+  readonly maxSwap: bigint;
+  /** Largest open value at once, base units. */
+  readonly maxOpen: bigint;
+  /** Sum of the counted values of the swaps in an open state. */
+  readonly openValue: bigint;
+}
+/** `max(0, max_open − open_value)`: what can still be opened. Unlimited (`null`) with the switch off. */
+export const capsHeadroom = (caps: AssetCaps): bigint | null => (caps.on ? (caps.maxOpen > caps.openValue ? caps.maxOpen - caps.openValue : 0n) : null);
+/** The counted value of a swap: `amount` in direction A, `amount + deposit` in direction B. */
+export const countedValue = (direction: Direction, amount: bigint, deposit: bigint): bigint => (direction === DIRECTION.A ? amount : amount + deposit);
+/** Why `lock`/`take` of `amount` (with `deposit`) would be refused by the caps, or `null`. Exactly at a cap is allowed. */
+export function capsRefusal(caps: AssetCaps, direction: Direction, amount: bigint, deposit: bigint): 'SwapCapExceeded' | 'OpenCapExceeded' | null {
+  if (!caps.on) return null;
+  if (amount > caps.maxSwap) return 'SwapCapExceeded';
+  if (caps.openValue + countedValue(direction, amount, deposit) > caps.maxOpen) return 'OpenCapExceeded';
+  return null;
+}
+
+// ------------------------------------------------------------------ wallet-derived key (Amendment 1, SPEC 11.3)
+
+/**
+ * `SITE` of the wallet-key messages: the project's canonical site name, one fixed string per
+ * release. It is deliberately not the page's origin, so a self-hosted copy derives the same
+ * keys. **A placeholder until the project owner chooses the name.**
+ */
+export const WALLET_KEY_SITE = 'xmrswap.example';
+/** `keyVersion` of the Ethereum message and the `v1` of the Solana one. */
+export const WALLET_KEY_VERSION = 1;
+/** The `notice` field of the Ethereum `WalletKey` message. */
+export const WALLET_KEY_NOTICE =
+  'Sign this only on the site named below. Anyone who gets this signature can take XMR you have not collected and act on your open swaps.';
+/** The three warnings the page MUST show, with a checkbox, before the first signature. */
+export const WALLET_KEY_WARNINGS: readonly string[] = [
+  'Anyone who obtains this signature, for example a phishing site that asks you to sign the same message, can take XMR you have not yet collected and act on your open swaps.',
+  'If you lose this wallet you lose access to those swaps unless you also export a recovery file.',
+  `Only sign this message on ${WALLET_KEY_SITE}.`,
+];
+
+/**
+ * The exact text a Solana wallet signs with `signMessage` (UTF-8, LF line ends, no trailing
+ * newline). All three keys are base58. `walletSeed` of `@xmrswap/core-wasm` turns the 64
+ * signature bytes into the swap seed.
+ */
+export function walletKeySolanaMessage(m: { genesisHash: string; programId: string; wallet: string; site?: string }): string {
+  return [
+    `Sign this only on ${m.site ?? WALLET_KEY_SITE} to unlock your XMR swap keys.`,
+    'Anyone who gets this signature can take XMR you have not collected and act on your open swaps.',
+    '',
+    `xmrswap wallet key v${WALLET_KEY_VERSION}`,
+    `cluster: ${m.genesisHash}`,
+    `program: ${m.programId}`,
+    `wallet: ${m.wallet}`,
+  ].join('\n');
+}
 
 // ------------------------------------------------------------------ Solana layout (SPEC 4.1, 4.2)
 
@@ -249,7 +347,7 @@ export const SEED = {
 } as const;
 
 /** Account sizes in bytes, discriminator included. */
-export const ACCOUNT_SIZE = { Config: 256, Treasury: 16, Maker: 1_280, Offer: 768, EthBoard: 1_408, Quote: 192, Swap: 736 } as const;
+export const ACCOUNT_SIZE = { Config: 256, Treasury: 16, Maker: 1_280, Offer: 768, EthBoard: 1_408, Quote: 192, Swap: 800 } as const;
 
 /** `memcmp` offsets clients filter on. */
 export const OFFSET = {
@@ -257,7 +355,9 @@ export const OFFSET = {
   maker: { owner: 8, operator: 40, payout: 72 },
   offer: { maker: 8, asset: 40, direction: 41, enabled: 42, mode: 43 },
   quote: { maker: 8, taker: 40 },
-  swap: { taker: 8, maker: 40, state: 72, direction: 73, asset: 74 },
+  swap: { taker: 8, maker: 40, state: 72, direction: 73, asset: 74, payout: 694, watcher: 726, wZ: 758, tFreeze: 762 },
+  /** Amendment 1: the caps live in `Config`, per asset (0 SOL, 1 USDC), 8 bytes each. */
+  config: { capsOn: 139, maxSwap: 140, maxOpen: 156, openValue: 172 },
 } as const;
 
 /** Base58 of the `Maker` and `Swap` account discriminators, for `memcmp.bytes`. */
@@ -271,6 +371,8 @@ export const MAX_CONTACTS = 6;
 export const MAX_CONTACT_LEN = 96;
 /** A taker-bound Solana quote expires at most this long after it is posted. */
 export const MAX_QUOTE_SECS = 120;
+/** The associated-token program: `claim` and `withdraw_owed` may pass it to create the payout's token account. */
+export const ASSOCIATED_TOKEN_PROGRAM = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
 /** SOL burned in `split_mode = 1` goes here. */
 export const INCINERATOR = '1nc1nerator11111111111111111111111111111111';
 /** Advance-approval wildcard for `asset` and `direction` on Solana. */
@@ -289,8 +391,9 @@ export const ETH_ANY_TOKEN = '0xFFfFfFffFFfffFFfFFfFFFFFffFFFffffFfFFFfF';
 export const ETH_ANY_DIRECTION = 255;
 /** ETH as a token address. */
 export const ETH_NATIVE = '0x0000000000000000000000000000000000000000';
-export const COMPACT_QUOTE_LEN = 251;
-export const COMPACT_QUOTE_SIGNED_LEN = 316;
+/** Amendment 1 appended `freezeWindow` (u32) at 251..255; no earlier offset moved. */
+export const COMPACT_QUOTE_LEN = 255;
+export const COMPACT_QUOTE_SIGNED_LEN = 320;
 /** The UI refuses to submit an Ethereum quote with less than this left. */
 export const ETH_QUOTE_MIN_LEFT_SECS = 36;
 export const MERKLE_MIN_LEAVES = 2;

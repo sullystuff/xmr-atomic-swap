@@ -54,6 +54,11 @@ describe('codecs against the frozen IDL', () => {
     expect(p.errorName(6000)).toBe('Unauthorized');
     expect(p.errorName(6009)).toBe('ScalarMismatch');
     expect(p.errorCode('MathOverflow')).toBe(6049);
+    // Amendment 1 appended five errors; no existing code moved.
+    expect(p.ERROR_NAMES.length).toBe(55);
+    expect(p.ERROR_NAMES.slice(50)).toEqual(['SwapCapExceeded', 'OpenCapExceeded', 'PayoutInvalid', 'WatcherNotAllowed', 'FreezeWindowOutOfRange']);
+    expect(p.errorCode('SwapCapExceeded')).toBe(6050);
+    expect(p.errorName(6054)).toBe('FreezeWindowOutOfRange');
     expect(p.errorName(5999)).toBeNull();
     expect(p.DEV_PROGRAM_ID).toBe(idl.address);
   });
@@ -65,11 +70,20 @@ describe('layouts of SPEC 4.1 and 4.2', () => {
     expect(8 + p.TreasuryCodec.size!).toBe(16);
     expect(8 + p.OfferCodec.size!).toBe(768);
     expect(8 + p.QuoteCodec.size!).toBe(192);
-    expect(8 + p.SwapCodec.size!).toBe(736);
-    // EthBoard uses 1,341 of its 1,408 bytes; a slot is 325.
-    expect(p.EthQuoteSlotCodec.size).toBe(1 + 8 + 251 + 65);
-    expect(8 + p.EthBoardCodec.size!).toBe(1341);
-    expect(p.ACCOUNT_SIZE).toEqual({ Config: 256, Treasury: 16, Maker: 1280, Offer: 768, EthBoard: 1408, Quote: 192, Swap: 736 });
+    // Amendment 1 (SPEC 11.8): Swap grows from 736 to 800; Config, Offer and Quote keep their sizes.
+    expect(8 + p.SwapCodec.size!).toBe(800);
+    // EthBoard uses 1,357 of its 1,408 bytes; a slot is 329 (the compact quote is 255 bytes).
+    expect(p.EthQuoteSlotCodec.size).toBe(1 + 8 + 255 + 65);
+    expect(8 + p.EthBoardCodec.size!).toBe(1357);
+    expect(p.ACCOUNT_SIZE).toEqual({ Config: 256, Treasury: 16, Maker: 1280, Offer: 768, EthBoard: 1408, Quote: 192, Swap: 800 });
+    // The caps live in Config's former reserved bytes; the freeze window in Offer's and Quote's.
+    const cfg = (f: string) => 8 + p.ConfigCodec.offsetOf(f);
+    expect([cfg('splitMode'), cfg('bump'), cfg('treasuryBump'), cfg('capsOn'), cfg('maxSwap'), cfg('maxOpen'), cfg('openValue'), cfg('reserved')]).toEqual([136, 137, 138, 139, 140, 156, 172, 188]);
+    expect(p.OFFSET.config).toEqual({ capsOn: 139, maxSwap: 140, maxOpen: 156, openValue: 172 });
+    expect(8 + p.OfferCodec.offsetOf('wZ')).toBe(734);
+    expect(8 + p.OfferCodec.offsetOf('reserved')).toBe(738);
+    expect(8 + p.QuoteCodec.offsetOf('wZ')).toBe(162);
+    expect(8 + p.QuoteCodec.offsetOf('reserved')).toBe(166);
     // Maker: the fixed part ends at 457; a full onion and six full contacts fit in 1,280.
     expect(p.MakerCodec.size).toBeNull();
     expect(8 + p.MakerCodec.offsetOf('onion')).toBe(457);
@@ -85,7 +99,9 @@ describe('layouts of SPEC 4.1 and 4.2', () => {
       takerSpendPub: 246, makerSpendPub: 278, lockerView: 310, noticeCommitment: 342, noticeCt: 374,
       evidenceTxid: 478, evidenceView: 510, revealed: 542, tLock: 574, tPendingDeadline: 582, tActive: 590, tNoteDeadline: 598,
       tNotice: 606, tCut: 614, tClaimOpen: 622, tReady: 630, tClaimDeadline: 638, tFinal: 646, tRefund: 654, tSettled: 662,
-      owedTaker: 670, owedMaker: 678, owedTreasury: 686, reserved: 694,
+      owedTaker: 670, owedMaker: 678, owedTreasury: 686,
+      // Amendment 1 (SPEC 11.8): everything up to offset 694 is unchanged.
+      payout: 694, watcher: 726, wZ: 758, tFreeze: 762, reserved: 770,
     };
     for (const [field, offset] of Object.entries(expected)) expect(at(field), field).toBe(offset);
     expect(Object.keys(expected).length).toBe(p.SwapCodec.fields.length);
@@ -105,6 +121,10 @@ describe('layouts of SPEC 4.1 and 4.2', () => {
     expect(8 + p.SwapCodec.offsetOf('taker')).toBe(p.OFFSET.swap.taker);
     expect(8 + p.SwapCodec.offsetOf('maker')).toBe(p.OFFSET.swap.maker);
     expect(8 + p.SwapCodec.offsetOf('state')).toBe(p.OFFSET.swap.state);
+    expect(8 + p.SwapCodec.offsetOf('payout')).toBe(p.OFFSET.swap.payout);
+    expect(8 + p.SwapCodec.offsetOf('watcher')).toBe(p.OFFSET.swap.watcher);
+    expect(8 + p.SwapCodec.offsetOf('wZ')).toBe(p.OFFSET.swap.wZ);
+    expect(8 + p.SwapCodec.offsetOf('tFreeze')).toBe(p.OFFSET.swap.tFreeze);
     // SPEC 4: `Maker` = base58 `6MSKcZArUDQ`, `Swap` = `9zzgj4NEBqr`.
     expect(base58Encode(p.ACCOUNTS.Maker.discriminator)).toBe('6MSKcZArUDQ');
     expect(base58Encode(p.ACCOUNTS.Swap.discriminator)).toBe('9zzgj4NEBqr');
@@ -114,11 +134,21 @@ describe('layouts of SPEC 4.1 and 4.2', () => {
   it('argument sizes of SPEC 4.4', () => {
     const r = rng(1);
     const lock = sampleStruct(p.LockArgsCodec as StructCodec<unknown>, structs, r);
-    expect(encode(p.LockArgsCodec, { ...lock, approvalIx: null } as p.LockArgs).length).toBe(247);
-    expect(encode(p.LockArgsCodec, { ...lock, approvalIx: 1 } as p.LockArgs).length).toBe(248);
+    // Amendment 1: `watcher: Option<Pubkey>` is 1 byte absent and 33 present (SPEC 11.6).
+    expect(encode(p.LockArgsCodec, { ...lock, approvalIx: null, watcher: null } as p.LockArgs).length).toBe(248);
+    expect(encode(p.LockArgsCodec, { ...lock, approvalIx: 1, watcher: null } as p.LockArgs).length).toBe(249);
+    expect(encode(p.LockArgsCodec, { ...lock, approvalIx: 1, watcher: p.PROGRAM_ID } as p.LockArgs).length).toBe(249 + 32);
     const take = sampleStruct(p.TakeArgsCodec as StructCodec<unknown>, structs, r);
-    expect(encode(p.TakeArgsCodec, { ...take, approvalIx: null } as p.TakeArgs).length).toBe(214);
-    expect(encode(p.TakeArgsCodec, { ...take, approvalIx: 0 } as p.TakeArgs).length).toBe(215);
+    // Amendment 1: `payout: Pubkey` adds 32 bytes (SPEC 11.2).
+    expect(encode(p.TakeArgsCodec, { ...take, approvalIx: null } as p.TakeArgs).length).toBe(214 + 32);
+    expect(encode(p.TakeArgsCodec, { ...take, approvalIx: 0 } as p.TakeArgs).length).toBe(215 + 32);
+    // fund gains `watcher: Option<Pubkey>`; set_eth_quote takes the 255-byte compact quote.
+    const fund = { expectedOpen: r.bytes(32), makerSpendPub: r.bytes(32), makerPok: r.bytes(64), makerView: r.bytes(32) };
+    expect(p.encodeInstructionData('fund', { ...fund, watcher: null }).length).toBe(8 + 160 + 1);
+    expect(p.encodeInstructionData('fund', { ...fund, watcher: p.PROGRAM_ID }).length).toBe(8 + 160 + 33);
+    expect(p.encodeInstructionData('setEthQuote', { slot: 0, quote: new Uint8Array(255), sig: new Uint8Array(65) }).length).toBe(8 + 1 + 255 + 65);
+    expect(p.encodeInstructionData('freeze', {}).length).toBe(8);
+    expect(p.encodeInstructionData('setCaps', { capsOn: true, maxSwap: [1n, 2n], maxOpen: [3n, 4n] }).length).toBe(8 + 1 + 16 + 16);
     // refill_keys with eight slots: 8 + 1 + 4 + 8 × 97 bytes of data.
     const slots = Array.from({ length: 8 }, (_, i) => ({ index: i, share: r.bytes(32), pok: r.bytes(64) }));
     expect(p.encodeInstructionData('refillKeys', { asset: 0, slots }).length).toBe(8 + 1 + 4 + 8 * 97);
@@ -226,7 +256,7 @@ describe('decoding rejects what it should', () => {
     const data = p.encodeAccount('Quote', value, 192);
     expect(() => p.decodeAccount('Swap', data)).toThrow(/not a Swap account/);
     expect(() => p.decodeAccount('Quote', data.subarray(0, 100))).toThrow(/unexpected end/);
-    expect(p.accountNameOf(new Uint8Array(736))).toBeNull();
+    expect(p.accountNameOf(new Uint8Array(800))).toBeNull();
     const ev = p.encodeEvent('SwapClosed', sampleStruct(structs.get('SwapClosed')!, structs, rng(4)) as never);
     const longer = new Uint8Array(ev.length + 1);
     longer.set(ev);

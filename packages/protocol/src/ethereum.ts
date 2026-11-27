@@ -4,7 +4,7 @@
  * `IXmrSwapAbi`; digests come from `@xmrswap/core-wasm` or viem's `hashTypedData` with exactly
  * these types.
  */
-import { EIP712_NAME, EIP712_VERSION } from './constants.js';
+import { EIP712_NAME, EIP712_VERSION, WALLET_KEY_NOTICE, WALLET_KEY_SITE, WALLET_KEY_VERSION } from './constants.js';
 
 export { IXmrSwapAbi } from './generated/abi.js';
 
@@ -35,6 +35,7 @@ export const EIP712_TYPES = {
     { name: 'epoch', type: 'uint32' },
     { name: 'keyRoot', type: 'bytes32' },
     { name: 'quoteId', type: 'uint64' },
+    { name: 'freezeWindow', type: 'uint32' },
   ],
   Approval: [
     { name: 'maker', type: 'address' },
@@ -47,14 +48,22 @@ export const EIP712_TYPES = {
     { name: 'epoch', type: 'uint32' },
     { name: 'approvalId', type: 'bytes32' },
   ],
+  /** Amendment 1 (SPEC 11.3): signed by the taker's wallet to derive its swap seed; the contract accepts it nowhere. */
+  WalletKey: [
+    { name: 'notice', type: 'string' },
+    { name: 'site', type: 'string' },
+    { name: 'keyVersion', type: 'uint32' },
+    { name: 'wallet', type: 'address' },
+  ],
 } as const;
 
 /** The type strings whose keccak256 are the type hashes. */
 export const EIP712_TYPE_STRINGS = {
   Quote:
-    'Quote(address maker,address taker,address token,uint8 direction,uint8 approvalMode,uint64 minXmr,uint64 maxXmr,uint64[3] tierXmr,uint256[3] tierPrice,uint64[3] depthXmr,uint8[3] depth,uint16 depositBps,uint32 approvalWindow,uint32 noticeWindow,uint32 claimDelay,uint32 claimWindow,uint32 finalWindow,uint64 validUntil,uint32 epoch,bytes32 keyRoot,uint64 quoteId)',
+    'Quote(address maker,address taker,address token,uint8 direction,uint8 approvalMode,uint64 minXmr,uint64 maxXmr,uint64[3] tierXmr,uint256[3] tierPrice,uint64[3] depthXmr,uint8[3] depth,uint16 depositBps,uint32 approvalWindow,uint32 noticeWindow,uint32 claimDelay,uint32 claimWindow,uint32 finalWindow,uint64 validUntil,uint32 epoch,bytes32 keyRoot,uint64 quoteId,uint32 freezeWindow)',
   Approval:
     'Approval(address maker,address taker,address token,uint8 direction,uint64 maxXmr,uint64 notBefore,uint64 validUntil,uint32 epoch,bytes32 approvalId)',
+  WalletKey: 'WalletKey(string notice,string site,uint32 keyVersion,address wallet)',
 } as const;
 
 /** The EIP-712 domain for a deployment: `verifyingContract` is the proxy address. */
@@ -94,6 +103,20 @@ export interface EthQuoteMessage {
   /** Merkle root of the key pool (direction A); zero for direction B. */
   keyRoot: Hex;
   quoteId: bigint;
+  /** `W_z` (Amendment 1, SPEC 11.6): 0 = no watcher accepted; else 3,600 to 259,200. */
+  freezeWindow: number;
+}
+
+/** The EIP-712 `WalletKey` message (Amendment 1, SPEC 11.3), signed under the contract's own domain. */
+export interface WalletKeyMessage {
+  notice: string;
+  site: string;
+  keyVersion: number;
+  wallet: Address;
+}
+/** The `WalletKey` message for a wallet. `walletSeed` of `@xmrswap/core-wasm` turns its signature into the swap seed. */
+export function walletKeyMessage(wallet: Address, site: string = WALLET_KEY_SITE): WalletKeyMessage {
+  return { notice: WALLET_KEY_NOTICE, site, keyVersion: WALLET_KEY_VERSION, wallet };
 }
 
 /** The EIP-712 `Approval` message as viem takes it. */
@@ -160,6 +183,10 @@ export const ETH_ERROR_NAMES = [
   'EvidenceRequired',
   'NothingOwed',
   'MessageTooLarge',
+  'SwapCapExceeded',
+  'OpenCapExceeded',
+  'WatcherNotAllowed',
+  'FreezeWindowOutOfRange',
 ] as const;
 export type EthErrorName = (typeof ETH_ERROR_NAMES)[number];
 
@@ -173,6 +200,7 @@ export const ETH_SWAP_EVENT_NAMES = [
   'PendingExpired',
   'NoticePosted',
   'ReadySet',
+  'Frozen',
   'Aborted',
   'RefundedKeyless',
   'ExpiredUnnoticed',

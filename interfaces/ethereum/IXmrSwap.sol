@@ -35,6 +35,7 @@ interface IXmrSwap {
         uint32 epoch; // must equal the maker's quoteEpoch
         bytes32 keyRoot; // Merkle root of the key pool (direction A); zero for direction B
         uint64 quoteId; // cancel handle
+        uint32 freezeWindow; // W_z (Amendment 1, SPEC 11.6): 0 = no watcher accepted; else 3,600 to 259,200
     }
 
     /// @notice EIP-712 advance approval signed by the maker's operator key.
@@ -139,6 +140,11 @@ interface IXmrSwap {
         uint64 tFinal;
         uint64 tRefund;
         uint64 tSettled;
+        // Amendment 1 (SPEC 11.2, 11.6), appended.
+        address payout; // direction B: where a claim pays (the taker by default); zero in direction A
+        address watcher; // the key that may freeze; zero = none
+        uint32 freezeSecs; // W_z copied from the quote
+        uint64 tFreeze; // when the swap was frozen; 0 = never
     }
 
     // ------------------------------------------------------------------ swap events (SPEC 5.5)
@@ -159,11 +165,20 @@ interface IXmrSwap {
         uint8 depth,
         bytes16 swapNonce,
         TakerKeys keys,
-        bytes32 leaf
+        bytes32 leaf,
+        address payout,
+        address watcher
     );
     event Approved(bytes32 indexed swapId, address indexed maker, uint8 counter);
     event Funded(
-        bytes32 indexed swapId, address indexed maker, uint8 counter, address key, address key2, bytes32 spendPub, bytes32 viewShare
+        bytes32 indexed swapId,
+        address indexed maker,
+        uint8 counter,
+        address key,
+        address key2,
+        bytes32 spendPub,
+        bytes32 viewShare,
+        address watcher
     );
     event Rejected(bytes32 indexed swapId, address indexed maker, uint8 counter, uint8 reason);
     event PendingCancelled(bytes32 indexed swapId, address indexed maker, uint8 counter);
@@ -172,6 +187,10 @@ interface IXmrSwap {
         bytes32 indexed swapId, address indexed maker, uint8 counter, bytes32 commitment, bytes ciphertext, bool late
     );
     event ReadySet(bytes32 indexed swapId, address indexed maker, uint8 counter);
+    /// @notice Z1 (Amendment 1, SPEC 11.6). `frozenUntil` is T_ff = max(tFreeze + freezeSecs, tClaimOpen).
+    event Frozen(
+        bytes32 indexed swapId, address indexed maker, uint8 counter, address taker, address watcher, uint64 frozenUntil
+    );
     event Aborted(bytes32 indexed swapId, address indexed maker, uint8 counter, uint8 newState);
     event RefundedKeyless(bytes32 indexed swapId, address indexed maker, uint8 counter);
     event ExpiredUnnoticed(bytes32 indexed swapId, address indexed maker, uint8 counter);
@@ -187,6 +206,10 @@ interface IXmrSwap {
     event EvidencePublished(bytes32 indexed swapId, address indexed maker, uint8 counter, bytes32 txid, bytes32 viewShare);
     /// @notice A payout could not be delivered and was parked in `owed[token][account]`.
     event PayoutDeferred(address indexed token, address indexed account, uint256 amount);
+    /// @notice Amendment 1 (SPEC 11.1): the owner set the beta caps of `token`.
+    event CapsChanged(address indexed token, uint128 maxSwap, uint128 maxOpen);
+    /// @notice Amendment 1 (SPEC 11.1): the owner switched the caps on or off.
+    event CapsSwitched(bool on);
 
     // ------------------------------------------------------------------ registry events
 
@@ -241,6 +264,11 @@ interface IXmrSwap {
     error EvidenceRequired();
     error NothingOwed();
     error MessageTooLarge();
+    // Amendment 1 (SPEC 11), appended.
+    error SwapCapExceeded();
+    error OpenCapExceeded();
+    error WatcherNotAllowed();
+    error FreezeWindowOutOfRange();
 
     // ------------------------------------------------------------------ registry (SPEC 5.3)
 
@@ -272,6 +300,8 @@ interface IXmrSwap {
 
     /// @notice A1: the taker escrows `amount` and names a leaf of the quote's key pool.
     /// ETH: msg.value == amount + sessionBudget. USDC: msg.value == sessionBudget.
+    /// `watcher` (Amendment 1): the key that may freeze the swap; zero = none; `WatcherNotAllowed`
+    /// against a quote with `freezeWindow == 0`.
     function lock(
         Quote calldata q,
         bytes calldata sig,
@@ -283,10 +313,13 @@ interface IXmrSwap {
         TakerKeys calldata tk,
         PoolLeaf calldata leaf,
         Approval calldata a,
-        bytes calldata approvalSig
+        bytes calldata approvalSig,
+        address watcher
     ) external payable returns (bytes32 swapId);
 
-    /// @notice B1: the taker posts the take deposit.
+    /// @notice B1: the taker posts the take deposit. `payout` (Amendment 1): where the claim
+    /// pays `amount - fee + deposit`; the taker passes its own address for the default; zero is
+    /// `BadValue`.
     function take(
         Quote calldata q,
         bytes calldata sig,
@@ -297,16 +330,25 @@ interface IXmrSwap {
         uint256 sessionBudget,
         TakerKeys calldata tk,
         Approval calldata a,
-        bytes calldata approvalSig
+        bytes calldata approvalSig,
+        address payout
     ) external payable returns (bytes32 swapId);
 
     /// @notice A2. Operator. Consumes the named pool leaf.
     function approve(bytes32 swapId, bytes32 expectedOpen) external;
 
     /// @notice B5. Operator. Escrows `amount` and supplies the maker's share commitments.
-    function fund(bytes32 swapId, bytes32 expectedOpen, address key, address key2, bytes32 spendPub, bytes32 viewShare)
-        external
-        payable;
+    /// `watcher` (Amendment 1): the maker's watcher; zero = none; `WatcherNotAllowed` against
+    /// `freezeSecs == 0`. Never refused by a cap.
+    function fund(
+        bytes32 swapId,
+        bytes32 expectedOpen,
+        address key,
+        address key2,
+        bytes32 spendPub,
+        bytes32 viewShare,
+        address watcher
+    ) external payable;
 
     /// @notice A3, B3. Operator. Reason 0, 1 or 2 (SPEC 3.7).
     function reject(bytes32 swapId, bytes32 expectedOpen, uint8 reason) external;
@@ -324,6 +366,10 @@ interface IXmrSwap {
 
     /// @notice A9, B7. The locker.
     function setReady(bytes32 swapId) external;
+
+    /// @notice Z1 (Amendment 1, SPEC 11.6). The watcher the swap names, or the locker: NOTICED,
+    /// before T_co, once. Moves nothing.
+    function freeze(bytes32 swapId) external;
 
     /// @notice A7a-d, B8. The claimer.
     function abort(bytes32 swapId) external;
@@ -354,6 +400,22 @@ interface IXmrSwap {
 
     /// @notice Pull the caller's parked payouts of `token` to `to`.
     function withdrawOwed(address token, address to) external;
+
+    /// @notice Amendment 1 (SPEC 11.2). Anyone: retry the push of `account`'s parked payouts of
+    /// `token` to `account` itself, so an address with no ETH is never stuck.
+    function pushOwed(address token, address account) external;
+
+    // ------------------------------------------------------------------ beta caps (Amendment 1, SPEC 11.1)
+
+    /// @notice Owner. Largest `amount` of one swap and largest open value of `token`.
+    function setCaps(address token, uint128 maxSwap, uint128 maxOpen) external;
+
+    /// @notice Owner. The global switch; on after `initialize`, with every cap zero.
+    function setCapsOn(bool on) external;
+
+    /// @notice The switch, the caps of `token` and its open value: the sum of `amount` (A) or
+    /// `amount + deposit` (B) over the swaps in an open state.
+    function capsOf(address token) external view returns (bool on, uint128 maxSwap, uint128 maxOpen, uint128 openValue);
 
     /// @notice The treasury address only.
     function withdrawTreasury(address token, address to) external;

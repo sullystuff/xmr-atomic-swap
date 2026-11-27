@@ -20,6 +20,7 @@ describe('deadlines.json mirrors the constants of this package', () => {
     ['MAX_FINAL_SECS', 'maxFinalSecs'], ['READY_MIN_SECS_PER_CONF', 'readyMinSecsPerConf'], ['CLOSE_GRACE_SECS', 'closeGraceSecs'],
     ['LINK_DELAY_SECS', 'linkDelaySecs'], ['MAX_OPEN_PENDING', 'maxOpenPending'], ['EXPLICIT_APPROVE', 'explicitApprove'],
     ['OPEN_SECRET_CALLS', 'openSecretCalls'], ['LAPSE_IS_FAULT', 'lapseIsFault'],
+    ['MIN_FREEZE_SECS', 'minFreezeSecs'], ['MAX_FREEZE_SECS', 'maxFreezeSecs'],
   ];
   for (const chain of ['solana', 'ethereum'] as const) {
     it(chain, () => {
@@ -168,7 +169,7 @@ describe('envelope.json: the largest responses are well-formed messages', () => 
       expect(p.MAKER_MESSAGE_TYPES, c.name).toContain(m.t);
       expect(c.output.length).toBeLessThanOrEqual(p.ENVELOPE_MAX_ONCHAIN);
     }
-    // The Ethereum quote response carries the 316-byte compact quote.
+    // The Ethereum quote response carries the 320-byte compact quote with its signature.
     const q = p.parseMessage(largest.find((c: any) => c.name === 'largest-quote-response-ethereum').input.plaintext_utf8) as p.QuoteResponseEthereum;
     expect(Uint8Array.from(atob(q.quote), (ch) => ch.charCodeAt(0)).length).toBe(p.COMPACT_QUOTE_SIGNED_LEN);
     for (const c of s.cases.filter((c: any) => c.valid && !c.name.startsWith('largest-'))) expect(() => p.parseMessage(c.input.plaintext_utf8), c.name).not.toThrow();
@@ -187,5 +188,81 @@ describe('other suites', () => {
     expect(sol.message_len).toBe(p.SOL_APPROVAL_LEN);
     expect(sol.any).toBe(p.SOL_APPROVAL_ANY);
     expect(vector('eip712').compact_len).toBe(p.COMPACT_QUOTE_LEN);
+  });
+});
+
+describe('Amendment 1: wallet_seed.json, caps and freeze constants', () => {
+  const s = vector('wallet_seed');
+
+  it('the Solana wallet-key message of this package is the text the vector signed', () => {
+    const c = s.cases.find((x: any) => x.name === 'solana');
+    const m = c.message;
+    const text = p.walletKeySolanaMessage({ site: m.site, genesisHash: m.genesis_hash_base58, programId: m.program_id_base58, wallet: m.wallet_base58 });
+    expect(text).toBe(m.text);
+    expect(Buffer.from(text, 'utf8').toString('hex')).toBe(m.bytes);
+    expect(p.base58Encode(Buffer.from(c.input.wallet, 'hex'))).toBe(m.wallet_base58);
+    // The default site is this release's constant.
+    expect(p.walletKeySolanaMessage({ genesisHash: 'g', programId: 'p', wallet: 'w' })).toBe(
+      `Sign this only on ${p.WALLET_KEY_SITE} to unlock your XMR swap keys.\nAnyone who gets this signature can take XMR you have not collected and act on your open swaps.\n\nxmrswap wallet key v1\ncluster: g\nprogram: p\nwallet: w`,
+    );
+  });
+
+  it('the Ethereum WalletKey type, notice and digest', () => {
+    expect(s.wallet_key_type).toBe(p.EIP712_TYPE_STRINGS.WalletKey);
+    expect(s.wallet_key_notice).toBe(p.WALLET_KEY_NOTICE);
+    expect(s.key_version).toBe(p.WALLET_KEY_VERSION);
+    const c = s.cases.find((x: any) => x.name === 'ethereum');
+    const td = c.message.typed_data;
+    expect(td.types.WalletKey).toEqual(p.EIP712_TYPES.WalletKey);
+    const message = p.walletKeyMessage(c.input.wallet, td.message.site);
+    expect(message).toEqual(td.message);
+    const digest = hashTypedData({ domain: p.eip712Domain(td.domain.chainId, td.domain.verifyingContract), types: p.EIP712_TYPES, primaryType: 'WalletKey', message });
+    expect(digest).toBe(c.message.digest);
+    // The contract accepts a WalletKey nowhere: no function of the frozen ABI takes one.
+    expect(JSON.stringify(p.IXmrSwapAbi)).not.toContain('WalletKey');
+    expect(p.WALLET_KEY_WARNINGS.length).toBe(3);
+    expect(p.WALLET_KEY_WARNINGS[2]).toContain(p.WALLET_KEY_SITE);
+  });
+
+  it('cap helpers: exactly at a cap is allowed, one unit above is not', () => {
+    const caps: p.AssetCaps = { on: true, maxSwap: 1_000n, maxOpen: 5_000n, openValue: 3_990n };
+    expect(p.capsHeadroom(caps)).toBe(1_010n);
+    expect(p.countedValue(p.DIRECTION.A, 1_000n, 10n)).toBe(1_000n);
+    expect(p.countedValue(p.DIRECTION.B, 1_000n, 10n)).toBe(1_010n);
+    expect(p.capsRefusal(caps, p.DIRECTION.A, 1_000n, 10n)).toBeNull();
+    expect(p.capsRefusal(caps, p.DIRECTION.A, 1_001n, 10n)).toBe('SwapCapExceeded');
+    expect(p.capsRefusal(caps, p.DIRECTION.B, 1_000n, 10n)).toBeNull();
+    expect(p.capsRefusal(caps, p.DIRECTION.B, 1_000n, 11n)).toBe('OpenCapExceeded');
+    expect(p.capsHeadroom({ ...caps, openValue: 9_999n })).toBe(0n);
+    expect(p.capsRefusal({ ...caps, on: false }, p.DIRECTION.B, 10n ** 30n, 0n)).toBeNull();
+    expect(p.capsHeadroom({ ...caps, on: false })).toBeNull();
+    // The same boundaries as the vector rows.
+    const t = vector('transitions');
+    const row = (id: string, name: string) => t.rows.find((r: any) => r.chain === 'solana' && r.id === id && r.case === name).step;
+    for (const [id, direction] of [['A1', p.DIRECTION.A], ['B1', p.DIRECTION.B]] as const) {
+      for (const name of ['caps: amount exactly max_swap', 'caps: amount one above max_swap', 'caps: counted value exactly max_open', 'caps: counted value one above max_open', 'caps: other swaps open, the sum exactly max_open', 'caps: other swaps open, the sum one above max_open', 'caps: switched off with every cap zero']) {
+        const step = row(id, name);
+        const c = step.env.caps;
+        const amount = BigInt(step.args.amount);
+        const deposit = (amount * BigInt(step.args.dep_bps)) / 10_000n;
+        const refusal = p.capsRefusal({ on: c.on, maxSwap: BigInt(c.max_swap), maxOpen: BigInt(c.max_open), openValue: BigInt(c.open_value) }, direction, amount, deposit);
+        expect(refusal, `${id} ${name}`).toBe(step.expect.ok ? null : step.expect.error);
+      }
+    }
+  });
+
+  it('transitions.json uses the amendment names of this package', () => {
+    const t = vector('transitions');
+    expect(t.counter_names.slice(33)).toEqual(['freezes', 'refunds_after_freeze', 'backouts_after_freeze', 'claims_after_freeze']);
+    const frozen = t.rows.find((r: any) => r.id === 'Z1' && r.ok).step.expect;
+    expect(frozen.swap.state_code).toBe(p.SWAP_STATE.FROZEN);
+    expect(frozen.swap.flags & p.SWAP_FLAG.COUNTED).toBe(p.SWAP_FLAG.COUNTED);
+    // Every open swap in the vectors carries the counted flag; no settled one does.
+    for (const r of t.rows) {
+      const e = r.step.expect;
+      if (!e.ok) continue;
+      const open = p.OPEN_SWAP_STATES.includes(e.swap.state);
+      expect((e.swap.flags & p.SWAP_FLAG.COUNTED) !== 0, `${r.chain} ${r.id} ${r.case}`).toBe(open);
+    }
   });
 });

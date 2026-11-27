@@ -70,6 +70,52 @@ export interface StatusResponse {
   /** Items parked for a human (SPEC 7.4). */
   needs_review: number;
   alerts: Alert[];
+  /** Amendment 1 (SPEC 11.1): the on-chain beta caps and open value of every market. */
+  caps: MarketCaps[];
+  /** Amendment 1 (SPEC 11.5): the Solana program build this daemon expects and the one deployed. */
+  program_build: ProgramBuildStatus;
+  /** Amendment 1 (SPEC 11.6): the watcher the daemon hands its direction-B swaps to (`[watcher] url`). */
+  watcher: WatcherStatus;
+}
+/** The caps of one market's escrowed asset as read from the chain (SPEC 11.1). */
+export interface MarketCaps {
+  market: Market;
+  /** `null` when the chain could not be read. */
+  caps: {
+    /** The global switch. Off: nothing is checked. */
+    on: boolean;
+    /** Largest `amount` of one swap, base units. */
+    max_swap: Amount;
+    /** Largest open value at once, base units. */
+    max_open: Amount;
+    /** Sum of the counted values of the open swaps ("X of Y open"). */
+    open_value: Amount;
+    /** `max(0, max_open − open_value)`. */
+    headroom: Amount;
+    /** The configuration is frozen with the caps on: they stay as they are for good. */
+    frozen: boolean;
+  } | null;
+}
+export interface ProgramBuildStatus {
+  program_id: string;
+  /** `DEPLOYMENT.programHash`; `null` = no published build to compare with. */
+  expected_hash: string | null;
+  /** SHA-256 of the deployed ProgramData without its 45-byte header and trailing zeros; `null` if unreadable. */
+  on_chain_hash: string | null;
+  /** `null` when either hash is missing. */
+  matches: boolean | null;
+}
+export interface WatcherStatus {
+  /** `[watcher] url`, or `null` when none is configured. */
+  url: string | null;
+  /** The last `GET /watch/v1/info` succeeded. */
+  reachable: boolean | null;
+  /** The keys it asked to be named as watcher. */
+  solana: string | null;
+  ethereum: string | null;
+  /** Swaps it has acknowledged and still watches. */
+  watching: number;
+  last_error?: string;
 }
 export interface Alert {
   id: string;
@@ -103,6 +149,12 @@ export interface EffectiveOfferTerms {
   depth_tiers: { above_xmr: Amount; depth: number }[];
   /** Smallest claim delay the chain accepts for the deepest tier in use. */
   min_claim_delay_secs: number;
+  /**
+   * Amendment 1 (SPEC 11.6): the freeze window `W_z` (`freeze_window_hours` × 3,600). 0 = this
+   * offer accepts no watcher; otherwise 3,600 to 259,200, and the counterparty of a frozen swap
+   * waits up to this much longer.
+   */
+  freeze_window_secs: number;
 }
 export interface UpdateCostEstimate {
   interval_secs: number;
@@ -245,7 +297,10 @@ export interface OfferView {
   deviation_pct: number;
   min_xmr: Amount;
   max_xmr: Amount;
+  /** Also capped by the on-chain headroom and by `max_swap` at the current price (SPEC 11.1). */
   capacity_xmr: Amount;
+  /** What bounds `capacity_xmr` right now. */
+  capacity_limit: 'inventory' | 'max_swap' | 'max_open' | 'config';
   terms: EffectiveOfferTerms;
   /** Solana direction-A offers: filled and unused slots of 16. Ethereum: unconsumed leaves of the current pool. */
   key_pool: { size: number; available: number } | null;
@@ -278,6 +333,9 @@ export interface SwapDeadlines {
   t_notice: Timestamp | null;
   t_cut: Timestamp | null;
   t_claim_open: Timestamp | null;
+  /** Amendment 1 (SPEC 11.6): the freeze time and `T_ff = max(t_freeze + W_z, T_co)`. */
+  t_freeze: Timestamp | null;
+  t_ff: Timestamp | null;
   t_ready: Timestamp | null;
   t_claim_deadline: Timestamp | null;
   t_final: Timestamp;
@@ -288,6 +346,17 @@ export interface SwapDeadlines {
   t_settled: Timestamp | null;
 }
 export type SwapAction = 'approve' | 'reject' | 'abort' | 'withhold' | 'release' | 'publish-evidence';
+/** Amendment 1 (SPEC 11.2, 11.6): the addresses a swap names besides its two parties. */
+export interface SwapExtras {
+  /** Direction B: where a claim pays, when it is not the taker's own address; else `null`. */
+  payout: string | null;
+  /** The key that may freeze the swap, or `null`. */
+  watcher: string | null;
+  /** `W_z` of the swap; 0 = it cannot be frozen. */
+  freeze_window_secs: number;
+  /** Direction B: the daemon's watcher acknowledged this swap and watches it until then. */
+  watching_until: Timestamp | null;
+}
 export interface SwapSummary {
   chain: ChainName;
   /** Swap PDA (base58) or `swapId` (0x-hex). */
@@ -310,6 +379,7 @@ export interface SwapSummary {
   needs_review: boolean;
   /** Manual actions available right now. */
   actions: SwapAction[];
+  extras: SwapExtras;
 }
 export interface SwapDetail extends SwapSummary {
   mode: number;
@@ -394,6 +464,11 @@ export interface PendingApproval {
   reasons: string[];
   /** Ethereum: whether the taker's DLEQ proof is present and valid. */
   dleq_ok: boolean | null;
+  /** Amendment 1: the payout address (direction B) and the watcher the taker named (direction A), or `null`. */
+  payout: string | null;
+  watcher: string | null;
+  /** The watcher is on `[approvals].deny_watchers`. */
+  watcher_denied: boolean;
 }
 export interface AdvanceApprovalRecord {
   chain: ChainName;

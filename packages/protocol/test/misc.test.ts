@@ -8,7 +8,7 @@ import { frozenIdl, repoRoot } from './helpers.js';
 
 describe('constants', () => {
   it('counter ids of SPEC 3.7', () => {
-    expect(p.COUNTER_NAMES.length).toBe(33);
+    expect(p.COUNTER_NAMES.length).toBe(37);
     expect(p.COUNTER.locks).toBe(0);
     expect(p.COUNTER.completed).toBe(8);
     expect(p.COUNTER.missed_notices).toBe(11);
@@ -18,6 +18,8 @@ describe('constants', () => {
     expect(p.COUNTER.expired_refunds).toBe(27);
     expect(p.COUNTER.splits).toBe(31);
     expect(p.COUNTER.rejections_no_fault).toBe(32);
+    // Amendment 1 (SPEC 11.6).
+    expect([p.COUNTER.freezes, p.COUNTER.refunds_after_freeze, p.COUNTER.backouts_after_freeze, p.COUNTER.claims_after_freeze]).toEqual([33, 34, 35, 36]);
     expect(p.FAULT_COUNTERS.map((n) => p.COUNTER[n])).toEqual([11, 12, 13]);
     // The on-chain array has 40 slots.
     const counters = frozenIdl().types.find((t: any) => t.name === 'Maker').type.fields.find((f: any) => f.name === 'counters');
@@ -25,8 +27,11 @@ describe('constants', () => {
   });
 
   it('states, flags and the per-chain table of SPEC 3.1', () => {
-    expect(p.SWAP_STATE_NAMES.map((n) => p.SWAP_STATE[n])).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
-    expect(p.SWAP_FLAG).toEqual({ NOTICE: 1, EVIDENCE: 2, REVEALED: 4, REVEALER_LOCKER: 8, LATE_NOTICE: 16 });
+    expect(p.SWAP_STATE_NAMES.map((n) => p.SWAP_STATE[n])).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(p.SWAP_STATE.FROZEN).toBe(10);
+    expect(p.SWAP_FLAG).toEqual({ NOTICE: 1, EVIDENCE: 2, REVEALED: 4, REVEALER_LOCKER: 8, LATE_NOTICE: 16, COUNTED: 32 });
+    expect(p.OPEN_SWAP_STATES.map((n) => p.SWAP_STATE[n]).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 10]);
+    expect([p.MIN_FREEZE_SECS, p.MAX_FREEZE_SECS]).toEqual([3_600, 259_200]);
     expect(p.DEPOSIT_STATE).toEqual({ NONE: 0, HELD: 1, WITHHELD: 2, RETURNED: 3, RELEASED: 4, SPLIT: 5 });
     const s = p.SOLANA_CONSTS;
     const e = p.ETHEREUM_CONSTS;
@@ -213,6 +218,8 @@ describe('relay errors and the pinned deployment (M1 follow-up 10)', () => {
     // Nothing is deployed: the per-release slot is null until the owner fills it.
     expect(p.CONTRACT_ADDRESS).toBeNull();
     expect(p.CONTRACT_CHAIN_ID).toBeNull();
-    expect(p.DEPLOYMENT).toEqual({ programId: pinned, contract: null, chainId: null });
+    // Amendment 1 (SPEC 11.5): no published build yet.
+    expect(p.PROGRAM_HASH).toBeNull();
+    expect(p.DEPLOYMENT).toEqual({ programId: pinned, contract: null, chainId: null, programHash: null });
   });
 });

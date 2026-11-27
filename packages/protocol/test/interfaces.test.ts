@@ -66,7 +66,7 @@ describe('check-idl.mjs', () => {
     ['an event removed', (d) => (d.events = d.events.filter((e: any) => e.name !== 'PayoutParked')), /events\.PayoutParked/],
     ['an account type renamed', (d) => (d.accounts.find((a: any) => a.name === 'Maker').name = 'MakerV2'), /accounts\.Maker/],
     ['errors reordered', (d) => ([d.errors[1].name, d.errors[2].name] = [d.errors[2].name, d.errors[1].name]), /errors\[1:Paused\]/],
-    ['an error appended', (d) => d.errors.push({ code: 6050, name: 'Extra' }), /errors: length 51/],
+    ['an error appended', (d) => d.errors.push({ code: 6055, name: 'Extra' }), /errors: length 56/],
     ['a discriminator changed', (d) => (d.instructions[0].discriminator[0] ^= 1), /discriminator/],
     ['another program id', (d) => (d.address = '11111111111111111111111111111111'), /program-id\.txt/],
   ];
@@ -147,7 +147,9 @@ describe('the frozen ABI', () => {
   it('has exactly the errors of SPEC 5.5, without parameters', () => {
     expect(names('error').sort()).toEqual([...p.ETH_ERROR_NAMES].sort());
     expect(abi.filter((e) => e.type === 'error').every((e) => e.inputs.length === 0)).toBe(true);
-    expect(p.ETH_ERROR_NAMES.length).toBe(37);
+    // 37 of SPEC 5.5 and the four of Amendment 1, appended.
+    expect(p.ETH_ERROR_NAMES.length).toBe(41);
+    expect(p.ETH_ERROR_NAMES.slice(37)).toEqual(['SwapCapExceeded', 'OpenCapExceeded', 'WatcherNotAllowed', 'FreezeWindowOutOfRange']);
   });
 
   it('has every function of SPEC 5.3', () => {
@@ -157,6 +159,8 @@ describe('the frozen ABI', () => {
       'refundUnnoticed', 'expireUnnoticed', 'refund', 'claim', 'releaseDeposit', 'withhold', 'splitDeposit', 'publishEvidence',
       'withdrawOwed', 'withdrawTreasury', 'postMessage', 'getSwap', 'getMaker', 'counters', 'swapsOf', 'hashQuote', 'hashApproval',
       'domainSeparator', 'isKeyUsed', 'version',
+      // Amendment 1 (SPEC 11.8).
+      'freeze', 'setCaps', 'setCapsOn', 'capsOf', 'pushOwed',
     ];
     for (const f of required) expect(names('function'), f).toContain(f);
     const fn = (name: string) => abi.find((e) => e.type === 'function' && e.name === name);
@@ -166,13 +170,23 @@ describe('the frozen ABI', () => {
     expect(fn('claim').inputs.map((i: any) => i.type)).toEqual(['bytes32', 'uint256']);
     expect(fn('refund').inputs.map((i: any) => i.type)).toEqual(['bytes32', 'uint256']);
     expect(fn('counters').outputs[0].type).toBe('uint32[40]');
-    expect(fn('lock').inputs.map((i: any) => i.name)).toEqual(['q', 'sig', 'xmr', 'maxPay', 'swapNonce', 'sessionKey', 'sessionBudget', 'tk', 'leaf', 'a', 'approvalSig']);
-    expect(fn('take').inputs.map((i: any) => i.name)).toEqual(['q', 'sig', 'xmr', 'minReceive', 'swapNonce', 'sessionKey', 'sessionBudget', 'tk', 'a', 'approvalSig']);
+    // Amendment 1: `watcher` appended to lock and fund, `payout` to take.
+    expect(fn('lock').inputs.map((i: any) => i.name)).toEqual(['q', 'sig', 'xmr', 'maxPay', 'swapNonce', 'sessionKey', 'sessionBudget', 'tk', 'leaf', 'a', 'approvalSig', 'watcher']);
+    expect(fn('take').inputs.map((i: any) => i.name)).toEqual(['q', 'sig', 'xmr', 'minReceive', 'swapNonce', 'sessionKey', 'sessionBudget', 'tk', 'a', 'approvalSig', 'payout']);
+    expect(fn('fund').inputs.map((i: any) => [i.name, i.type])).toEqual([['swapId', 'bytes32'], ['expectedOpen', 'bytes32'], ['key', 'address'], ['key2', 'address'], ['spendPub', 'bytes32'], ['viewShare', 'bytes32'], ['watcher', 'address']]);
+    expect(fn('freeze').inputs.map((i: any) => i.type)).toEqual(['bytes32']);
+    expect(fn('setCaps').inputs.map((i: any) => [i.name, i.type])).toEqual([['token', 'address'], ['maxSwap', 'uint128'], ['maxOpen', 'uint128']]);
+    expect(fn('setCapsOn').inputs.map((i: any) => i.type)).toEqual(['bool']);
+    expect(fn('capsOf').stateMutability).toBe('view');
+    expect(fn('capsOf').outputs.map((i: any) => [i.name, i.type])).toEqual([['on', 'bool'], ['maxSwap', 'uint128'], ['maxOpen', 'uint128'], ['openValue', 'uint128']]);
+    expect(fn('pushOwed').inputs.map((i: any) => [i.name, i.type])).toEqual([['token', 'address'], ['account', 'address']]);
+    // 45 functions before the amendment, five added.
+    expect(names('function').length).toBe(50);
   });
 
   it('every swap event indexes swapId and maker and carries the counter', () => {
     expect(names('event').sort()).toEqual(
-      [...p.ETH_SWAP_EVENT_NAMES, 'PayoutDeferred', 'MakerRegistered', 'OperatorChanged', 'PayoutChanged', 'LinkChanged', 'PausedChanged', 'EpochsBumped', 'QuoteCancelled', 'ApprovalRevoked', 'Message'].sort(),
+      [...p.ETH_SWAP_EVENT_NAMES, 'PayoutDeferred', 'MakerRegistered', 'OperatorChanged', 'PayoutChanged', 'LinkChanged', 'PausedChanged', 'EpochsBumped', 'QuoteCancelled', 'ApprovalRevoked', 'Message', 'CapsChanged', 'CapsSwitched'].sort(),
     );
     for (const name of p.ETH_SWAP_EVENT_NAMES) {
       const e = abi.find((x) => x.type === 'event' && x.name === name);
@@ -185,6 +199,13 @@ describe('the frozen ABI', () => {
     // Selectors are computable from the frozen file (smoke test of the ABI with viem).
     expect(toFunctionSelector(abi.find((e) => e.name === 'claim'))).toBe(toFunctionSelector('claim(bytes32,uint256)'));
     expect(toEventSelector(abi.find((e) => e.name === 'Approved'))).toBe(toEventSelector('Approved(bytes32,address,uint8)'));
+    // Amendment 1: Frozen, and the fields Locked and Funded gained at their ends.
+    const ev = (name: string) => abi.find((x) => x.type === 'event' && x.name === name).inputs.map((i: any) => [i.name, i.type, !!i.indexed]);
+    expect(ev('Frozen')).toEqual([['swapId', 'bytes32', true], ['maker', 'address', true], ['counter', 'uint8', false], ['taker', 'address', false], ['watcher', 'address', false], ['frozenUntil', 'uint64', false]]);
+    expect(ev('Locked').slice(-2)).toEqual([['payout', 'address', false], ['watcher', 'address', false]]);
+    expect(ev('Funded').at(-1)).toEqual(['watcher', 'address', false]);
+    expect(ev('CapsChanged')).toEqual([['token', 'address', true], ['maxSwap', 'uint128', false], ['maxOpen', 'uint128', false]]);
+    expect(ev('CapsSwitched')).toEqual([['on', 'bool', false]]);
   });
 
   it('the Quote and Approval structs match the EIP-712 type definitions', () => {
@@ -199,7 +220,12 @@ describe('the frozen ABI', () => {
     expect(swap.slice(0, 5)).toEqual(['taker', 'maker', 'token', 'sessionKey', 'swapNonce']);
     expect(swap).toContain('noticeCiphertext');
     expect(swap).toContain('revealed');
-    expect(swap.slice(-12)).toEqual(['tLock', 'tPendingDeadline', 'tActive', 'tNoteDeadline', 'tNotice', 'tCut', 'tClaimOpen', 'tReady', 'tClaimDeadline', 'tFinal', 'tRefund', 'tSettled']);
+    // Amendment 1 appended four fields; the twelve times of SPEC 5.2 are still where they were.
+    expect(swap.slice(-16, -4)).toEqual(['tLock', 'tPendingDeadline', 'tActive', 'tNoteDeadline', 'tNotice', 'tCut', 'tClaimOpen', 'tReady', 'tClaimDeadline', 'tFinal', 'tRefund', 'tSettled']);
+    const swapTail = abi.find((e) => e.name === 'getSwap').outputs[0].components.slice(-4).map((c: any) => [c.name, c.type]);
+    expect(swapTail).toEqual([['payout', 'address'], ['watcher', 'address'], ['freezeSecs', 'uint32'], ['tFreeze', 'uint64']]);
+    expect(p.EIP712_TYPES.Quote.at(-1)).toEqual({ name: 'freezeWindow', type: 'uint32' });
+    expect(`WalletKey(${p.EIP712_TYPES.WalletKey.map((f) => `${f.type} ${f.name}`).join(',')})`).toBe(p.EIP712_TYPE_STRINGS.WalletKey);
     const maker = abi.find((e) => e.name === 'getMaker').outputs[0].components;
     expect(maker.map((c: any) => c.name)).toEqual(['operator', 'payout', 'quoteEpoch', 'approvalEpoch', 'paused', 'registeredAt', 'solanaOwner', 'solanaOwnerNext', 'solanaOwnerNextAt', 'openPending', 'responseSecsSum', 'counters']);
     expect(maker.at(-1).type).toBe('uint32[40]');
