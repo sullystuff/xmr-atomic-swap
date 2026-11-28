@@ -483,6 +483,7 @@ deny_watchers = ["${seedSigner(new Uint8Array(32).fill(0x56)).publicKey}"]
 [watcher]
 url = "http://watcher.test"
 solana_key = "${wt.solana}"
+retry_seconds = 1
 `;
     writeFileSync(aw.configPath, toml.replaceAll('__OWNER__', aw.sim.owner));
     const data = new Uint8Array(165);
@@ -609,5 +610,26 @@ solana_key = "${wt.solana}"
     const res = await fetch(`${aapi.url}/api/swaps/${buyRef}/deliver-owed`, { method: 'POST', headers: { Authorization: `Bearer ${ad.token}`, 'Content-Type': 'application/json' }, body: '{}' });
     expect([res.status, (await res.json()).error]).toEqual([409, 'nothing_owed']);
     expect((await fetch(`${aapi.url}/api/swaps/nope/deliver-owed`, { method: 'POST', headers: { Authorization: `Bearer ${ad.token}` } })).status).toBe(404);
+  });
+
+  it('A27 to A29. status.degraded with reasons; `parked` on every swap; unreadable markets carry a reason', async () => {
+    await ad.refreshMonero();
+    const st = await call(ac, 'status');
+    expect(st.degraded).toEqual({ state: false, reasons: [] });
+    // The watcher goes away while a funded sell-XMR swap is not yet acknowledged: degraded, with the swap named.
+    aw.sim.setCaps(true, [1n << 60n, 1n << 60n], [1n << 60n, 1n << 60n]);
+    wt.down = true;
+    const fresh = aw.sim.open({ direction: 1, asset: 1, xmr: 1n * XMR, wZ: 86_400 });
+    await ad.executor.tick();
+    await ad.executor.tick();
+    const g = (await call(ac, 'status')).degraded;
+    expect(g).toEqual({ state: true, reasons: [{ code: 'watcher_not_watching', swap_ref: fresh.pda, message: expect.stringMatching(/has not acknowledged this funded swap/) }] });
+    wt.down = false;
+    await new Promise((r) => setTimeout(r, 1_100));
+    await ad.executor.tick();
+    expect((await call(ac, 'status')).degraded.state).toBe(false);
+    for (const x of (await call(ac, 'swaps')).swaps) expect(x.parked).toEqual([]);
+    expect((await call(ac, 'swap', { params: { ref: buyRef } })).parked).toEqual([]);
+    for (const c of st.caps) expect(c.caps === null ? typeof c.reason : 'string').toBe('string');
   });
 });

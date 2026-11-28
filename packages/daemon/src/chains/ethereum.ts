@@ -3,12 +3,29 @@
  * read is at the configured finality tag (`finalized` by default), and a transaction counts as
  * confirmed only once its block is at or below that tag.
  */
-import { type Address, type Hex, ETH_NATIVE } from '@xmrswap/protocol';
-import { type CallMaterial, ContractError, type EthCall, type EthMaker, type EthSigner, type EthereumClient, type FlowCall, SdkError, type SwapView, ethereumCall, hex0x } from '@xmrswap/sdk';
-import { encodeFunctionData, keccak256, parseAbi } from 'viem';
+import { type Address, type Hex, ETH_NATIVE, IXmrSwapAbi } from '@xmrswap/protocol';
+import { type CallMaterial, ContractError, type EthCall, type EthMaker, type EthSigner, type EthereumClient, type FlowCall, SdkError, type SwapView, ethGasCap, ethereumCall, hex0x } from '@xmrswap/sdk';
+import { type Abi, decodeFunctionData, encodeFunctionData, keccak256, parseAbi } from 'viem';
 import { type OnSigned, Refused, type SwapChain, type TxStatus } from './types.js';
 
 const ERC20 = parseAbi(['function approve(address spender, uint256 amount) returns (bool)', 'function allowance(address owner, address spender) view returns (uint256)', 'function balanceOf(address) view returns (uint256)', 'function transfer(address to, uint256 amount) returns (bool)']);
+
+/**
+ * The most gas the operator signs for, per call. The SDK caps the calls it measured (`ETH_GAS_CAP`) and everything
+ * else at 150,000; the maker-only calls it did not measure get their own bound here, about 1.5 times what they use
+ * (`approve` writes the maker's share and the response time; the deposit calls move tokens). Never below the SDK's cap.
+ */
+export const OPERATOR_GAS_CAP: Readonly<Record<string, bigint>> = { approve: 300_000n, reject: 220_000n, withhold: 260_000n, publishEvidence: 220_000n, releaseDeposit: 220_000n, splitDeposit: 260_000n, setReady: 150_000n, abort: 150_000n, freeze: 150_000n, pushOwed: 150_000n, bumpEpochs: 150_000n, revokeApproval: 150_000n };
+export function gasCapFor(call: EthCall, contract: Address): bigint {
+  const base = ethGasCap(call, contract);
+  if (call.to.toLowerCase() !== contract.toLowerCase()) return base;
+  try {
+    const own = OPERATOR_GAS_CAP[decodeFunctionData({ abi: IXmrSwapAbi as unknown as Abi, data: call.data }).functionName];
+    return own !== undefined && own > base ? own : base;
+  } catch {
+    return base;
+  }
+}
 
 export interface EthereumChainOptions {
   client: EthereumClient;
@@ -104,7 +121,7 @@ export class EthereumChain implements SwapChain {
       },
     };
     try {
-      return await this.client.send(call, hooked, opts);
+      return await this.client.send(call, hooked, { ...opts, gasLimitCap: gasCapFor(call, this.client.contract.address) });
     } catch (e) {
       if (e instanceof ContractError) throw new Refused(e.code, e.message);
       throw e;

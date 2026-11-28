@@ -15,13 +15,15 @@ import type { Alerts } from '../alerts/index.js';
 import { type Config, watcherConfigured } from '../config/load.js';
 import type { Store, WatchAckRow } from '../store/db.js';
 import { CrashError, type Journal } from '../store/journal.js';
-import { type Bytes, errMsg } from '../util.js';
+import { type Bytes, errMsg, fromJson } from '../util.js';
 
 export interface MakerWatcherOptions {
   store: Store;
   journal: Journal;
   alerts: Alerts;
   config: () => Config;
+  /** What a watch request is bound to on a chain: the program id, or `chainId:contract` (the SDK's `watchDeployment`); `null` = that chain is not connected. */
+  deployment: (chain: ChainName) => string | null;
   /** HTTP to the watcher (tests inject a fake; an onion address needs a fetch routed through Tor). */
   fetch?: HttpFetch;
   /** Milliseconds. */
@@ -70,12 +72,13 @@ export class MakerWatcher {
    * Never throws: an unreachable or refusing watcher leaves the swap unwatched, says so, and is
    * tried again after `retry_seconds`. The daemon's own handling of the swap never waits on it.
    */
-  async register(ref: string, view: SwapView, lockerEncSecret: Bytes): Promise<WatchAckRow | null> {
+  async register(ref: string, view: SwapView, lockerEncSecret: Bytes, chainNow: bigint): Promise<WatchAckRow | null> {
     const have = this.ack(ref);
     if (have) return have;
     const client = this.client();
     const key = this.keyFor('solana');
-    if (!client || !key || !this.names(view)) return null;
+    const deployment = this.o.deployment(view.chain);
+    if (!client || !key || !deployment || !this.names(view)) return null;
     const t = this.clock();
     if ((this.nextTry.get(ref) ?? 0) > t) return null;
     this.nextTry.set(ref, t + this.settings.retry_seconds * 1_000);
@@ -85,7 +88,9 @@ export class MakerWatcher {
         ref,
         { call: 'watch_register', watcher: key },
         // The notice key decrypts this one swap's notice and nothing else; it leaves sealed to the watcher's key.
-        () => client.register({ chain: view.chain, swapRef: view.swapRef, noticeKey: noticeKey(view, lockerEncSecret), watcherSolanaKey: key }),
+        // The request is authenticated with the locker's encryption key recorded in the swap (the maker's key of THAT version, whatever was
+        // rotated since), bound to this deployment, and stamped with chain time (the watcher checks it against the swap's own `t_lock`).
+        () => client.register({ chain: view.chain, swapRef: view.swapRef, noticeKey: noticeKey(view, lockerEncSecret), watcherSolanaKey: key, lockerEncSecret, deployment, issuedAt: chainNow }),
         (a) => {
           this.o.store.putWatchAck({ swap_ref: ref, chain: view.chain, watcher: key, watching_until: a.watching_until, sig: a.sig });
           return { meta: { watching_until: a.watching_until } };
@@ -126,6 +131,17 @@ export class MakerWatcher {
       this.reachable = false;
       this.lastError = errMsg(e);
     }
+  }
+
+  /** Funded buy-XMR swaps that name the watcher and have no acknowledgement: nothing pauses them while the daemon is down. */
+  unwatched(): string[] {
+    return this.o.store.swaps({ open: true }).filter((s) => s.direction === 1 && (s.state === 2 || s.state === 3) && !this.ack(s.ref) && s.snapshot !== null && this.names(fromJson<SwapView>(s.snapshot))).map((s) => s.ref);
+  }
+  get isReachable(): boolean | null {
+    return this.reachable;
+  }
+  get error(): string | null {
+    return this.lastError;
   }
 
   /** Open swaps the watcher acknowledged and whose promise has not run out. */

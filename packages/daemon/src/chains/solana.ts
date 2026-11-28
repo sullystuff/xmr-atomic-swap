@@ -101,6 +101,11 @@ export class SolanaChain implements SwapChain {
     }
     const lastValid = typeof meta?.['lastValidBlockHeight'] === 'number' ? (meta['lastValidBlockHeight'] as number) : null;
     if (this.o.blockHeight && lastValid !== null) return { state: (await this.o.blockHeight()) > lastValid ? 'dead' : 'pending' };
+    // No injected height: ask the client, which judges expiry by block height at `finalized` (more exact than a timer); the timer is the last resort.
+    if (lastValid !== null) {
+      const expired = await this.client.blockhashExpired(lastValid).catch(() => null);
+      if (expired !== null) return { state: expired ? 'dead' : 'pending' };
+    }
     const signedAt = typeof meta?.['signedAtMs'] === 'number' ? (meta['signedAtMs'] as number) : 0;
     return { state: this.clock() - signedAt > (this.o.deadAfterMs ?? 120_000) ? 'dead' : 'pending' };
   }

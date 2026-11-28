@@ -1,7 +1,7 @@
 /** Swap rows as the console sees them (`GET /api/swaps`, `GET /api/swaps/:ref`, `GET /api/approvals`). */
 import { CHAIN_CONSTS, COUNTER_NAMES, COUNTER_NONE, type Market, SWAP_FLAG, SWAP_STATE, SWAP_STATE_NAMES } from '@xmrswap/protocol';
 import type { PendingApproval, SwapAction, SwapDeadlines, SwapDetail, SwapExtras, SwapSummary } from '@xmrswap/protocol/daemon-api';
-import { type LockReport, type SwapView, deadlinesOf } from '@xmrswap/sdk';
+import { type LockReport, type SwapView, deadlinesOf, endedInClaim } from '@xmrswap/sdk';
 import { inboxItem } from '../inbox/index.js';
 import type { Store, SwapRow } from '../store/db.js';
 import { fromJson } from '../util.js';
@@ -51,6 +51,32 @@ export function swapExtras(v: SwapView | null, ack: { watching_until: number } |
   };
 }
 
+export interface ParkedPayout {
+  /** Whose it is: the maker, the taker, the swap's payout address, or the treasury. */
+  for: 'maker' | 'taker' | 'payout' | 'treasury';
+  /** Base units of the swap's asset. Ethereum: the account's total for the token, which may include other swaps. */
+  amount: string;
+  /** The address it is keyed to, when the swap itself names it (the taker, the payout address); `null` for the maker's (see `withdraw-owed-tx`). */
+  account: string | null;
+  /** What the console can do about it: `withdraw` = `POST …/withdraw-owed-tx` (signed by the owed key); `deliver` = `POST …/deliver-owed` (the operator pays the fee); `none` = only its owner can pull it. */
+  action: 'withdraw' | 'deliver' | 'none';
+}
+/**
+ * Payouts of a swap that could not be pushed and wait in the contract (SPEC 3.9, 11.2), with the one action that applies.
+ * Solana: the maker's needs the cold owner key (`withdraw`); claim proceeds parked for a payout address are delivered by
+ * anyone (`deliver`); the taker's own it pulls itself. Ethereum: `pushOwed` delivers any of them (`deliver`).
+ */
+export function parkedOf(v: SwapView | null): ParkedPayout[] {
+  if (!v) return [];
+  const out: ParkedPayout[] = [];
+  const eth = v.chain === 'ethereum';
+  const toPayout = v.direction === 1 && v.payout === 'other' && endedInClaim(v) && v.payoutAddress !== null;
+  if (v.owedMaker > 0n) out.push({ for: 'maker', amount: v.owedMaker.toString(), account: null, action: eth ? 'deliver' : 'withdraw' });
+  if (v.owedTaker > 0n) out.push(toPayout ? { for: 'payout', amount: v.owedTaker.toString(), account: v.payoutAddress, action: 'deliver' } : { for: 'taker', amount: v.owedTaker.toString(), account: v.taker, action: eth ? 'deliver' : 'none' });
+  if (v.owedTreasury > 0n) out.push({ for: 'treasury', amount: v.owedTreasury.toString(), account: null, action: 'none' });
+  return out;
+}
+
 export function swapSummary(row: SwapRow, now: number, store?: Store): SwapSummary {
   const v = snapshotOf(row);
   const frozen = v && v.tFreeze !== 0n ? { t_freeze: Number(v.tFreeze), t_ff: n(deadlinesOf(v.chain, v).tFf), frozen_by: store?.freeze(row.ref)?.frozen_by ?? null } : null;
@@ -62,7 +88,8 @@ export function swapSummary(row: SwapRow, now: number, store?: Store): SwapSumma
     ...({ mode: v?.mode ?? 0, instruction: instructionView(row) } as object),
     extras: swapExtras(v, store?.watchAck(row.ref)),
     // Additions (Amendment 1): when the swap was paused, until when, and by whom as far as the chain tells; `null` = never paused.
-    ...({ frozen } as object),
+    // `parked`: payouts waiting in the contract, with the action that applies; empty = nothing is parked (as of the last chain read).
+    ...({ frozen, parked: parkedOf(v) } as object),
   };
 }
 

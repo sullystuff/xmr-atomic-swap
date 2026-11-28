@@ -219,7 +219,8 @@ describe('caps (SPEC 11.1)', () => {
     await d.offers.tick(true);
     expect(offerOf(d, 'sol', 'sell_xmr')).toMatchObject({ enabled: false, capReached: null });
     expect(offerOf(d, 'sol', 'sell_xmr').reason).toMatch(/the on-chain caps could not be read/);
-    expect((await d.status()).caps).toEqual([{ market: 'sol', caps: null }, { market: 'usdc_sol', caps: null }]);
+    expect((await d.status()).caps).toEqual([{ market: 'sol', caps: null, reason: 'the program has no Config account' }, { market: 'usdc_sol', caps: null, reason: 'the program has no Config account' }]);
+    expect(((await d.status()) as unknown as { degraded: { reasons: { code: string }[] } }).degraded.reasons.map((r) => r.code)).toContain('caps_unreadable');
     w.sim.fake.accounts.set(config, saved);
     await d.caps.refresh(true);
     await d.offers.tick(true);

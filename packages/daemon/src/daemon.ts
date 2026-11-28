@@ -13,7 +13,7 @@ import { coreVersion, init } from '@xmrswap/core-wasm';
 import { CLOCK_SKEW_WARN_SECS, type ChainName, type Contact, DEV_PROGRAM_ID, ETH_NATIVE, type Market, PROGRAM_HASH, SWAP_STATE, base58Decode } from '@xmrswap/protocol';
 import type { ChainConnection, ConfigLogEntry, ProgramBuildStatus, StatusResponse, TxResult } from '@xmrswap/protocol/daemon-api';
 import { type HttpClient, fetchHttpClient } from '@xmrswap/rebalancer';
-import { ContractError, type EthDeployment, type EthTransport, EthereumClient, type HttpFetch, type MoneroNode, ProgramError, SdkError, SolanaClient, type SolanaTransport, type SwapView, ata, connectionTransport, endedInClaim, solanaInstruction, unhex } from '@xmrswap/sdk';
+import { ContractError, type EthDeployment, type EthTransport, EthereumClient, type HttpFetch, type MoneroNode, ProgramError, SdkError, SolanaClient, type SolanaTransport, type SwapView, ata, connectionTransport, endedInClaim, solanaInstruction, unhex, watchDeployment } from '@xmrswap/sdk';
 import { Alerts } from './alerts/index.js';
 import { Approvals } from './approvals/index.js';
 import { Caps } from './caps/index.js';
@@ -239,7 +239,10 @@ export class Daemon {
       },
     });
     this.caps = new Caps({ solana: () => this.sol, ethereum: () => this.eth, ethereumFrozen: () => this.upgrade.get('ethereum')?.status === 'immutable' });
-    this.watcher = new MakerWatcher({ store: this.store, journal: this.journal, alerts: this.alerts, config: () => this.config, ...(this.o.watcherFetch ? { fetch: this.o.watcherFetch } : {}) });
+    this.watcher = new MakerWatcher({
+      store: this.store, journal: this.journal, alerts: this.alerts, config: () => this.config,
+      deployment: (chain) => (chain === 'solana' ? (this.sol ? watchDeployment({ programId: this.sol.client.programId }) : null) : this.eth ? watchDeployment({ chainId: this.eth.deployment.chainId, contract: this.eth.deployment.contract }) : null),
+      ...(this.o.watcherFetch ? { fetch: this.o.watcherFetch } : {}) });
     this.executor = new Executor({
       store: this.store, journal: this.journal, alerts: this.alerts, chains: { ...(this.sol ? { solana: this.sol } : {}), ...(this.eth ? { ethereum: this.eth } : {}) }, inventory: this.inventory, monero: this.monero, broadcaster,
       shares: this.shares, encKeys: this.encKeys, approvals: this.approvals, watcher: this.watcher, config: () => this.config, paused: () => this.risk.paused, xmrUsd: () => this.prices.usd('xmr'),
@@ -348,7 +351,7 @@ export class Daemon {
     }
     if (usable.length === 0) throw new Error(this.chainErrors.get('solana') ?? 'no usable Solana endpoint');
     const transport = usable.length === 1 ? usable[0]! : failover(usable, isAnswer, (_i, e) => this.alerts.raise('warning', 'rpc_failover', `Solana endpoint failed (${errMsg(e)}); switched to the next one`));
-    let client = new SolanaClient({ transport, programId: c.program_id ?? DEV_PROGRAM_ID, subscriptions, priorityFee: c.priority_fee_microlamports });
+    let client = new SolanaClient({ transport, programId: c.program_id ?? DEV_PROGRAM_ID, subscriptions, priorityFee: c.priority_fee_microlamports, ...(c.max_priority_fee_microlamports !== undefined ? { maxPriorityFee: c.max_priority_fee_microlamports } : {}) });
     const config = await client.getConfig('finalized');
     if (config) client = client.withUsdcMint(config.usdcMint);
     const conn = this.o.connection ?? connections[0];
@@ -375,7 +378,8 @@ export class Daemon {
     const isAnswer = (e: unknown) => e instanceof ContractError || e instanceof SdkError;
     const transport = transports.length === 1 ? transports[0]! : failover(transports, isAnswer, (_i, e) => this.alerts.raise('warning', 'rpc_failover', `Ethereum endpoint failed (${errMsg(e)}); switched to the next one`));
     const privateUrl = c.private_tx_url_env ? this.env(c.private_tx_url_env) : undefined;
-    const client = new EthereumClient({ transport, contract: c.contract.toLowerCase() as `0x${string}`, ...(privateUrl ? { privateTransport: rpc(privateUrl) } : {}), ...(c.max_fee_gwei ? { maxFeePerGas: BigInt(Math.round(c.max_fee_gwei * 1e9)) } : {}) });
+    // The chain id is pinned twice over: by the option (the client signs for no other) and by the check against the endpoint below.
+    const client = new EthereumClient({ transport, chainId: c.chain_id, contract: c.contract.toLowerCase() as `0x${string}`, ...(privateUrl ? { privateTransport: rpc(privateUrl) } : {}), ...(c.max_fee_gwei ? { maxFeePerGas: BigInt(Math.round(c.max_fee_gwei * 1e9)) } : {}) });
     await client.verifyChainId(c.chain_id);
     this.ethChainId = String(c.chain_id);
     const chain = new EthereumChain({
@@ -739,10 +743,57 @@ export class Daemon {
       // `chains` is an addition to the frozen shape: the owner's pause is per chain.
       paused: { owner: ownerPaused, operator: this.risk.paused, guardrails, ...({ chains: perChain } as object) },
       needs_review: this.store.needsReviewCount(), alerts: this.alerts.list(20),
-      caps: this.caps.view(), program_build: await this.programBuild(), watcher: this.watcher.status(this.now()),
+      caps: this.caps.view(this.disconnectedChains()), program_build: await this.programBuild(), watcher: this.watcher.status(this.now()),
       // Additions (Amendment 1): which offers a cap stops, and how many swaps were ever paused.
-      ...({ cap_reached: this.offers.latest().filter((c) => c.capReached).map((c) => ({ market: c.offer.market, direction: c.offer.direction, code: c.capReached, reason: c.reason })), freezes: this.store.freezes().length } as object),
+      ...({ degraded: await this.degraded(chains), cap_reached: this.offers.latest().filter((c) => c.capReached).map((c) => ({ market: c.offer.market, direction: c.offer.direction, code: c.capReached, reason: c.reason })), freezes: this.store.freezes().length } as object),
     };
+  }
+
+  /** Chains the file configures that are not connected, with why (their markets are listed in `caps[]` as unreadable). */
+  disconnectedChains(): { chain: ChainName; reason: string }[] {
+    const out: { chain: ChainName; reason: string }[] = [];
+    if (!this.sol && (this.config.raw.solana.maker_owner || this.chainErrors.has('solana'))) out.push({ chain: 'solana', reason: this.chainErrors.get('solana') ?? `not connected: ${this.config.raw.solana.rpc_url_env} is not set` });
+    if (!this.eth && (this.config.raw.ethereum.contract || this.chainErrors.has('ethereum'))) out.push({ chain: 'ethereum', reason: this.chainErrors.get('ethereum') ?? `not connected: ${this.config.raw.ethereum.rpc_url_env} is not set` });
+    return out;
+  }
+
+  /** Seconds a chain's clock may lag the local one before the endpoint counts as behind. */
+  static readonly CHAIN_BEHIND_SECS = 120;
+  /** Milliseconds one pass over the open swaps may take before it counts as slow. */
+  static readonly PASS_SLOW_MS = 30_000;
+
+  /**
+   * Whether the daemon can do its whole job right now, and if not, why (`status.degraded`). Every reason is something
+   * the maker can act on; none of them stops the daemon, which keeps doing what it still can.
+   */
+  async degraded(chains: ChainConnection[]): Promise<{ state: boolean; reasons: { code: string; message: string; chain?: ChainName; swap_ref?: string }[] }> {
+    const reasons: { code: string; message: string; chain?: ChainName; swap_ref?: string }[] = [];
+    for (const c of chains) {
+      if (!c.connected) reasons.push({ code: 'chain_unreachable', chain: c.chain, message: `the ${c.chain} endpoint cannot be reached${c.last_error ? `: ${c.last_error}` : ''}` });
+      else if (c.clock_skew_secs !== null && c.clock_skew_secs > Daemon.CHAIN_BEHIND_SECS) reasons.push({ code: 'chain_behind', chain: c.chain, message: `the ${c.chain} endpoint is ${c.clock_skew_secs} s behind the local clock: it serves old state` });
+      else if (c.connected && this.caps.errorOf(c.chain)) reasons.push({ code: 'caps_unreadable', chain: c.chain, message: `the ${c.chain} caps cannot be read (${this.caps.errorOf(c.chain)}): nothing is published there` });
+    }
+    if (this.moneroStatus.nodes.length === 0) await this.refreshMonero();
+    const m = this.moneroStatus;
+    const down = m.nodes.filter((n) => !n.ok).map((n) => n.label);
+    if (m.nodes.length === 0 || down.length > 0) reasons.push({ code: 'monero_node_down', message: m.nodes.length === 0 ? 'no Monero node answers' : `Monero node${down.length === 1 ? '' : 's'} not answering: ${down.join(', ')}` });
+    else if (!m.agree) reasons.push({ code: 'monero_nodes_disagree', message: 'the Monero nodes report different chain tips: locks are not verified until they agree' });
+    if (!this.walletOk) reasons.push({ code: 'wallet_rpc_down', message: 'the inventory wallet RPC cannot be reached: no XMR can be locked or swept' });
+    const est = this.load.validation.update_cost;
+    if (this.sol && est && this.live) {
+      const balance = await this.sol.client.transport.getAccount(this.sol.operator).then((a) => a?.lamports ?? 0n, () => null);
+      const days = balance === null ? null : Number(balance) / Math.max(1, Number(est.daily_lamports) + Number(this.dailySwapLamports()));
+      if (days !== null && days < this.config.raw.alerts.fee_runway_days) reasons.push({ code: 'fee_runway', chain: 'solana', message: `the Solana fee wallet covers ${days.toFixed(1)} days, under the ${this.config.raw.alerts.fee_runway_days}-day threshold` });
+    }
+    if (this.eth && this.live && this.config.offers.some((o) => o.chain === 'ethereum' && o.enabled)) {
+      const swaps = await this.ethRunwaySwaps().catch(() => null);
+      if (swaps !== null && swaps < 5) reasons.push({ code: 'fee_runway', chain: 'ethereum', message: `the Ethereum operator balance covers the gas of about ${Math.floor(swaps)} swap${Math.floor(swaps) === 1 ? '' : 's'}` });
+    }
+    const pass = this.executor.lastPass;
+    if (pass && pass.ms > Daemon.PASS_SLOW_MS) reasons.push({ code: 'executor_slow', message: `the last pass over the open swaps took ${(pass.ms / 1000).toFixed(1)} s (the bound is ${Daemon.PASS_SLOW_MS / 1000} s): deadlines are being met late` });
+    // A funded sell-XMR swap that names the watcher but has no acknowledgement: nothing pauses it if this daemon goes down.
+    for (const ref of this.watcher.unwatched()) reasons.push({ code: 'watcher_not_watching', swap_ref: ref, message: `the maker watcher has not acknowledged this funded swap${this.watcher.isReachable === false ? ' (it is unreachable' : ' (no acknowledgement yet'}${this.watcher.error ? `: ${this.watcher.error}` : ''}); the daemon must stay up through its claim-open time` });
+    return { state: reasons.length > 0, reasons };
   }
 
   private upgradeFields(chain: ChainName, connected: boolean): Pick<ChainConnection, 'upgradeable' | 'upgrade_authority'> {

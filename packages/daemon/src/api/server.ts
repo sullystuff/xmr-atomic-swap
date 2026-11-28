@@ -20,7 +20,7 @@ import { ConfigRejected, type Daemon } from '../daemon.js';
 import { depositViews } from '../deposits/index.js';
 import { swapCosts } from '../stats/costs.js';
 import { type ChainCounters, feesView, statsView } from '../stats/index.js';
-import { pendingApproval, snapshotOf, swapDetail, swapSummary } from '../swaps/views.js';
+import { parkedOf, pendingApproval, snapshotOf, swapDetail, swapSummary } from '../swaps/views.js';
 import { splitBind } from '../tor/index.js';
 import { errMsg } from '../util.js';
 
@@ -261,7 +261,17 @@ export async function startApi(d: Daemon, opts: { bind?: string } = {}): Promise
     const page = rows.slice(0, limit);
     return { swaps: page.map((r) => swapSummary(r, d.store.now(), d.store)), next_before: rows.length > limit ? page[page.length - 1]!.opened_at : null };
   });
-  route('get', '/api/swaps/:ref', (req) => swapDetail(d.store, swapRow(req.params['ref']!), d.store.now(), d.executor.lockReports.get(req.params['ref']!)));
+  route('get', '/api/swaps/:ref', async (req) => {
+    const row = swapRow(req.params['ref']!);
+    const detail = swapDetail(d.store, row, d.store.now(), d.executor.lockReports.get(row.ref));
+    // A settled swap is not stepped any more, so what is parked is read from the chain here: after a withdrawal or a delivery the page must stop offering it.
+    const chain = row.chain === 'solana' ? d.sol : d.eth;
+    if (row.terminal && (detail as unknown as { parked: unknown[] }).parked.length > 0 && chain) {
+      const fresh = await chain.getSwap(row.ref).catch(() => undefined);
+      if (fresh !== undefined) (detail as unknown as { parked: unknown[] }).parked = parkedOf(fresh);
+    }
+    return detail;
+  });
   const swapAction = (action: SwapAction, patch: (req: Request) => Parameters<Daemon['executor']['manual']>[1]): void => {
     route('post', `/api/swaps/:ref/${action}`, async (req): Promise<SwapActionResponse> => {
       const ref = req.params['ref']!;

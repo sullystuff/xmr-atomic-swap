@@ -140,6 +140,8 @@ const solana = z.strictObject({
   program_id: z.string().optional(),
   expected_genesis: z.string().optional(),
   priority_fee_microlamports: z.number().int().nonnegative().default(0),
+  /** The most the operator ever pays per compute unit (micro-lamports). Default: the SDK's bound, 5,000,000 (5 lamports per unit). Raise it to use a higher priority fee. */
+  max_priority_fee_microlamports: z.number().int().positive().optional(),
   /** The maker's cold owner key (public). The maker PDA is derived from it. */
   maker_owner: z.string().optional(),
   subscriptions: z.boolean().default(true),

@@ -150,6 +150,16 @@ export class Executor {
 
   /** Step every open swap once: the ones with the hardest deadline first (direction B after the taker's notice). */
   async tick(): Promise<Map<string, StepOutcome>> {
+    const started = this.clock();
+    try {
+      return await this.tickBody();
+    } finally {
+      this.lastPass = { at: started, ms: this.clock() - started };
+    }
+  }
+  /** When the last pass over every open swap began and how long it took (local milliseconds); `null` before the first. */
+  lastPass: { at: number; ms: number } | null = null;
+  private async tickBody(): Promise<Map<string, StepOutcome>> {
     await this.scan().catch((e) => this.o.alerts.raise('warning', 'scan_failed', errMsg(e)));
     const open = this.store.swaps({ open: true }).sort((a, b) => urgent(b) - urgent(a));
     const out = new Map<string, StepOutcome>();
@@ -208,7 +218,7 @@ export class Executor {
     if (ins && ins.status === 'pending' && !ins.seen) row.facts = this.store.patchFacts(ref, { instruction: { ...ins, stateAt: view.state, seen: true } });
 
     this.noteFreeze(row, view);
-    await this.watch(row, view);
+    await this.watch(row, view, now);
 
     // 3. Facts, decision, action.
     const facts: MakerFacts = { swap: view, now, ...(await this.baseFacts(row, view, now)) };
@@ -283,7 +293,7 @@ export class Executor {
   }
 
   /** Direction B: hand a funded swap that names the maker's watcher to it, and keep the signed acknowledgement. Never blocks or fails the step. */
-  private async watch(row: SwapRow, view: SwapView): Promise<void> {
+  private async watch(row: SwapRow, view: SwapView, now: bigint): Promise<void> {
     const w = this.o.watcher;
     if (!w || view.direction !== 1 || (view.state !== SWAP_STATE.ACTIVE && view.state !== SWAP_STATE.NOTICED) || !w.names(view)) return;
     if (this.o.config().raw.daemon.mode !== 'live') return;
@@ -293,7 +303,7 @@ export class Executor {
     } catch {
       return;
     }
-    const ack = await w.register(row.ref, view, secret);
+    const ack = await w.register(row.ref, view, secret, now);
     // The acknowledgement is the watcher's promise, not a chain fact: once a notice exists, it must reach the swap's own claim-open time.
     if (ack && view.state === SWAP_STATE.NOTICED && BigInt(ack.watching_until) < view.tClaimOpen)
       this.o.alerts.raise('warning', 'watcher_stops_early', `the watcher acknowledged this swap only until ${ack.watching_until}, before its claim-open time ${view.tClaimOpen}: it may not pause it in time`, row.ref, 3_600);

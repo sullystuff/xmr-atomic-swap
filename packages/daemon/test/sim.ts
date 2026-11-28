@@ -17,7 +17,7 @@ import { type DerivedKeys, scalarMatches } from '@xmrswap/core-wasm';
 import { ACCOUNT_SIZE, COUNTER_NONE, SWAP_FLAG, SWAP_STATE, DEV_PROGRAM_ID, ERROR_NAMES, type Maker, type Offer, type ProgramErrorName, type Swap, base58Encode, decodeAccount, decodeInstructionData, encodeAccount, errorCode, instructionAccounts } from '@xmrswap/protocol';
 import type { MoneroNodeStatus } from '@xmrswap/protocol/daemon-api';
 import type { AssetCaps, Config as ChainConfig } from '@xmrswap/protocol';
-import { type Call, type Env, type LockState, ModelError, type ModelSwap, NO_SWAP, type Role, type SwapView, type VerifyLockResult, WATCH_ROUTES, XmrSwapProgram, apply, buildNotice, evidenceOpens, type HttpFetch, openNoticeWithKey, openWatchRequest, seedSigner, signWatchAck, solanaOpenKeys, swapJointAddress, takerSwapKeys, viewFromSolana } from '@xmrswap/sdk';
+import { type Call, type Env, type LockState, ModelError, type ModelSwap, NO_SWAP, type Role, type SwapView, type VerifyLockResult, WATCH_ROUTES, XmrSwapProgram, apply, buildNotice, evidenceOpens, type HttpFetch, openNoticeWithKey, openWatchRequest, seedSigner, signWatchAck, solanaOpenKeys, watchDeployment, swapJointAddress, takerSwapKeys, viewFromSolana } from '@xmrswap/sdk';
 import { FakeSolana } from '@xmrswap/sdk/testing';
 import type { SweepOutcome } from '@xmrswap/core-wasm';
 import type { MoneroView, SweepRequest } from '../src/monero/nodes.js';
@@ -622,6 +622,8 @@ export class FakeWatcher {
   /** Notice keys by swap reference (hex). */
   readonly keys = new Map<string, Uint8Array>();
   readonly froze: string[] = [];
+  /** Requests that did not verify, by the SDK's error code. */
+  readonly refused: string[] = [];
 
   constructor(private readonly sim: SimSolana, seedByte = 0x77) {
     this.seed = fill(seedByte);
@@ -635,9 +637,18 @@ export class FakeWatcher {
     const json = (status: number, body: unknown) => ({ status, arrayBuffer: async () => new TextEncoder().encode(JSON.stringify(body)).buffer as ArrayBuffer });
     if (init.method === 'GET' && path === WATCH_ROUTES.info) return json(200, { solana: this.solana, ethereum: this.ethereum, max_swaps: 100, monero_nodes: 2 });
     if (init.method === 'POST' && path === WATCH_ROUTES.swaps) {
-      const req = openWatchRequest(JSON.parse(String(init.body)), this.seed);
-      const pda = new PublicKey(req.swapRef).toBase58();
+      // The service finds the swap the request names first, then verifies the request against it: only the swap's locker can have made it.
+      const body = JSON.parse(String(init.body)) as { swap_ref: string };
+      const pda = new PublicKey(Buffer.from(body.swap_ref, 'hex')).toBase58();
       const swap = this.sim.swap(pda);
+      if (!swap) return json(404, { error: 'no_such_swap' });
+      let req;
+      try {
+        req = openWatchRequest(body, { watcherSeed: this.seed, swap: viewFromSolana(pda, swap), deployment: watchDeployment({ programId: this.sim.programId }), now: this.sim.now });
+      } catch (e) {
+        this.refused.push((e as { code?: string }).code ?? (e as Error).message);
+        return json(403, { error: (e as { code?: string }).code ?? 'refused' });
+      }
       // Accepted only if the swap exists, names this watcher and is not settled.
       if (!swap || swap.watcher !== this.solana || swap.state === SWAP_STATE.DONE) return json(409, { error: 'not_watchable' });
       this.keys.set(pda, req.noticeKey);

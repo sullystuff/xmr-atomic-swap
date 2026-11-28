@@ -19,7 +19,7 @@ import { init, payAmount } from '@xmrswap/core-wasm';
 import { CHAIN_CONSTS, COUNTER, DEV_PROGRAM_ID, ETH_NATIVE, SWAP_STATE } from '@xmrswap/protocol';
 import {
   type HttpFetch, type SwapView, WATCH_ROUTES, buildNotice, deadlinesOf, decodeSignedQuote, hex, makerShareKeys, noticeKey, openNotice, openWatchRequest, planSolanaOpen, seedSigner, signWatchAck, solanaInstruction,
-  swapJointAddress, verifyLock, verifyWatchAck, watcherFacts, watcherStep,
+  swapJointAddress, verifyLock, verifyWatchAck, watchDeployment, watcherFacts, watcherStep,
 } from '@xmrswap/sdk';
 import { DEFAULT_ETH_CAPS, type EthWorld, startEthereum } from '../../../sdk/test/integration/eth.js';
 import { DEFAULT_CAPS, type SolWorld, startSolana } from '../../../sdk/test/integration/sol.js';
@@ -93,11 +93,13 @@ const watcher = {
     if (url.endsWith(WATCH_ROUTES.info)) return reply(200, { solana: sol.watcher.publicKey, ethereum: eth.watcher.address.toLowerCase(), max_swaps: 10, monero_nodes: 2 });
     if (url.endsWith(WATCH_ROUTES.swaps) && init.method === 'POST') {
       watcher.posts++;
-      const req = openWatchRequest(JSON.parse(init.body as string), WATCHER_SEED);
-      const pda = new PublicKey(req.swapRef).toBase58();
-      // Accepted only if the swap exists at `finalized`, names this watcher and is not settled.
+      const body = JSON.parse(init.body as string) as { swap_ref: string };
+      const pda = new PublicKey(Buffer.from(body.swap_ref, 'hex')).toBase58();
+      // Accepted only if the swap exists at `finalized`, names this watcher, is not settled, and the request verifies
+      // against the locker's encryption key recorded in that swap (wire format 2).
       const s = await sol.client.getSwap(pda, 'finalized');
       if (!s || s.watcherAddress !== sol.watcher.publicKey || s.state === SWAP_STATE.DONE) return reply(404, { error: 'no such swap names this watcher' });
+      const req = openWatchRequest(body, { watcherSeed: WATCHER_SEED, swap: s, deployment: watchDeployment({ programId: DEV_PROGRAM_ID }), now: await sol.now() });
       watcher.keys.set(pda, req.noticeKey);
       const until = (s.tNoteDeadline === 0n ? s.tFinal : s.tNoteDeadline) + BigInt(s.dC);
       return reply(200, signWatchAck({ chain: req.chain, swapRef: req.swapRef, watchingUntil: until, watcherSeed: WATCHER_SEED }));

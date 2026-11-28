@@ -136,11 +136,21 @@ export class Caps {
   }
 
   /** `status.caps` (SPEC 11.1): every market of a connected chain; `caps: null` when the chain could not be read. */
-  view(): MarketCaps[] {
+  view(disconnected: { chain: ChainName; reason: string }[] = []): MarketCaps[] {
     const out: MarketCaps[] = [];
     for (const market of MARKETS) {
-      if (!this.connected(market)) continue;
+      const chain = MARKET_CHAIN[market];
+      if (!this.connected(market)) {
+        // A configured chain that is not connected: its markets are listed as unreadable, with why, never left out.
+        const off = disconnected.find((d) => d.chain === chain);
+        if (off) out.push({ market, caps: null, ...({ reason: off.reason } as object) });
+        continue;
+      }
       const r = this.of(market);
+      if (!r) {
+        out.push({ market, caps: null, ...({ reason: this.errors.get(chain) ?? 'not read yet' } as object) });
+        continue;
+      }
       out.push({ market, caps: r ? { on: r.caps.on, max_swap: r.caps.maxSwap.toString(), max_open: r.caps.maxOpen.toString(), open_value: r.caps.openValue.toString(), headroom: (r.caps.maxOpen > r.caps.openValue ? r.caps.maxOpen - r.caps.openValue : 0n).toString(), frozen: r.frozen && r.caps.on } : null });
     }
     return out;

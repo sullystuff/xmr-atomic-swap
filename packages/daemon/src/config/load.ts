@@ -11,6 +11,9 @@ import { CHAIN_CONSTS, CONTACT_KIND, type ChainName, MARKET_CHAIN, MARKET_DECIMA
 import type { ConfigIssue, ConfigValidation, EffectiveOfferTerms, UpdateCostEstimate } from '@xmrswap/protocol/daemon-api';
 import { parse as parseToml } from 'smol-toml';
 import { xmrToPico } from '../util.js';
+
+/** The SDK's default bound on the compute-unit price (`SOLANA_MAX_PRIORITY_FEE`, micro-lamports); kept here so this module stays free of chain clients. A test holds it to the SDK's. */
+export const SOLANA_MAX_PRIORITY_FEE = 5_000_000;
 import { DIRECTIONS, type DirectionName, MARKET_NAMES, type MarketName, type OfferSettings, type RawConfig, type SourceName, configSchema } from './schema.js';
 
 export interface ResolvedOffer {
@@ -375,6 +378,10 @@ export function loadConfig(toml: string): LoadResult {
   }
   if (raw.offers.min_refresh_interval_seconds !== undefined && raw.offers.price_move_trigger_pct === undefined) warnings.push({ path: 'offers.min_refresh_interval_seconds', message: 'has no effect without price_move_trigger_pct' });
   for (const o of live) if (raw.offers.update_interval_seconds > o.validSecs) warnings.push({ path: `markets.${o.market}.${o.direction}.offer_valid_seconds`, message: 'the update interval is longer than the offer validity: the offer lapses between refreshes' });
+  // The SDK refuses to sign above its bound (`PriorityFeeTooHigh`): a fee over the bound is an error here, never a daemon that silently sends nothing.
+  const feeCap = raw.solana.max_priority_fee_microlamports ?? SOLANA_MAX_PRIORITY_FEE;
+  if (raw.solana.priority_fee_microlamports > feeCap) errors.push({ path: 'solana.priority_fee_microlamports', message: `${raw.solana.priority_fee_microlamports} micro-lamports per compute unit is over the bound of ${feeCap} (${raw.solana.max_priority_fee_microlamports === undefined ? 'the default; set solana.max_priority_fee_microlamports to raise it' : 'solana.max_priority_fee_microlamports'}): every transaction would be refused before signing` });
+  if (raw.solana.max_priority_fee_microlamports !== undefined && raw.solana.max_priority_fee_microlamports > SOLANA_MAX_PRIORITY_FEE) warnings.push({ path: 'solana.max_priority_fee_microlamports', message: `the bound is raised above the default of ${SOLANA_MAX_PRIORITY_FEE}: one transaction may cost up to ${Math.ceil((raw.solana.max_priority_fee_microlamports * 400_000) / 1_000_000) + 5_000} lamports` });
   const w = raw.watcher;
   if (usable(w.url) && !usable(w.solana_key)) errors.push({ path: 'watcher.solana_key', message: 'a watcher needs its Solana key: notice keys are sealed to it and its acknowledgements are checked against it, whichever chain the swap is on' });
   if (usable(w.url) && !usable(w.ethereum_key) && live.some((o) => o.chain === 'ethereum' && o.direction === 'buy_xmr' && o.freezeWindowSecs > 0)) warnings.push({ path: 'watcher.ethereum_key', message: 'no Ethereum watcher address is set: Ethereum buy-XMR swaps are funded without a watcher' });

@@ -160,7 +160,7 @@ export class Registration {
       const { blockhash } = await sol.client.transport.getLatestBlockhash();
       const message = new Transaction({ feePayer: new PublicKey(owner), recentBlockhash: blockhash }).add(ix).serializeMessage();
       this.pending.set(requestId, { chain: 'solana', message });
-      return { request_id: requestId, unsigned: { chain: 'solana', message_b64: message.toString('base64'), recent_blockhash: blockhash, fee_payer: owner }, summary: `Withdraw the payout parked for the maker on this swap (${view.owedMaker} base units) with the owner key.` };
+      return { request_id: requestId, ...({ account: owner, role: 'owner' } as object), unsigned: { chain: 'solana', message_b64: message.toString('base64'), recent_blockhash: blockhash, fee_payer: owner }, summary: `Withdraw the payout parked for the maker on this swap (${view.owedMaker} base units) with the owner key.` };
     }
     const eth = this.o.ethereum();
     const chainId = this.o.ethereumChainId();
@@ -171,7 +171,7 @@ export class Registration {
     const account = owed.accounts[who[0]];
     const call = eth.client.contract.withdrawOwed(view.asset as `0x${string}`, account);
     this.pending.set(requestId, { chain: 'ethereum', call });
-    return { request_id: requestId, unsigned: { chain: 'ethereum', chain_id: chainId, to: call.to, data: call.data, value: '0' }, summary: `Withdraw ${who[1]} base units parked for the maker's ${who[0]} address ${account}. It must be signed by THAT address: parked payouts are keyed by the account they were owed to.` };
+    return { request_id: requestId, ...({ account, role: who[0] } as object), unsigned: { chain: 'ethereum', chain_id: chainId, to: call.to, data: call.data, value: '0' }, summary: `Withdraw ${who[1]} base units parked for the maker's ${who[0]} address ${account}. It must be signed by THAT address: parked payouts are keyed by the account they were owed to.` };
   }
 
   /** Relay a transaction the owner's wallet signed. Solana: it must be the message this daemon built, so the route is not an open relay. */
