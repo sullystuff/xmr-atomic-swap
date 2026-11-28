@@ -16,10 +16,9 @@ import { FakeMoneroNode } from '@xmrswap/sdk/testing';
 import { ethereumCall, solanaInstruction } from '../../sdk/src/flows/execute.js';
 import { deadlinesOf } from '../../sdk/src/machine/view.js';
 import { hex } from '../../sdk/src/util.js';
-import { noticeKey } from '../../sdk/src/watcher/protocol.js';
 import { type EthWorld, startEthereum } from '../../sdk/test/integration/eth.js';
 import { type SolWorld, startSolana } from '../../sdk/test/integration/sol.js';
-import { FREEZE_WINDOW, PRICE, X, errorCode, ethLock, ethNotice, solNotice, solOpen, startService } from './integration/flows.js';
+import { FREEZE_WINDOW, PRICE, X, errorCode, ethLock, ethNotice, ethRegistration, solRegistration, solNotice, solOpen, startService } from './integration/flows.js';
 
 const FALSE_TXID = new Uint8Array(32).fill(0xfa);
 const GOOD_TXID = new Uint8Array(32).fill(0x0c);
@@ -51,7 +50,10 @@ describe('Solana: the real program in svm-rpc', () => {
     expect(info.solana).toBe(svc.keys.solana);
     const o = await solOpen(w, 0, X, info.solana);
     expect(o.s).toMatchObject({ state: SWAP_STATE.ACTIVE, watcherAddress: info.solana });
-    const ack = await client.register({ chain: 'solana', swapRef: o.s.swapRef, noticeKey: noticeKey(o.s, o.plan.keys.encSecret), watcherSolanaKey: info.solana });
+    // Only the swap's locker can register it: the maker (the counterparty) and a stranger are rejected, and nothing is stored.
+    for (const secret of [w.makerEnc.encSecret, new Uint8Array(32).fill(0x33)]) await expect(client.register(await solRegistration(w, o.s, secret, info.solana))).rejects.toMatchObject({ status: 403 });
+    expect(svc.store.getWatch('solana', hex(o.s.swapRef))).toBe(null);
+    const ack = await client.register(await solRegistration(w, o.s, o.plan.keys.encSecret, info.solana));
     expect(BigInt(ack.watching_until)).toBe(o.s.tNoteDeadline + BigInt(o.s.dC));
     const before = await freezes();
     const balance = await w.balance(svc.keys.solana);
@@ -88,7 +90,7 @@ describe('Solana: the real program in svm-rpc', () => {
   it('a good lock is not frozen: the watch ends "not needed" and the swap is still NOTICED', async () => {
     const client = new WatcherClient(svc.url);
     const o = await solOpen(w, 0, X, svc.keys.solana);
-    await client.register({ chain: 'solana', swapRef: o.s.swapRef, noticeKey: noticeKey(o.s, o.plan.keys.encSecret), watcherSolanaKey: svc.keys.solana });
+    await client.register(await solRegistration(w, o.s, o.plan.keys.encSecret, svc.keys.solana));
     const before = await freezes();
     const s = await solNotice(w, o.s, o.share!, GOOD_TXID);
     const dl = deadlinesOf('solana', s);
@@ -109,7 +111,7 @@ describe('Solana: the real program in svm-rpc', () => {
     const client = new WatcherClient(svc.url);
     const o = await solOpen(w, 0, X, w.watcher.publicKey);
     const balance = await w.balance(svc.keys.solana);
-    await expect(client.register({ chain: 'solana', swapRef: o.s.swapRef, noticeKey: noticeKey(o.s, o.plan.keys.encSecret), watcherSolanaKey: svc.keys.solana })).rejects.toMatchObject({ status: 404 });
+    await expect(client.register(await solRegistration(w, o.s, o.plan.keys.encSecret, svc.keys.solana))).rejects.toMatchObject({ status: 404 });
     const s = await solNotice(w, o.s, o.share!, FALSE_TXID);
     await w.warpTo(deadlinesOf('solana', s).tCut!);
     await svc.pass(3);
@@ -138,9 +140,11 @@ describe('Ethereum: the real contract on anvil', () => {
     const o = await ethLock(w, X, info.ethereum as Address);
     expect(o.s).toMatchObject({ state: SWAP_STATE.ACTIVE, watcherAddress: info.ethereum, wZ: FREEZE_WINDOW.ethereum });
     // Accepted only once the swap is found at `finalized`.
-    await expect(client.register({ chain: 'ethereum', swapRef: o.s.swapRef, noticeKey: noticeKey(o.s, o.plan.keys.encSecret), watcherSolanaKey: info.solana })).rejects.toMatchObject({ status: 404 });
+    await expect(client.register(await ethRegistration(w, o.s, o.plan.keys.encSecret, info.solana))).rejects.toMatchObject({ status: 404 });
     await w.finalize();
-    await client.register({ chain: 'ethereum', swapRef: o.s.swapRef, noticeKey: noticeKey(o.s, o.plan.keys.encSecret), watcherSolanaKey: info.solana });
+    for (const secret of [w.makerEnc.encSecret, new Uint8Array(32).fill(0x33)]) await expect(client.register(await ethRegistration(w, o.s, secret, info.solana))).rejects.toMatchObject({ status: 403 });
+    expect(svc.store.getWatch('ethereum', hex(o.s.swapRef))).toBe(null);
+    await client.register(await ethRegistration(w, o.s, o.plan.keys.encSecret, info.solana));
     const before = await freezes();
     const balance = await w.balance(svc.keys.ethereum);
 
@@ -169,7 +173,7 @@ describe('Ethereum: the real contract on anvil', () => {
     const client = new WatcherClient(svc.url);
     const o = await ethLock(w, X, svc.keys.ethereum);
     await w.finalize();
-    await client.register({ chain: 'ethereum', swapRef: o.s.swapRef, noticeKey: noticeKey(o.s, o.plan.keys.encSecret), watcherSolanaKey: svc.keys.solana });
+    await client.register(await ethRegistration(w, o.s, o.plan.keys.encSecret, svc.keys.solana));
     const before = await freezes();
     const s = await ethNotice(w, o.s, o.share, GOOD_TXID);
     const dl = deadlinesOf('ethereum', s);

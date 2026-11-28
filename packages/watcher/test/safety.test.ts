@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ComputeBudgetProgram, Transaction } from '@solana/web3.js';
 import { PROGRAM_ID, SWAP_FLAG, SWAP_STATE, base58Encode } from '@xmrswap/protocol';
-import { hex0x, watchRequest } from '@xmrswap/sdk';
+import { hex0x } from '@xmrswap/sdk';
 import { parseTransaction } from 'viem';
 import { describe, expect, it } from 'vitest';
 import { ETH_FREEZE_GAS_LIMIT } from '../src/chains.js';
@@ -27,7 +27,7 @@ const code = (file: string): string =>
 
 async function watch(w: World, svc: Watcher, spec: Parameters<World['addSwap']>[0] = {}) {
   const s = await w.addSwap(spec);
-  expect((await svc.register(watchRequest({ chain: w.chain, swapRef: s.ref, noticeKey: s.noticeKey, watcherSolanaKey: w.keys.solana }))).status).toBe(200);
+  expect((await svc.register(s.request())).status).toBe(200);
   return s;
 }
 
@@ -145,7 +145,7 @@ describe('a wrong or lying endpoint', () => {
     store.close();
   });
 
-  it('on Solana: an inflated compute-unit figure cannot raise the fee past the bound, and a refused simulation signs nothing', async () => {
+  it('on Solana: an inflated compute-unit figure cannot raise the fee past the bound (nothing is signed for it), and a refused simulation signs nothing', async () => {
     const w = await makeWorld('solana');
     const svc = w.service();
     const s = await watch(w, svc, { notice: 'no-such-tx' });
@@ -155,7 +155,16 @@ describe('a wrong or lying endpoint', () => {
     expect(w.broadcasts).toEqual([]);
     expect(w.store().getWatch('solana', hex(s.ref))).toMatchObject({ status: 'freezing', last_error: 'BadState' });
     w.net.simRefuses = false;
-    w.net.simUnits = 1_399_999_999;
+    // The endpoint claims the freeze needs more than the operator's bound of 200,000 units.
+    for (const lie of [1_399_999_999, 200_000, 166_667]) {
+      w.net.simUnits = lie;
+      await passes(svc, 2, w);
+      expect(w.rawBroadcasts, String(lie)).toEqual([]);
+      expect(w.store().getWatch('solana', hex(s.ref))).toMatchObject({ status: 'freezing', last_error: 'ComputeLimitTooHigh' });
+    }
+    expect(w.store().committed('solana', {})).toBe(0n);
+    // The largest figure whose limit (× 1.2) still fits the bound is followed, and no further.
+    w.net.simUnits = 166_666;
     await passes(svc, 3, w);
     expect(w.rawBroadcasts.length).toBe(1);
     const tx = Transaction.from(w.rawBroadcasts[0]!);
@@ -213,35 +222,46 @@ describe('a wrong or lying endpoint', () => {
   });
 });
 
-describe('a notice key the watcher cannot check', () => {
-  it.each(['solana', 'ethereum'] as const)('on %s: with only a wrong key on file the notice does not open, which the spec calls "no lock": the watcher freezes (the documented limit of key authentication)', async (chain) => {
-    // DEVIATIONS.md, W-A1: a watch request does not prove it comes from the locker. A stranger who
-    // posts a wrong key for a swap whose locker never registered causes one freeze of a good lock:
-    // a delay of at most W_z that the returning locker undoes with set_ready. It costs no funds.
+describe('a notice key only the locker can register (W-A1, resolved)', () => {
+  it.each(['solana', 'ethereum'] as const)('on %s: a stranger\'s wrong key never reaches the file, so it cannot turn a good lock into a freeze', async (chain) => {
+    // Under wire format 1 this request was stored and the swap was frozen at the notice
+    // ("notice-invalid"). Under format 2 it does not open against the locker key in the swap.
     const w = await makeWorld(chain);
-    const svc = w.service();
+    const store = w.store();
+    const svc = w.service({ store });
     const s = await w.addSwap({ notice: 'good' });
-    expect((await svc.register(watchRequest({ chain, swapRef: s.ref, noticeKey: new Uint8Array(32).fill(0x66), watcherSolanaKey: w.keys.solana }))).status).toBe(200);
-    w.setTime(w.times.tNotice + 5n);
-    await passes(svc, 3, w);
-    expect(svc.status(hex(s.ref))).toMatchObject({ status: 'frozen', reason: 'frozen by this watcher: notice-invalid' });
+    const refused = await svc.register(s.request({ noticeKey: new Uint8Array(32).fill(0x66), lockerEncSecret: new Uint8Array(32).fill(0x33) }));
+    expect(refused).toMatchObject({ status: 403, body: { error: 'not_the_locker' } });
+    expect(store.getWatch(chain, hex(s.ref))).toBe(null);
+    for (const t of [w.times.tNotice + 5n, w.times.tCut, w.times.tCo - w.times.margin]) {
+      w.setTime(t);
+      await passes(svc, 3, w);
+    }
+    expect(w.broadcasts).toEqual([]);
+    expect(w.signedOrSimulated()).toEqual([]);
+    expect(store.committed(chain, {})).toBe(0n);
+    expect(svc.status(hex(s.ref))).toBe(null);
+    store.close();
   });
 });
 
-describe('why the service does not send through the SDK\'s EthereumClient.send (DEVIATIONS.md, S1)', () => {
-  it('reproduction: the SDK signs for whatever chain id and gas the endpoint reports, with no bound of its own', async () => {
+describe('the SDK\'s own send path is bounded too (SDK X3), and is still not the watcher\'s', () => {
+  it('EthereumClient.send no longer signs for an endpoint-chosen chain id or unbounded gas; the watcher keeps build and broadcast apart for the journal', async () => {
     const { FakeEthereum } = await import('@xmrswap/sdk/testing');
     const { EthereumClient } = await import('@xmrswap/sdk');
     const { privateKeyToAccount } = await import('viem/accounts');
     const fake = new FakeEthereum(CONTRACT);
     fake.views['freeze'] = () => undefined;
-    fake.chainId = 1n; // the endpoint lies about the chain
-    fake.gasEstimate = 25_000_000n; // and about the gas
-    const client = new EthereumClient({ transport: fake, contract: CONTRACT });
-    await client.send(client.contract.freeze(new Uint8Array(32).fill(4)), privateKeyToAccount(`0x${'07'.repeat(32)}`));
-    const signed = parseTransaction(fake.sentRaw[0]!);
-    expect(signed.chainId).toBe(1);
-    expect(signed.gas).toBe(30_000_000n);
-    // The watcher's own path pins both (see "a false chain id, gas estimate, nonce or fee" above).
+    fake.chainId = 1n;
+    const signer = privateKeyToAccount(`0x${'07'.repeat(32)}`);
+    const call = new EthereumClient({ transport: fake, contract: CONTRACT }).contract.freeze(new Uint8Array(32).fill(4));
+    await expect(new EthereumClient({ transport: fake, contract: CONTRACT }).send(call, signer)).rejects.toMatchObject({ code: 'ChainIdNotPinned' });
+    await expect(new EthereumClient({ transport: fake, contract: CONTRACT, chainId: 31337 }).send(call, signer)).rejects.toMatchObject({ code: 'WrongChain' });
+    fake.chainId = 31337n;
+    fake.gasEstimate = 25_000_000n;
+    await expect(new EthereumClient({ transport: fake, contract: CONTRACT, chainId: 31337 }).send(call, signer)).rejects.toMatchObject({ code: 'GasLimitTooHigh' });
+    expect(fake.sentRaw).toEqual([]);
+    // The service never calls it: one call that signs and broadcasts leaves no moment to journal the signed bytes.
+    for (const f of SRC) expect(/client\.send\(|sendAndConfirm|signAndSend/.exec(code(f))?.[0], f).toBeUndefined();
   });
 });

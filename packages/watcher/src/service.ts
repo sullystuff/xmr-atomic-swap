@@ -14,7 +14,7 @@
  */
 import type { Network } from '@xmrswap/core-wasm';
 import { type ChainName, SWAP_STATE } from '@xmrswap/protocol';
-import { type Bytes, type MoneroNode, type SwapView, type WatchAck, type WatcherDecision, type verifyLock, asNode, deadlinesOf, endedInClaim, hex, openNoticeWithKey, unhex, watcherFacts, watcherStep } from '@xmrswap/sdk';
+import { type Bytes, type MoneroNode, type SwapView, type WatchAck, type WatcherDecision, type verifyLock, asNode, deadlinesOf, endedInClaim, hex, parseWatchRequest, unhex, watcherFacts, watcherStep } from '@xmrswap/sdk';
 import { type ChainPort, FeeAboveLimit, FreezeRefused } from './chains.js';
 import type { WatcherKeys } from './keys.js';
 import { type Logger, errorClass } from './log.js';
@@ -22,11 +22,13 @@ import { type AttemptRow, type Store, type WatchRow } from './store.js';
 
 export interface ServiceSettings {
   maxSwaps: number;
-  maxKeysPerSwap: number;
   retentionDays: number;
   stopConfirmations: number;
   minLeadSecs: number;
   attemptTimeoutSecs: number;
+  /** Freshness of a watch request: how old its authenticated `issued_at` may be, and how far ahead of the chain clock (or behind the swap's lock) it may lie. */
+  requestMaxAgeSecs: number;
+  requestClockSkewSecs: number;
   /** Spend limits per chain, in lamports and wei. */
   limits: Partial<Record<ChainName, { perSwap: bigint; perDay: bigint }>>;
 }
@@ -102,30 +104,48 @@ export class Watcher {
   }
 
   /**
-   * Accept a watch. A request is believed for what it contains and what the chain says about
-   * it, never for who sent it: the notice key must be sealed to this watcher for this chain and
-   * swap, and the swap must exist at finality, name this watcher and still be open. The signed
-   * acknowledgement is returned only after the watch is committed to disk.
+   * Accept a watch. A request is believed for what it proves, never for who delivers it: the
+   * swap must exist at finality, name this watcher and still be open, and the request must
+   * open under the **locker's encryption key recorded in that swap** (wire format 2), bound to
+   * this watcher, chain, deployment, swap and a fresh `issued_at`. So only the swap's locker can
+   * register it; a stranger's or the counterparty's request is refused with nothing stored and
+   * nothing spent. The signed acknowledgement is returned only after the watch is on disk.
    */
   async register(body: unknown): Promise<Reply> {
-    let req: { chain: ChainName; swapRef: Bytes; noticeKey: Bytes };
+    // The public fields first: enough to find the swap, and to refuse garbage before any endpoint is asked.
+    let parsed: { chain: ChainName; swapRef: Bytes; deployment: string };
     try {
-      req = this.keys.openRequest(body);
+      parsed = parseWatchRequest(body);
     } catch (e) {
-      return refuse(400, errorClass(e) === 'bad_request' ? 'bad_request' : 'bad_notice_key');
+      const code = errorClass(e);
+      if (code === 'WatchFormatUnsupported') return refuse(400, 'unsupported_format', 'this watcher accepts watch request format 2 only (authenticated by the locker); update the client');
+      return refuse(400, code === 'WatchKeyInvalid' ? 'bad_notice_key' : 'bad_request');
     }
-    const port = this.chains[req.chain];
-    if (!port) return refuse(400, 'chain_not_served', `this watcher does not serve ${req.chain}`);
-    const refHex = hex(req.swapRef);
+    const port = this.chains[parsed.chain];
+    if (!port) return refuse(400, 'chain_not_served', `this watcher does not serve ${parsed.chain}`);
+    if (parsed.deployment !== port.deployment) return refuse(400, 'wrong_deployment', 'the request is bound to another program or contract than this watcher serves');
+    const refHex = hex(parsed.swapRef);
     let swap: SwapView | null;
     let now: bigint;
     try {
-      [swap, now] = await Promise.all([port.readSwap(req.swapRef), port.now()]);
+      [swap, now] = await Promise.all([port.readSwap(parsed.swapRef), port.now()]);
     } catch {
-      return refuse(503, 'chain_unavailable', `the watcher cannot read ${req.chain} right now`);
+      return refuse(503, 'chain_unavailable', `the watcher cannot read ${parsed.chain} right now`);
     }
     // One answer for "no such swap" and "a swap that does not name this watcher": nothing is spent on either.
-    if (!swap || swap.chain !== req.chain || hex(swap.swapRef) !== refHex || !this.names(swap, port)) return refuse(404, 'not_watchable', 'no swap at finality names this watcher under that reference');
+    if (!swap || swap.chain !== parsed.chain || hex(swap.swapRef) !== refHex || !this.names(swap, port)) return refuse(404, 'not_watchable', 'no swap at finality names this watcher under that reference');
+
+    // Who is asking: the seal opens only with the locker's key from the swap just read.
+    let req: { chain: ChainName; swapRef: Bytes; noticeKey: Bytes; issuedAt: bigint };
+    try {
+      req = this.keys.verifyRequest(body, { swap, deployment: port.deployment, now, maxAgeSecs: this.s.requestMaxAgeSecs, clockSkewSecs: this.s.requestClockSkewSecs });
+    } catch (e) {
+      const code = errorClass(e);
+      if (code === 'WatchRequestStale') return refuse(400, 'stale_request', 'issued_at is older than the swap, too old, or ahead of the chain clock; make a new request');
+      if (code === 'WatchWrongDeployment') return refuse(400, 'wrong_deployment', 'the request is bound to another program or contract than this watcher serves');
+      return refuse(403, 'not_the_locker', 'the request was not made by this swap\'s locker for this watcher and swap');
+    }
+
     const d = watcherStep({ swap, now, watcher: port.address });
     if (d.do === 'stop') {
       if (d.why === 'too-late') return refuse(409, 'too_late', 'the freeze window of this swap has closed');
@@ -154,20 +174,12 @@ export class Watcher {
 
     // The latest T_co this swap can have: its own once a notice is on record, else a notice at the last second of its window.
     const watchingUntil = swap.tClaimOpen !== 0n ? swap.tClaimOpen : (swap.tNoteDeadline === 0n ? swap.tFinal : swap.tNoteDeadline) + BigInt(swap.dC);
-    const outcome = this.store.admit({
-      chain: req.chain,
-      swapRef: refHex,
-      sealedKey: this.keys.sealForStore(req.chain, req.swapRef, req.noticeKey),
-      watchingUntil: Number(watchingUntil),
-      now: this.nowMs(),
-      maxSwaps: this.s.maxSwaps,
-      maxKeys: this.s.maxKeysPerSwap,
-      duplicate: (sealed) => hex(this.keys.openFromStore(req.chain, req.swapRef, sealed)) === hex(req.noticeKey),
-    });
+    const outcome = this.store.admit({ chain: req.chain, swapRef: refHex, sealedKey: this.keys.sealForStore(req.chain, req.swapRef, req.noticeKey), issuedAt: Number(req.issuedAt), watchingUntil: Number(watchingUntil), now: this.nowMs(), maxSwaps: this.s.maxSwaps });
     req.noticeKey.fill(0);
     if (outcome === 'full') return refuse(503, 'full', 'the watcher is at its cap of watched swaps');
     if (outcome === 'ended') return refuse(409, 'swap_ended', 'this watch has ended');
-    if (outcome === 'too-many-keys') return refuse(409, 'too_many_keys', 'too many different notice keys were posted for this swap; treat it as not watched');
+    // A request older than the one on file is a replay: the newer one stands.
+    if (outcome === 'older') return refuse(409, 'superseded', 'a newer request for this swap is already on file');
     if (outcome === 'stored') {
       this.logger.info(`watch accepted on ${req.chain}`);
       this.logger.debug(`watch accepted: ${req.chain} ${refHex}`);
@@ -295,27 +307,11 @@ export class Watcher {
     }
   }
 
-  /** The stored notice key that opens the notice on record, else the first candidate (which then reports "does not open"). */
-  private pickKey(w: WatchRow, swap: SwapView): Bytes {
-    const ref = unhex(w.swap_ref);
-    const rows = this.store.keys(w.chain, w.swap_ref);
-    let first: Bytes | null = null;
-    for (const r of rows) {
-      let key: Bytes;
-      try {
-        key = this.keys.openFromStore(w.chain, ref, r.sealed);
-      } catch {
-        continue;
-      }
-      first ??= key;
-      if (openNoticeWithKey(swap, key) !== null) {
-        // Any other candidate is not this swap's key: whoever posted it gains nothing by it.
-        if (rows.length > 1) this.store.keepOnlyKey(w.chain, w.swap_ref, r.id);
-        return key;
-      }
-    }
-    if (!first) throw Object.assign(new Error('no notice key is stored for this watch'), { code: 'no_notice_key' });
-    return first;
+  /** The watch's notice key: the one its locker registered. */
+  private noticeKey(w: WatchRow): Bytes {
+    const row = this.store.key(w.chain, w.swap_ref);
+    if (!row) throw Object.assign(new Error('no notice key is stored for this watch'), { code: 'no_notice_key' });
+    return this.keys.openFromStore(w.chain, unhex(w.swap_ref), row.sealed);
   }
 
   private async step(w: WatchRow): Promise<void> {
@@ -327,7 +323,7 @@ export class Watcher {
     const base = { swap, now, watcher: port.address };
     let d: WatcherDecision = watcherStep(base);
     if (d.do === 'need') {
-      const facts = await watcherFacts({ swap: swap!, noticeKey: this.pickKey(w, swap!), nodes: this.nodes, ...(this.deps.monero.ownNode ? { ownNode: true } : {}), network: this.deps.monero.network, ...(this.deps.monero.verify ? { verify: this.deps.monero.verify } : {}) });
+      const facts = await watcherFacts({ swap: swap!, noticeKey: this.noticeKey(w), nodes: this.nodes, ...(this.deps.monero.ownNode ? { ownNode: true } : {}), network: this.deps.monero.network, ...(this.deps.monero.verify ? { verify: this.deps.monero.verify } : {}) });
       d = watcherStep({ ...base, noticeOpens: facts.noticeOpens, ...(facts.lock ? { lock: facts.lock } : {}) });
     }
     switch (d.do) {
@@ -386,20 +382,25 @@ export class Watcher {
     let replace: { nonce: number; feePerGas: bigint; tipPerGas: bigint } | undefined;
     const latest = open.at(-1);
     if (latest) {
-      if (latest.status === 'journaled') {
+      if (!port.replaceByNonce && (await port.expired(latest.valid_until))) {
+        // Its blockhash is past its last valid block height: it can no longer land, and a fresh one may be built.
+        for (const r of open) this.store.setAttempt(r.id, 'dropped', this.nowMs(), 'expired');
+      } else if (latest.status === 'journaled') {
         // Journaled and not known to have been sent (a stop between the two): the same bytes go out.
         await port.broadcast(latest.wire);
         this.fault('after-broadcast');
         this.store.setAttempt(latest.id, 'sent', this.nowMs());
         this.logger.info(`freeze sent on ${w.chain}`);
         return;
-      }
-      if (this.nowMs() - latest.updated_at < this.s.attemptTimeoutSecs * 1_000) return;
-      if (port.replaceByNonce) {
+      } else if (this.nowMs() - latest.updated_at < this.s.attemptTimeoutSecs * 1_000) {
+        return;
+      } else if (port.replaceByNonce) {
         replace = { nonce: latest.nonce!, feePerGas: BigInt(latest.fee_per_gas!), tipPerGas: BigInt(latest.tip_per_gas ?? '0') };
       } else {
-        // Its blockhash has expired: it can no longer land.
-        for (const r of open) this.store.setAttempt(r.id, 'dropped', this.nowMs(), 'expired');
+        // Still valid and not seen: the same bytes go out again; never a second transaction beside a live one.
+        await port.broadcast(latest.wire);
+        this.store.setAttempt(latest.id, 'sent', this.nowMs());
+        return;
       }
     }
     let built;
@@ -422,7 +423,7 @@ export class Watcher {
       if (this.store.committed(w.chain, { since: this.dayStart() }) + extra > limit.perDay) throw new SpendLimit('per-day-limit');
     }
     // Journal point 2: the signed transaction, before it is broadcast.
-    const id = this.store.journalAttempt({ chain: w.chain, swapRef: w.swap_ref, txId: built.txId, wire: built.wire, maxFee: built.maxFee, nonce: built.nonce, feePerGas: built.feePerGas, tipPerGas: built.tipPerGas, now: this.nowMs() });
+    const id = this.store.journalAttempt({ chain: w.chain, swapRef: w.swap_ref, txId: built.txId, wire: built.wire, maxFee: built.maxFee, nonce: built.nonce, feePerGas: built.feePerGas, tipPerGas: built.tipPerGas, validUntil: built.validUntil, now: this.nowMs() });
     this.fault('after-attempt-journal');
     await port.broadcast(built.wire);
     this.fault('after-broadcast');

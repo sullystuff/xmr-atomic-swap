@@ -7,7 +7,6 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PROGRAM_ID } from '@xmrswap/protocol';
-import type { EthTransport } from '@xmrswap/sdk';
 import { FakeEthereum, FakeMoneroNode, FakeSolana } from '@xmrswap/sdk/testing';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ConfigError, loadConfig } from '../src/config.js';
@@ -20,8 +19,15 @@ const ENV = { SOLANA_RPC_URL: 'http://127.0.0.1:1', ETHEREUM_RPC_URL: 'http://12
 const toml = (dir: string, extra = '', bind = '127.0.0.1:0'): string =>
   `bind = "${bind}"\ndata_dir = ${JSON.stringify(dir)}\nnetwork = "regtest"\n${extra}\n[monero]\nnodes = ["http://127.0.0.1:1", "http://127.0.0.1:2"]\n[solana]\nprogram_id = "${PROGRAM_ID}"\n[ethereum]\ncontract = "${CONTRACT}"\nchain_id = 31337\n`;
 const tmp = (): string => mkdtempSync(path.join(tmpdir(), 'xmrswap-watcher-run-'));
-const ethTransport = (fake: FakeEthereum): EthTransport => ({ request: (a) => (a.method === 'eth_getBalance' ? Promise.resolve('0xde0b6b3a7640000') : fake.request(a)) });
-const fakes = () => ({ solanaTransport: new FakeSolana({ subscriptions: false }), ethereumTransport: ethTransport(new FakeEthereum(CONTRACT)), moneroNodes: [new FakeMoneroNode('a', 100), new FakeMoneroNode('b', 100)] });
+/** A fake endpoint; `fund` gives every address it is asked about one ether, as a funded watcher key would have. */
+function ethFake(chainId = 31337n): FakeEthereum {
+  const fake = new FakeEthereum(CONTRACT);
+  fake.chainId = chainId;
+  const get = fake.balances.get.bind(fake.balances);
+  fake.balances.get = (k) => get(k) ?? 10n ** 18n;
+  return fake;
+}
+const fakes = () => ({ solanaTransport: new FakeSolana({ subscriptions: false }), ethereumTransport: ethFake(), moneroNodes: [new FakeMoneroNode('a', 100), new FakeMoneroNode('b', 100)] });
 
 const running: Running[] = [];
 const children: ChildProcess[] = [];
@@ -56,9 +62,7 @@ describe('starting the service', () => {
   });
 
   it('refuses an endpoint of another cluster or chain before believing anything it says', async () => {
-    const wrongChain = new FakeEthereum(CONTRACT);
-    wrongChain.chainId = 1n;
-    await expect(startWatcher(loadConfig({ toml: toml(tmp()), env: ENV }), { passphrase: 'p', loop: false, logSink: () => {}, ...fakes(), ethereumTransport: ethTransport(wrongChain) })).rejects.toThrow(/ethereum: the endpoint is not the configured chain \(chain id\)/);
+    await expect(startWatcher(loadConfig({ toml: toml(tmp()), env: ENV }), { passphrase: 'p', loop: false, logSink: () => {}, ...fakes(), ethereumTransport: ethFake(1n) })).rejects.toThrow(/ethereum: the endpoint is not the configured chain \(chain id\)/);
     const withGenesis = toml(tmp()).replace('[solana]', '[solana]\ngenesis_hash = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"');
     await expect(startWatcher(loadConfig({ toml: withGenesis, env: ENV }), { passphrase: 'p', loop: false, logSink: () => {}, ...fakes() })).rejects.toBeInstanceOf(ConfigError);
     const rightGenesis = toml(tmp()).replace('[solana]', `[solana]\ngenesis_hash = "${new FakeSolana().genesis}"`);
@@ -77,15 +81,21 @@ describe('starting the service', () => {
   });
 });
 
-const freePort = (): Promise<number> =>
-  new Promise((resolve, reject) => {
-    const srv = createServer();
-    srv.once('error', reject);
-    srv.listen(0, '127.0.0.1', () => {
-      const port = (srv.address() as { port: number }).port;
-      srv.close(() => resolve(port));
+/** Ports `fetch` refuses to talk to (the WHATWG "bad ports" an ephemeral range can hit). */
+const BAD_PORTS = new Set([2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6679, 6697, 10080]);
+async function freePort(): Promise<number> {
+  for (;;) {
+    const port = await new Promise<number>((resolve, reject) => {
+      const srv = createServer();
+      srv.once('error', reject);
+      srv.listen(0, '127.0.0.1', () => {
+        const p = (srv.address() as { port: number }).port;
+        srv.close(() => resolve(p));
+      });
     });
-  });
+    if (!BAD_PORTS.has(port)) return port;
+  }
+}
 const tsx = path.join(pkg, 'node_modules/.bin/tsx');
 function cli(args: string[], env: Record<string, string>): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {

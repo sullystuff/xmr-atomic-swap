@@ -32,8 +32,8 @@ describe('configuration', () => {
     const c = loadConfig({ toml: filled, env: ENV, baseDir: '/etc/watcher' });
     expect(c).toMatchObject({
       bindHost: '127.0.0.1', bindPort: 8790, allowNonLoopback: false, trustProxyHops: 0, dataDir: '/etc/watcher/watcher-data', passphraseEnv: 'WATCHER_PASSPHRASE', network: 'mainnet',
-      pollSecs: DEFAULTS.pollSecs, maxSwaps: DEFAULTS.maxSwaps, maxKeysPerSwap: DEFAULTS.maxKeysPerSwap, retentionDays: DEFAULTS.retentionDays, stopConfirmations: DEFAULTS.stopConfirmations,
-      minLeadSecs: DEFAULTS.minLeadSecs, attemptTimeoutSecs: DEFAULTS.attemptTimeoutSecs, requestsPerMinute: 60, registrationsPerMinute: 10, maxBodyBytes: 1024, debugLog: false, ownNode: false,
+      pollSecs: DEFAULTS.pollSecs, maxSwaps: DEFAULTS.maxSwaps, retentionDays: DEFAULTS.retentionDays, stopConfirmations: DEFAULTS.stopConfirmations,
+      minLeadSecs: DEFAULTS.minLeadSecs, attemptTimeoutSecs: DEFAULTS.attemptTimeoutSecs, requestMaxAgeSecs: 3_600, requestClockSkewSecs: 1_800, requestsPerMinute: 60, registrationsPerMinute: 10, maxBodyBytes: 1024, debugLog: false, ownNode: false,
       moneroNodes: ['http://127.0.0.1:18081', 'https://node.example.org:18089'],
     });
     expect(c.solana).toEqual({ rpcUrl: ENV.SOLANA_RPC_URL, programId: PROGRAM, genesisHash: null, commitment: 'finalized', priorityFeeMicroLamports: 0n, maxComputeUnits: 200_000, perSwapLimit: 100_000n, perDayLimit: 5_000_000n });
@@ -104,6 +104,9 @@ describe('configuration', () => {
     expect(err(`max_swaps = "many"\n${minimal}`)).toMatch(/max_swaps/);
     expect(err(`${minimal}\n[margins]\nattempt_timeout_secs = 5`)).toMatch(/attempt_timeout_secs/);
     expect(err(`${minimal}\n[rate_limit]\nmax_body_bytes = 10`)).toMatch(/max_body_bytes/);
+    expect(err(`${minimal}\n[margins]\nrequest_max_age_secs = 5`)).toMatch(/request_max_age_secs/);
+    // The candidate-key list of wire format 1 is gone, and its setting with it.
+    expect(err(`max_keys_per_swap = 4\n${minimal}`)).toMatch(/unknown key "max_keys_per_swap"/);
     const c = loadConfig({ toml: `retention_days = 0\n${minimal}\n[margins]\nmin_lead_secs = 600`, env: { ...ENV, WATCHER_MAX_SWAPS: '7', WATCHER_DEBUG_LOG: 'true' } });
     expect(c).toMatchObject({ retentionDays: 0, minLeadSecs: 600, maxSwaps: 7, debugLog: true, ethereum: null });
   });

@@ -2,7 +2,7 @@
  * The watcher's two keys and everything that may be done with them.
  *
  * `WatcherKeys` is the only holder of key material in the process, and it offers exactly five
- * operations: open a watch request sealed to the Solana key, sign an acknowledgement, seal and
+ * operations: verify and open a watch request sealed to the Solana key by a swap's locker, sign an acknowledgement, seal and
  * open a notice key for storage, and sign a transaction **after proving to itself that the
  * transaction is one `freeze` and nothing else**. There is no "sign these bytes" method: a
  * caller with a bug, or one misled by a lying RPC endpoint, cannot obtain a signature over
@@ -19,7 +19,7 @@ import path from 'node:path';
 import { ComputeBudgetProgram, Message, PublicKey, type Transaction } from '@solana/web3.js';
 import { passphraseOpen, passphraseSeal } from '@xmrswap/core-wasm';
 import { type ChainName, base58Decode, encodeInstructionData } from '@xmrswap/protocol';
-import { type Bytes, type WatchAck, XmrSwapContract, configPda, hex, openWatchRequest, seedSigner, signWatchAck, unhex } from '@xmrswap/sdk';
+import { type Bytes, type SwapView, type WatchAck, XmrSwapContract, configPda, hex, seedSigner, signWatchAck, unhex, verifyWatchRequest } from '@xmrswap/sdk';
 import { type PrivateKeyAccount, privateKeyToAccount } from 'viem/accounts';
 
 const FILE = 'watcher-keystore.json';
@@ -177,9 +177,13 @@ export class WatcherKeys {
 
   // ---------------------------------------------------------------- the watch protocol
 
-  /** Validate a watch request and recover the notice key sealed to this watcher for that chain and swap (SDK `openWatchRequest`). */
-  openRequest(body: unknown): { chain: ChainName; swapRef: Bytes; noticeKey: Bytes } {
-    return openWatchRequest(body, this.#solanaSeed);
+  /**
+   * Verify a watch request against the swap read from chain and recover the notice key (SDK
+   * `verifyWatchRequest`, wire format 2): it opens only if the swap's locker sealed it to this
+   * watcher for this chain, deployment, swap and time.
+   */
+  verifyRequest(body: unknown, ctx: { swap: SwapView; deployment: string; now: bigint; maxAgeSecs: number; clockSkewSecs: number }): { chain: ChainName; swapRef: Bytes; noticeKey: Bytes; issuedAt: bigint } {
+    return verifyWatchRequest(body, { watcherSeed: this.#solanaSeed, ...ctx });
   }
   signAck(chain: ChainName, swapRef: Bytes, watchingUntil: bigint): WatchAck {
     return signWatchAck({ chain, swapRef, watchingUntil, watcherSeed: this.#solanaSeed });

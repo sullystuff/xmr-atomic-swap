@@ -2,13 +2,13 @@
 // believed for what they contain and what the chain says, never for who sends them.
 import { afterEach, describe, expect, it } from 'vitest';
 import { SWAP_STATE } from '@xmrswap/protocol';
-import { WatcherClient, WatcherRefused, sealNoticeKey, toBase64, verifyWatchAck, watchRequest } from '@xmrswap/sdk';
+import { WatcherClient, WatcherRefused, toBase64, verifyWatchAck, watchDeployment } from '@xmrswap/sdk';
 import { type AppSettings, type Listening, createApp, listen } from '../src/app.js';
 import { createLogger } from '../src/log.js';
 import type { ServiceSettings } from '../src/service.js';
 import type { Store } from '../src/store.js';
 import { WatcherKeys } from '../src/keys.js';
-import { type World, hex, makeWorld, passes, randomRef } from './world.js';
+import { CONTRACT, ENC, type World, type WorldSwap, hex, makeWorld, passes, randomRef, unhex } from './world.js';
 
 const APP: AppSettings = { bindHost: '127.0.0.1', bindPort: 0, trustProxyHops: 0, requestsPerMinute: 1_000, registrationsPerMinute: 1_000, maxBodyBytes: 1024 };
 const open: Listening[] = [];
@@ -26,7 +26,7 @@ async function serve(chain: 'solana' | 'ethereum', o: { app?: Partial<AppSetting
   const post = (body: unknown, raw = false) => fetch(`${http.url}/watch/v1/swaps`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: raw ? (body as string) : JSON.stringify(body) });
   return { w, svc, store, http, client: new WatcherClient(http.url), lines, post };
 }
-const request = (w: World, s: { ref: Uint8Array; noticeKey: Uint8Array }) => watchRequest({ chain: w.chain, swapRef: s.ref, noticeKey: s.noticeKey, watcherSolanaKey: w.keys.solana });
+const request = (_w: World, s: WorldSwap) => s.request();
 const stored = (store: Store): number => (store.db.prepare('SELECT COUNT(*) AS n FROM watches').get() as { n: number }).n;
 
 describe.each(['solana', 'ethereum'] as const)('the API on %s', (chain) => {
@@ -36,7 +36,7 @@ describe.each(['solana', 'ethereum'] as const)('the API on %s', (chain) => {
     expect(info).toEqual({ solana: w.keys.solana, ethereum: w.keys.ethereum, max_swaps: 50, monero_nodes: 2 });
     const s = await w.addSwap();
     // `register` throws unless the acknowledgement verifies against the key the swap names.
-    const ack = await client.register({ chain, swapRef: s.ref, noticeKey: s.noticeKey, watcherSolanaKey: info.solana });
+    const ack = await client.register(s.args());
     // Before a notice: the latest T_co the swap can have.
     expect(BigInt(ack.watching_until)).toBe(w.times.tNoteDeadline + BigInt(w.times.dC));
     expect(await client.status(s.ref)).toMatchObject({ swap_ref: hex(s.ref), chain, status: 'watching', waiting_for: 'new', freeze_decided: null, freeze_transactions: [], ended_at: null });
@@ -51,7 +51,7 @@ describe.each(['solana', 'ethereum'] as const)('the API on %s', (chain) => {
     // Once a notice is on record the acknowledgement promises the swap's own T_co.
     const s2 = await w.addSwap({ notice: 'good' });
     w.setTime(w.times.tNotice + 1n);
-    expect(BigInt((await client.register({ chain, swapRef: s2.ref, noticeKey: s2.noticeKey, watcherSolanaKey: info.solana })).watching_until)).toBe(w.times.tCo);
+    expect(BigInt((await client.register(s2.args())).watching_until)).toBe(w.times.tCo);
     expect((await fetch(`${http.url}/watch/v1/info`)).headers.get('cache-control')).toBe('no-store');
   });
 
@@ -95,7 +95,8 @@ describe.each(['solana', 'ethereum'] as const)('the API on %s', (chain) => {
     }
     // A reference that is not on chain at all.
     const ghost = randomRef();
-    await expect(client.register({ chain, swapRef: ghost, noticeKey: new Uint8Array(32).fill(3), watcherSolanaKey: w.keys.solana })).rejects.toBeInstanceOf(WatcherRefused);
+    await expect(client.register({ chain, swapRef: ghost, noticeKey: new Uint8Array(32).fill(3), watcherSolanaKey: w.keys.solana, lockerEncSecret: new Uint8Array(32).fill(5), deployment: w.port.deployment, issuedAt: w.now() })).rejects.toMatchObject({ status: 404 });
+    await expect(client.register({ chain, swapRef: ghost, noticeKey: new Uint8Array(32).fill(3), watcherSolanaKey: w.keys.solana, lockerEncSecret: new Uint8Array(32).fill(5), deployment: w.port.deployment, issuedAt: w.now() })).rejects.toBeInstanceOf(WatcherRefused);
     expect(stored(store)).toBe(0);
     // Even at T_cut, with false notices everywhere, the watcher signs and sends nothing for swaps it did not accept.
     w.setTime(w.times.tCut);
@@ -104,33 +105,49 @@ describe.each(['solana', 'ethereum'] as const)('the API on %s', (chain) => {
     expect(w.signedOrSimulated()).toEqual([]);
   });
 
-  it('refuses what is not a watch request for this watcher: malformed, unsealed, sealed to another key, replayed for another swap or chain', async () => {
+  it('refuses what is not a watch request for this watcher: malformed, format 1, unsealed, another deployment, sealed to another watcher, replayed for another swap or chain', async () => {
     const { w, store, post } = await serve(chain);
     const s = await w.addSwap();
     const t = await w.addSwap();
     const good = request(w, s);
+    expect(good).toMatchObject({ v: 2, chain, swap_ref: hex(s.ref), deployment: w.port.deployment, issued_at: Number(w.now()) });
     const otherKey = new WatcherKeys(new Uint8Array(32).fill(1), new Uint8Array(32).fill(2)).solana;
-    const bad: [string, unknown, string][] = [
-      ['empty object', {}, 'bad_request'],
-      ['null', null, 'bad_request'],
-      ['an array', [1, 2, 3], 'bad_request'],
-      ['a string', 'freeze everything', 'bad_request'],
-      ['unknown chain', { ...good, chain: 'bitcoin' }, 'bad_request'],
-      ['uppercase ref', { ...good, swap_ref: good.swap_ref.toUpperCase() }, 'bad_request'],
-      ['short ref', { ...good, swap_ref: 'ab' }, 'bad_request'],
-      ['numeric key', { ...good, notice_key: 7 }, 'bad_request'],
-      ['raw key, not sealed', { ...good, notice_key: toBase64(s.noticeKey) }, 'bad_notice_key'],
-      ['not base64', { ...good, notice_key: '%%%' }, 'bad_notice_key'],
-      ['sealed to another watcher', { ...good, notice_key: toBase64(sealNoticeKey({ noticeKey: s.noticeKey, watcherSolanaKey: otherKey, chain, swapRef: s.ref })) }, 'bad_notice_key'],
-      ['replayed for another swap', { ...good, swap_ref: hex(t.ref) }, 'bad_notice_key'],
-      ['replayed for the other chain', { ...good, chain: chain === 'solana' ? 'ethereum' : 'solana' }, 'bad_notice_key'],
-      ['prototype pollution', JSON.parse('{"__proto__":{"chain":"solana"},"constructor":{"prototype":{}}}'), 'bad_request'],
+    const { v: _v, deployment: _d, issued_at: _i, ...format1 } = good;
+    const otherDeployment = chain === 'solana' ? watchDeployment({ programId: otherKey }) : watchDeployment({ chainId: 1, contract: CONTRACT });
+    const bad: [string, unknown, number, string][] = [
+      ['empty object', {}, 400, 'unsupported_format'],
+      ['null', null, 400, 'bad_request'],
+      ['an array', [1, 2, 3], 400, 'unsupported_format'],
+      ['a string', 'freeze everything', 400, 'bad_request'],
+      // The unauthenticated format of the first release: refused outright, whatever it holds.
+      ['format 1', format1, 400, 'unsupported_format'],
+      ['a format from the future', { ...good, v: 3 }, 400, 'unsupported_format'],
+      ['unknown chain', { ...good, chain: 'bitcoin' }, 400, 'bad_request'],
+      ['uppercase ref', { ...good, swap_ref: good.swap_ref.toUpperCase() }, 400, 'bad_request'],
+      ['short ref', { ...good, swap_ref: 'ab' }, 400, 'bad_request'],
+      ['numeric key', { ...good, notice_key: 7 }, 400, 'bad_request'],
+      ['issued_at as text', { ...good, issued_at: String(good.issued_at) }, 400, 'bad_request'],
+      ['negative issued_at', { ...good, issued_at: -1 }, 400, 'bad_request'],
+      ['not base64', { ...good, notice_key: '%%%' }, 400, 'bad_notice_key'],
+      // Bound to another program or contract: refused before the chain is even read.
+      ['another deployment, relabelled', { ...good, deployment: otherDeployment }, 400, 'wrong_deployment'],
+      ['another deployment, sealed for it', s.request({ deployment: otherDeployment }), 400, 'wrong_deployment'],
+      // From here on the swap is read and the seal is checked against the locker key it records.
+      ['raw key, not sealed', { ...good, notice_key: toBase64(s.noticeKey) }, 403, 'not_the_locker'],
+      ['sealed to another watcher', s.request({ watcherSolanaKey: otherKey }), 403, 'not_the_locker'],
+      ['replayed for another swap', { ...good, swap_ref: hex(t.ref) }, 403, 'not_the_locker'],
+      ['issued_at altered', { ...good, issued_at: good.issued_at + 1 }, 403, 'not_the_locker'],
+      ['one bit of the seal flipped', { ...good, notice_key: toBase64(Uint8Array.from(Buffer.from(good.notice_key, 'base64'), (x, i) => (i === 80 ? x ^ 1 : x))) }, 403, 'not_the_locker'],
+      ['prototype pollution', JSON.parse('{"__proto__":{"chain":"solana"},"constructor":{"prototype":{}}}'), 400, 'unsupported_format'],
     ];
-    for (const [name, body, error] of bad) {
+    for (const [name, body, status, error] of bad) {
       const res = await post(body);
-      expect(res.status, name).toBe(400);
-      expect(await res.json(), name).toEqual({ error });
+      expect(res.status, name).toBe(status);
+      expect((await res.json()).error, name).toBe(error);
     }
+    // The other chain: this instance does not serve it.
+    const otherChain = await post({ ...good, chain: chain === 'solana' ? 'ethereum' : 'solana' });
+    expect([otherChain.status, (await otherChain.json()).error]).toEqual([400, 'chain_not_served']);
     for (const raw of ['{', '{"chain":', 'not json', '\u0000\u0001', '']) {
       const res = await post(raw, true);
       expect(res.status, JSON.stringify(raw)).toBe(400);
@@ -139,6 +156,7 @@ describe.each(['solana', 'ethereum'] as const)('the API on %s', (chain) => {
     expect(big.status).toBe(413);
     expect(await big.json()).toEqual({ error: 'too_large' });
     expect(stored(store)).toBe(0);
+    expect(w.signedOrSimulated()).toEqual([]);
     // The service is still up and still accepts the real request.
     expect((await post(good)).status).toBe(200);
   });
@@ -146,7 +164,7 @@ describe.each(['solana', 'ethereum'] as const)('the API on %s', (chain) => {
   it('no route lists watches, and a status lookup answers alike for an unknown and a malformed reference', async () => {
     const { w, http, client } = await serve(chain);
     const s = await w.addSwap();
-    await client.register({ chain, swapRef: s.ref, noticeKey: s.noticeKey, watcherSolanaKey: w.keys.solana });
+    await client.register(s.args());
     for (const p of ['/watch/v1/swaps', '/watch/v1/swaps/', '/watch/v1', '/', '/watch/v1/swaps?all=1', '/watch/v1/watches', '/metrics', '/watch/v1/swaps/%2A']) {
       const res = await fetch(`${http.url}${p}`);
       expect(res.status, p).toBe(404);
@@ -158,7 +176,7 @@ describe.each(['solana', 'ethereum'] as const)('the API on %s', (chain) => {
     expect(await unknown.text()).toBe(await malformed.text());
     // Nothing in info, health or another swap's status mentions the watched swap.
     const t = await w.addSwap();
-    await client.register({ chain, swapRef: t.ref, noticeKey: t.noticeKey, watcherSolanaKey: w.keys.solana });
+    await client.register(t.args());
     for (const p of ['/watch/v1/info', '/watch/v1/health', `/watch/v1/swaps/${hex(t.ref)}`]) expect(await (await fetch(`${http.url}${p}`)).text(), p).not.toContain(hex(s.ref));
     for (const m of ['DELETE', 'PUT', 'PATCH']) expect((await fetch(`${http.url}/watch/v1/swaps/${hex(s.ref)}`, { method: m })).status, m).toBe(404);
   });
@@ -210,29 +228,106 @@ describe.each(['solana', 'ethereum'] as const)('the API on %s', (chain) => {
     expect(((await health.json()) as { chains: Record<string, { reachable: boolean }> }).chains[chain]!.reachable).toBe(false);
   });
 
-  it('a wrong notice key posted by a stranger, before or after the locker\'s, cannot make the watcher freeze a good lock', async () => {
-    for (const order of ['stranger-first', 'locker-first'] as const) {
-      const { w, svc, store, post } = await serve(chain);
-      const s = await w.addSwap();
-      const forged = watchRequest({ chain, swapRef: s.ref, noticeKey: new Uint8Array(32).fill(0x66), watcherSolanaKey: w.keys.solana });
-      for (const body of order === 'stranger-first' ? [forged, request(w, s)] : [request(w, s), forged]) expect((await post(body)).status).toBe(200);
-      expect(store.keyCount(chain, hex(s.ref))).toBe(2);
-      await w.postNotice(s.ref, 'good');
-      w.setTime(w.times.tCut);
-      await passes(svc, 3, w);
-      expect(w.broadcasts, order).toEqual([]);
-      expect(svc.status(hex(s.ref)), order).toMatchObject({ status: 'watching', waiting_for: 'recheck' });
-      // The key that opened the notice is kept; the forged one is gone.
-      expect(store.keyCount(chain, hex(s.ref))).toBe(1);
-      expect(hex(w.keys.openFromStore(chain, s.ref, store.keys(chain, hex(s.ref))[0]!.sealed))).toBe(hex(s.noticeKey));
-    }
-    // The number of different keys per swap is capped; past it the caller is told the swap is not watched.
-    const { w, post } = await serve(chain, { settings: { maxKeysPerSwap: 2 } });
+  it('only the swap\'s locker can register it: a stranger, a stranger flooding first, and the counterparty are all rejected, with nothing stored and nothing spent', async () => {
+    const { w, svc, store, post } = await serve(chain);
     const s = await w.addSwap();
-    for (const fill of [1, 2]) expect((await post(watchRequest({ chain, swapRef: s.ref, noticeKey: new Uint8Array(32).fill(fill), watcherSolanaKey: w.keys.solana }))).status).toBe(200);
-    const third = await post(request(w, s));
-    expect(third.status).toBe(409);
-    expect((await third.json()).error).toBe('too_many_keys');
+    const balance = await w.port.balance();
+    const strangerSecret = new Uint8Array(32).fill(0x33);
+    const attempts: [string, unknown][] = [
+      // A stranger posts a wrong key, sealed correctly to this watcher for this swap, with its own secret.
+      ['stranger, wrong key', s.request({ noticeKey: new Uint8Array(32).fill(0x66), lockerEncSecret: strangerSecret })],
+      // A stranger who somehow has the right notice key still is not the locker.
+      ['stranger, right key', s.request({ lockerEncSecret: strangerSecret })],
+      // The counterparty knows K("notice") (it seals the notice with it) and holds the other encryption secret of the swap.
+      ['counterparty, right key', s.request({ lockerEncSecret: s.claimerEncSecret })],
+      ['counterparty, wrong key', s.request({ noticeKey: new Uint8Array(32).fill(0x67), lockerEncSecret: s.claimerEncSecret })],
+    ];
+    for (const [name, body] of attempts) {
+      const res = await post(body);
+      expect(res.status, name).toBe(403);
+      expect(await res.json(), name).toEqual({ error: 'not_the_locker', detail: "the request was not made by this swap's locker for this watcher and swap" });
+    }
+    // A stranger flooding the swap with keys before the locker arrives: there are no slots to fill.
+    for (let i = 1; i <= 12; i++) expect((await post(s.request({ noticeKey: new Uint8Array(32).fill(i), lockerEncSecret: new Uint8Array(32).fill(0x80 + i) }))).status).toBe(403);
+    expect(stored(store)).toBe(0);
+    expect(store.keyCount(chain, hex(s.ref))).toBe(0);
+    // The locker's own request is accepted afterwards as if nothing had happened.
+    expect((await post(request(w, s))).status).toBe(200);
+    expect(store.keyCount(chain, hex(s.ref))).toBe(1);
+    // And after it, the same attempts change nothing: one key, the locker's.
+    for (const [name, body] of attempts) expect((await post(body)).status, name).toBe(403);
+    expect(store.keyCount(chain, hex(s.ref))).toBe(1);
+    expect(hex(w.keys.openFromStore(chain, s.ref, store.key(chain, hex(s.ref))!.sealed))).toBe(hex(s.noticeKey));
+    // The lock is good: nobody's request made the watcher freeze it, or spend anything.
+    await w.postNotice(s.ref, 'good');
+    w.setTime(w.times.tCut);
+    await passes(svc, 3, w);
+    expect(w.broadcasts).toEqual([]);
+    expect(w.signedOrSimulated()).toEqual([]);
+    expect(svc.status(hex(s.ref))).toMatchObject({ status: 'watching', waiting_for: 'recheck' });
+    expect(await w.port.balance()).toBe(balance);
+
+    // A swap whose locker never registered is not watched at all, whatever strangers post: no freeze, even of a false notice.
+    const { w: w2, svc: svc2, store: store2, post: post2 } = await serve(chain);
+    const u = await w2.addSwap({ notice: 'good' });
+    expect((await post2(u.request({ noticeKey: new Uint8Array(32).fill(0x66), lockerEncSecret: strangerSecret }))).status).toBe(403);
+    w2.setTime(w2.times.tCut);
+    await passes(svc2, 3, w2);
+    expect(stored(store2)).toBe(0);
+    expect(w2.signedOrSimulated()).toEqual([]);
+    // Direction B: the locker is the maker; the taker (the counterparty there) is rejected.
+    const b = await w2.addSwap({ direction: 1 });
+    expect(hex(b.lockerEncSecret)).toBe(ENC.maker_secret);
+    expect((await post2(b.request({ lockerEncSecret: unhex(ENC.taker_secret) }))).status).toBe(403);
+    expect((await post2(b.request())).status).toBe(200);
+  });
+
+  it('freshness and replay: the same request twice is one watch; an older one after a newer one is refused; stale, future-dated and pre-lock requests are refused', async () => {
+    const { w, store, post } = await serve(chain);
+    const s = await w.addSwap();
+    w.setTime(w.now() + 300n);
+    const first = s.request();
+    const a1 = await post(first);
+    const a2 = await post(first);
+    expect([a1.status, a2.status]).toEqual([200, 200]);
+    // Idempotent: the same acknowledgement, one row, one key.
+    expect(await a2.json()).toEqual(await a1.json());
+    expect(stored(store)).toBe(1);
+    expect(store.key(chain, hex(s.ref))!.issued_at).toBe(Number(w.now()));
+    // A newer request from the locker replaces the one on file.
+    w.setTime(w.now() + 60n);
+    const newer = s.request();
+    expect((await post(newer)).status).toBe(200);
+    expect(store.key(chain, hex(s.ref))!.issued_at).toBe(Number(w.now()));
+    // The older one, replayed now (it is authentic and still fresh), is refused; the newer one stands.
+    const replayed = await post(first);
+    expect(replayed.status).toBe(409);
+    expect((await replayed.json()).error).toBe('superseded');
+    expect(store.key(chain, hex(s.ref))!.issued_at).toBe(Number(w.now()));
+    expect((await post(newer)).status).toBe(200);
+    expect(stored(store)).toBe(1);
+
+    // Freshness, against the chain clock the service reads and the swap's own lock time.
+    const t = await w.addSwap();
+    const now = w.now();
+    const stale = async (issuedAt: bigint): Promise<[number, string]> => {
+      const res = await post(t.request({ issuedAt }));
+      return [res.status, (await res.json()).error];
+    };
+    // Dated before the swap was locked (beyond the skew): made for some earlier incarnation of the reference.
+    expect(await stale(1_800_000_000n - 1_801n)).toEqual([400, 'stale_request']);
+    // Dated ahead of the chain clock beyond the skew.
+    expect(await stale(now + 1_801n)).toEqual([400, 'stale_request']);
+    expect(stored(store)).toBe(1);
+    // An hour and a second old: too old. Exactly an hour: accepted.
+    const old = t.request();
+    w.setTime(now + 3_601n);
+    expect((await post(old)).status).toBe(400);
+    w.setTime(now + 3_600n);
+    expect((await post(old)).status).toBe(200);
+    // Within the skew ahead: accepted (the finalized clock the service reads runs behind the client's).
+    const v = await w.addSwap();
+    expect((await post(v.request({ issuedAt: w.now() + 1_800n }))).status).toBe(200);
   });
 
   it('per-IP rate limits: requests in general, and registrations more tightly', async () => {

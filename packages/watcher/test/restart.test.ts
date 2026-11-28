@@ -3,7 +3,6 @@
 // exactly one freeze and exactly one transaction paid for.
 import { describe, expect, it } from 'vitest';
 import { SWAP_STATE } from '@xmrswap/protocol';
-import { watchRequest } from '@xmrswap/sdk';
 import type { FaultPoint } from '../src/service.js';
 import { Store } from '../src/store.js';
 import { WatcherKeys } from '../src/keys.js';
@@ -18,7 +17,7 @@ describe.each(['solana', 'ethereum'] as const)('crash and restart on %s', (chain
     const store1 = w.store();
     const first = w.service({ store: store1, fault: crashAt(point) });
     const s = await w.addSwap();
-    expect((await first.register(watchRequest({ chain, swapRef: s.ref, noticeKey: s.noticeKey, watcherSolanaKey: w.keys.solana }))).status).toBe(200);
+    expect((await first.register(s.request())).status).toBe(200);
     await w.postNotice(s.ref, 'no-such-tx');
     w.setTime(w.times.tCut);
     let crashed: unknown = null;
@@ -68,7 +67,7 @@ describe.each(['solana', 'ethereum'] as const)('crash and restart on %s', (chain
     const store1 = w.store();
     const first = w.service({ store: store1, fault: crashAt('after-decision'), nodes: [node('a', 12), lagging] });
     const s = await w.addSwap({ notice: 'good' });
-    await first.register(watchRequest({ chain, swapRef: s.ref, noticeKey: s.noticeKey, watcherSolanaKey: w.keys.solana }));
+    await first.register(s.request());
     w.setTime(w.times.tCut);
     await expect(first.tick()).rejects.toBeInstanceOf(Crash);
     expect(store1.getWatch(chain, hex(s.ref))).toMatchObject({ status: 'freezing' });
@@ -88,7 +87,7 @@ describe.each(['solana', 'ethereum'] as const)('crash and restart on %s', (chain
     const store1 = w.store();
     const first = w.service({ store: store1 });
     const s = await w.addSwap();
-    await first.register(watchRequest({ chain, swapRef: s.ref, noticeKey: s.noticeKey, watcherSolanaKey: w.keys.solana }));
+    await first.register(s.request());
     await passes(first, 2, w);
     store1.close();
     const store2 = w.store();
@@ -114,7 +113,7 @@ describe('the database', () => {
     const store = w.store();
     const svc = w.service({ store });
     const s = await w.addSwap({ notice: 'good' });
-    await svc.register(watchRequest({ chain: 'ethereum', swapRef: s.ref, noticeKey: s.noticeKey, watcherSolanaKey: w.keys.solana }));
+    await svc.register(s.request());
     await passes(svc, 2, w);
     store.db.pragma('wal_checkpoint(TRUNCATE)');
     const { readFileSync } = await import('node:fs');
@@ -122,7 +121,7 @@ describe('the database', () => {
     expect(file.includes(Buffer.from(s.noticeKey))).toBe(false);
     expect(file.toString('latin1')).not.toContain(hex(s.noticeKey));
     // The row opens only with the keystore, and only for this chain and swap.
-    const sealed = store.keys('ethereum', hex(s.ref))[0]!.sealed;
+    const sealed = store.key('ethereum', hex(s.ref))!.sealed;
     expect(hex(w.keys.openFromStore('ethereum', s.ref, sealed))).toBe(hex(s.noticeKey));
     expect(() => w.keys.openFromStore('solana', s.ref, sealed)).toThrow();
     expect(() => new WatcherKeys(new Uint8Array(32).fill(7), new Uint8Array(32).fill(8)).openFromStore('ethereum', s.ref, sealed)).toThrow();

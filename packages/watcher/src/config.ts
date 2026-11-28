@@ -50,7 +50,6 @@ export interface WatcherConfig {
   network: MoneroNetwork;
   pollSecs: number;
   maxSwaps: number;
-  maxKeysPerSwap: number;
   retentionDays: number;
   /** A swap must be seen ended this many passes in a row before its watch is closed and its keys deleted. */
   stopConfirmations: number;
@@ -58,6 +57,10 @@ export interface WatcherConfig {
   minLeadSecs: number;
   /** A broadcast transaction not seen on chain after this long is rebroadcast or replaced. */
   attemptTimeoutSecs: number;
+  /** A watch request older than this (by its authenticated `issued_at`) is refused. */
+  requestMaxAgeSecs: number;
+  /** How far `issued_at` may lie ahead of the chain clock the service reads, or behind the swap's lock time. */
+  requestClockSkewSecs: number;
   moneroNodes: string[];
   ownNode: boolean;
   requestsPerMinute: number;
@@ -75,11 +78,12 @@ export const DEFAULTS = {
   network: 'mainnet',
   pollSecs: 15,
   maxSwaps: 200,
-  maxKeysPerSwap: 4,
   retentionDays: 30,
   stopConfirmations: 3,
   minLeadSecs: 120,
   attemptTimeoutSecs: 150,
+  requestMaxAgeSecs: 3_600,
+  requestClockSkewSecs: 1_800,
   requestsPerMinute: 60,
   registrationsPerMinute: 10,
   maxBodyBytes: 1024,
@@ -89,9 +93,9 @@ export const DEFAULTS = {
 
 export class ConfigError extends Error {}
 
-const TOP_KEYS = ['bind', 'allow_non_loopback', 'trust_proxy_hops', 'data_dir', 'passphrase_env', 'network', 'poll_secs', 'max_swaps', 'max_keys_per_swap', 'retention_days', 'stop_confirmations', 'debug_log', 'margins', 'monero', 'rate_limit', 'solana', 'ethereum'];
+const TOP_KEYS = ['bind', 'allow_non_loopback', 'trust_proxy_hops', 'data_dir', 'passphrase_env', 'network', 'poll_secs', 'max_swaps', 'retention_days', 'stop_confirmations', 'debug_log', 'margins', 'monero', 'rate_limit', 'solana', 'ethereum'];
 const TABLE_KEYS: Record<string, string[]> = {
-  margins: ['min_lead_secs', 'attempt_timeout_secs'],
+  margins: ['min_lead_secs', 'attempt_timeout_secs', 'request_max_age_secs', 'request_clock_skew_secs'],
   monero: ['nodes', 'own_node'],
   rate_limit: ['requests_per_minute', 'registrations_per_minute', 'max_body_bytes'],
   solana: ['rpc_url_env', 'program_id', 'genesis_hash', 'commitment', 'priority_fee_micro_lamports', 'max_compute_units', 'per_swap_limit_lamports', 'per_day_limit_lamports'],
@@ -282,11 +286,12 @@ export function loadConfig(opts: LoadOptions = {}): WatcherConfig {
     network: oneOf(pick('WATCHER_NETWORK', file['network']) ?? DEFAULTS.network, 'network', ['mainnet', 'stagenet', 'testnet', 'regtest'] as const),
     pollSecs: int(pick('WATCHER_POLL_SECS', file['poll_secs']) ?? DEFAULTS.pollSecs, 'poll_secs', 1, 300),
     maxSwaps: int(pick('WATCHER_MAX_SWAPS', file['max_swaps']) ?? DEFAULTS.maxSwaps, 'max_swaps', 1, 100_000),
-    maxKeysPerSwap: int(file['max_keys_per_swap'] ?? DEFAULTS.maxKeysPerSwap, 'max_keys_per_swap', 1, 16),
     retentionDays: int(pick('WATCHER_RETENTION_DAYS', file['retention_days']) ?? DEFAULTS.retentionDays, 'retention_days', 0, 3650),
     stopConfirmations: int(file['stop_confirmations'] ?? DEFAULTS.stopConfirmations, 'stop_confirmations', 1, 100),
     minLeadSecs: int(margins['min_lead_secs'] ?? DEFAULTS.minLeadSecs, 'margins.min_lead_secs', 0, 86_400),
     attemptTimeoutSecs: int(margins['attempt_timeout_secs'] ?? DEFAULTS.attemptTimeoutSecs, 'margins.attempt_timeout_secs', 30, 3_600),
+    requestMaxAgeSecs: int(margins['request_max_age_secs'] ?? DEFAULTS.requestMaxAgeSecs, 'margins.request_max_age_secs', 60, 604_800),
+    requestClockSkewSecs: int(margins['request_clock_skew_secs'] ?? DEFAULTS.requestClockSkewSecs, 'margins.request_clock_skew_secs', 0, 86_400),
     moneroNodes: nodes,
     ownNode,
     requestsPerMinute: int(rate['requests_per_minute'] ?? DEFAULTS.requestsPerMinute, 'rate_limit.requests_per_minute'),

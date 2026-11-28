@@ -35,10 +35,6 @@ poll_secs = 15
 # Cap on swaps watched at once. Further requests are refused with `full`.   env: WATCHER_MAX_SWAPS
 max_swaps = 200
 
-# Different notice keys accepted for one swap. The service cannot tell the locker's key from a
-# stranger's until a notice exists, so it keeps up to this many and uses the one that opens it.
-max_keys_per_swap = 4
-
 # Days a finished watch (its status and the transactions the watcher sent) is kept before it
 # is deleted. The notice key is deleted the moment the watch ends, whatever this says.
 # 0 = delete the record at once.                                       env: WATCHER_RETENTION_DAYS
@@ -58,9 +54,18 @@ debug_log = false
 # this many seconds remain before that moment: the service would promise what it cannot do.
 min_lead_secs = 120
 
-# Seconds a broadcast freeze may stay unseen before it is rebroadcast or replaced (Solana: a
-# fresh transaction once the old blockhash has expired; Ethereum: same nonce, higher fee).
+# Seconds a broadcast freeze may stay unseen before it is rebroadcast or replaced (Solana: the
+# same bytes again while its blockhash is valid, a fresh transaction once the chain is past its
+# last valid block height; Ethereum: same nonce, higher fee).
 attempt_timeout_secs = 150
+
+# Freshness of a watch request. Every request carries an `issued_at` that its locker signed
+# over. It is refused when older than request_max_age_secs, when dated further ahead of the
+# chain clock the service reads than request_clock_skew_secs, or further behind the swap's own
+# lock time than that. The skew must cover how far the finalized clock runs behind real time
+# (about 15 minutes on Ethereum) plus the error of a client's clock.
+request_max_age_secs = 3600
+request_clock_skew_secs = 1800
 
 [monero]
 # Two or more independently operated nodes, or exactly one node with own_node = true

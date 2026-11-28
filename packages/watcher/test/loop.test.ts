@@ -3,7 +3,6 @@
 // real against in-memory Monero nodes that serve a recorded lock.
 import { afterEach, describe, expect, it } from 'vitest';
 import { SWAP_STATE } from '@xmrswap/protocol';
-import { watchRequest } from '@xmrswap/sdk';
 import type { Watcher } from '../src/service.js';
 import { LOCK_HEIGHT, type World, hex, makeWorld, node, passes } from './world.js';
 
@@ -20,7 +19,7 @@ async function world(chain: (typeof CHAINS)[number]): Promise<World> {
 }
 async function watch(w: World, svc: Watcher, spec: Parameters<World['addSwap']>[0] = {}) {
   const s = await w.addSwap(spec);
-  const r = await svc.register(watchRequest({ chain: w.chain, swapRef: s.ref, noticeKey: s.noticeKey, watcherSolanaKey: w.keys.solana }));
+  const r = await svc.register(s.request());
   expect(r.status).toBe(200);
   return s;
 }
@@ -232,11 +231,11 @@ describe.each(CHAINS)('the loop on %s', (chain) => {
     // Registration itself refuses a watch the per-swap limit cannot pay for.
     const tight = w2.service({ store: store2, settings: { limits: { [chain]: { perSwap: 1n, perDay: 10n ** 30n } } } });
     const s = await w2.addSwap({ notice: 'garbage' });
-    const refused = await tight.register(watchRequest({ chain, swapRef: s.ref, noticeKey: s.noticeKey, watcherSolanaKey: w2.keys.solana }));
+    const refused = await tight.register(s.request());
     expect(refused).toMatchObject({ status: 503, body: { error: 'insufficient_fee_balance' } });
     // A limit lowered after the watch was accepted stops the send, and says so.
     const loose = w2.service({ store: store2 });
-    expect((await loose.register(watchRequest({ chain, swapRef: s.ref, noticeKey: s.noticeKey, watcherSolanaKey: w2.keys.solana }))).status).toBe(200);
+    expect((await loose.register(s.request())).status).toBe(200);
     w2.setTime(w2.times.tNotice + 5n);
     await passes(tight, 3, w2);
     expect(w2.broadcasts).toEqual([]);
@@ -339,7 +338,7 @@ describe('Ethereum fees', () => {
 });
 
 describe('Solana expiry', () => {
-  it('a transaction not seen after the attempt timeout is dead (its blockhash expired): a fresh one is built, and its fee is not counted twice', async () => {
+  it('a transaction not seen is rebroadcast byte for byte while its blockhash lives; only once the chain is past its last valid block height is a fresh one built, and its fee is not counted twice', async () => {
     const w = await world('solana');
     const store = w.store();
     const svc = w.service({ store });
@@ -347,11 +346,43 @@ describe('Solana expiry', () => {
     w.setTime(w.times.tCut);
     w.net.lands = false;
     await svc.tick();
+    // Past the attempt timeout, the blockhash still valid: the same bytes again, never a second transaction beside a live one.
     w.clock.ms += 151_000;
+    await svc.tick();
+    w.advanceBlocks(150);
+    w.clock.ms += 151_000;
+    await svc.tick();
+    expect(store.attempts('solana', hex(s.ref)).map((a) => a.status)).toEqual(['sent']);
+    expect(w.broadcasts.length).toBe(3);
+    expect(new Set(w.broadcasts.map((b) => b.id)).size).toBe(1);
+    // One block later the blockhash is dead (by block height, whatever the wall clock says): a fresh transaction.
+    w.advanceBlocks(1);
     await svc.tick();
     const attempts = store.attempts('solana', hex(s.ref));
     expect(attempts.map((a) => a.status)).toEqual(['dropped', 'sent']);
+    expect(attempts[1]!.valid_until).toBe(attempts[0]!.valid_until! + 151);
     expect(store.committed('solana', { swapRef: hex(s.ref) })).toBe(BigInt(attempts[1]!.max_fee));
+    w.net.lands = true;
+    w.clock.ms += 151_000;
+    await passes(svc, 4, w, 151_000);
+    expect(svc.status(hex(s.ref))).toMatchObject({ status: 'frozen' });
+    store.close();
+  });
+
+  it('a transaction journaled before a crash whose blockhash has since expired is not rebroadcast: a fresh one is built', async () => {
+    const w = await world('solana');
+    const store = w.store();
+    const { Crash, crashAt } = await import('./world.js');
+    const first = w.service({ store, fault: crashAt('after-attempt-journal') });
+    const s = await watch(w, first, { notice: 'no-such-tx' });
+    w.setTime(w.times.tCut);
+    await expect(first.tick()).rejects.toBeInstanceOf(Crash);
+    w.advanceBlocks(200);
+    const second = w.service({ store });
+    await passes(second, 4, w);
+    expect(store.attempts('solana', hex(s.ref)).map((a) => a.status)).toEqual(['dropped', 'landed']);
+    expect(w.broadcasts.length).toBe(1);
+    expect(second.status(hex(s.ref))).toMatchObject({ status: 'frozen' });
     store.close();
   });
 });

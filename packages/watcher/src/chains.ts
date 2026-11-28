@@ -4,13 +4,19 @@
  *
  * Nothing here trusts the endpoint with a decision that costs more than a bounded fee. The
  * program id, the contract address and the chain id are pinned from the configuration, never
- * read from the endpoint; the compute-unit limit, the gas limit and the fee per gas are bounded
- * locally; and the signature comes from `WatcherKeys`, which re-checks the finished transaction
- * and signs nothing that is not a freeze of the named swap.
+ * read from the endpoint; the compute-unit limit, the gas limit and the fee per gas are bounded;
+ * and the signature comes from `WatcherKeys`, which re-checks the finished transaction and
+ * signs nothing that is not a freeze of the named swap.
+ *
+ * Building and broadcasting stay two steps (the SDK's one-call `send` is not used): the signed
+ * bytes are journaled between them, which is what makes a restart send the same transaction
+ * instead of a second one. On Solana the unsigned transaction comes from the SDK's bounded
+ * `prepare`; on Ethereum it is assembled here with a fixed gas limit and, when a pending one
+ * must be outbid, the same nonce.
  */
 import { PublicKey } from '@solana/web3.js';
 import { type ChainName, base58Encode } from '@xmrswap/protocol';
-import { type Bytes, ETH_WATCHER_GAS, type EthTransport, EthereumClient, SdkError, SolanaClient, type SolanaTransport, type SwapView, cuLimitFromSimulation, hex, legacyTransaction, programErrorName } from '@xmrswap/sdk';
+import { type Bytes, ETH_WATCHER_GAS, type EthTransport, EthereumClient, ProgramError, SdkError, SolanaClient, type SolanaTransport, type SwapView, hex, watchDeployment } from '@xmrswap/sdk';
 import { keccak256 } from 'viem';
 import type { EthereumSettings, SolanaSettings } from './config.js';
 import type { EthFreezeTx, EthereumPins, SolanaPins, WatcherKeys } from './keys.js';
@@ -25,6 +31,8 @@ export interface SignedFreeze {
   nonce: number | null;
   feePerGas: bigint | null;
   tipPerGas: bigint | null;
+  /** Solana: the block height after which this transaction can no longer land. */
+  validUntil: number | null;
 }
 
 /** The chain would refuse the freeze now (simulation failed). Nothing was signed. */
@@ -47,6 +55,8 @@ export interface ChainPort {
   readonly chain: ChainName;
   /** The watcher's own key on this chain, as a swap names it. */
   readonly address: string;
+  /** The deployment a watch request must be bound to (SDK `watchDeployment`): the program id, or `chainId:contract`. Pinned from the configuration. */
+  readonly deployment: string;
   /** Throws unless the endpoint is the configured cluster or chain. */
   verifyEndpoint(): Promise<void>;
   /** The swap at the configured finality, or `null` when there is none. */
@@ -65,8 +75,13 @@ export interface ChainPort {
   /** Hand a signed freeze to the endpoint. Sending the same bytes twice is harmless. */
   broadcast(wire: Bytes): Promise<void>;
   lookup(txId: string): Promise<'landed' | 'failed' | 'unknown'>;
-  /** `false`: a transaction not seen after the attempt timeout is dead (Solana: its blockhash expired) and a fresh one may be built. `true`: it stays valid and can only be replaced at its nonce. */
+  /**
+   * `true` (Ethereum): a pending transaction stays valid and can only be replaced at its nonce.
+   * `false` (Solana): it dies with its blockhash (`expired`), and only then may a fresh one be built.
+   */
   readonly replaceByNonce: boolean;
+  /** Whether a transaction valid until block height `validUntil` can no longer land. */
+  expired(validUntil: number | null): Promise<boolean>;
 }
 
 const LAMPORTS_PER_SIGNATURE = 5_000n;
@@ -75,6 +90,7 @@ export class SolanaChain implements ChainPort {
   readonly chain = 'solana' as const;
   readonly replaceByNonce = false;
   readonly address: string;
+  readonly deployment: string;
   private readonly client: SolanaClient;
   private readonly pins: SolanaPins;
 
@@ -84,7 +100,9 @@ export class SolanaChain implements ChainPort {
     private readonly keys: WatcherKeys,
   ) {
     this.address = keys.solana;
-    this.client = new SolanaClient({ transport, programId: settings.programId, subscriptions: false });
+    this.deployment = watchDeployment({ programId: settings.programId });
+    // The SDK bounds what `prepare` builds: a simulation that reports more compute units than the bound is refused, not followed.
+    this.client = new SolanaClient({ transport, programId: settings.programId, subscriptions: false, priorityFee: settings.priorityFeeMicroLamports, maxComputeUnits: settings.maxComputeUnits, maxPriorityFee: settings.priorityFeeMicroLamports });
     this.pins = { programId: settings.programId, maxComputeUnits: settings.maxComputeUnits, maxPriorityFeeMicroLamports: settings.priorityFeeMicroLamports };
   }
 
@@ -98,8 +116,8 @@ export class SolanaChain implements ChainPort {
   now(): Promise<bigint> {
     return this.client.chainTime(this.settings.commitment);
   }
-  async balance(): Promise<bigint> {
-    return (await this.transport.getAccount(this.address, 'confirmed'))?.lamports ?? 0n;
+  balance(): Promise<bigint> {
+    return this.client.getBalance(this.address, 'confirmed');
   }
   private fee(units: number): bigint {
     return LAMPORTS_PER_SIGNATURE + (BigInt(units) * this.settings.priorityFeeMicroLamports + 999_999n) / 1_000_000n;
@@ -111,17 +129,17 @@ export class SolanaChain implements ChainPort {
   async buildFreeze(swap: SwapView): Promise<SignedFreeze> {
     if (swap.chain !== 'solana') throw new SdkError('WrongChain', 'not a Solana swap');
     const ix = this.client.program.freeze({ caller: this.address, swap: new PublicKey(swap.swapRef), maker: swap.maker });
-    const { blockhash } = await this.transport.getLatestBlockhash();
-    const cuPrice = this.settings.priorityFeeMicroLamports;
-    const plan = { payer: this.address, blockhash, instructions: [ix], cuPrice };
-    const probe = legacyTransaction({ ...plan, cuLimit: this.settings.maxComputeUnits });
-    const sim = await this.transport.simulate(probe.serialize({ requireAllSignatures: false, verifySignatures: false }));
-    if (sim.err) throw new FreezeRefused(programErrorName(sim.err) ?? 'SimulationFailed');
-    // The endpoint's figure can only lower the limit, never raise it past the configured bound.
-    const units = Math.min(this.settings.maxComputeUnits, sim.unitsConsumed === null ? this.settings.maxComputeUnits : cuLimitFromSimulation(sim.unitsConsumed));
-    const tx = legacyTransaction({ ...plan, cuLimit: Math.max(units, 1) });
+    let tx;
+    try {
+      // Simulates first (a freeze the program would refuse is never signed) and sets the compute-unit limit within the bound.
+      tx = await this.client.prepare(this.address, [ix]);
+    } catch (e) {
+      if (e instanceof ProgramError) throw new FreezeRefused(e.program ?? 'SimulationFailed');
+      throw e;
+    }
+    const units = tx.instructions[0]!.data.readUInt32LE(1);
     const { wire, signature } = this.keys.signSolanaFreeze(tx, swap.swapRef, this.pins);
-    return { txId: base58Encode(signature), wire, maxFee: this.fee(units), nonce: null, feePerGas: null, tipPerGas: null };
+    return { txId: base58Encode(signature), wire, maxFee: this.fee(units), nonce: null, feePerGas: null, tipPerGas: null, validUntil: tx.lastValidBlockHeight ?? null };
   }
   async broadcast(wire: Bytes): Promise<void> {
     await this.transport.send(wire);
@@ -129,6 +147,10 @@ export class SolanaChain implements ChainPort {
   async lookup(txId: string): Promise<'landed' | 'failed' | 'unknown'> {
     const s = await this.transport.getSignatureStatus(txId);
     return s === null ? 'unknown' : s.err ? 'failed' : 'landed';
+  }
+  /** By block height, not by wall clock: a transaction is dead once the chain passes its blockhash's last valid height. */
+  async expired(validUntil: number | null): Promise<boolean> {
+    return validUntil !== null && (await this.client.blockhashExpired(validUntil, 'finalized'));
   }
 }
 
@@ -139,6 +161,7 @@ export class EthereumChain implements ChainPort {
   readonly chain = 'ethereum' as const;
   readonly replaceByNonce = true;
   readonly address: `0x${string}`;
+  readonly deployment: string;
   private readonly client: EthereumClient;
   private readonly pins: EthereumPins;
 
@@ -148,7 +171,8 @@ export class EthereumChain implements ChainPort {
     private readonly keys: WatcherKeys,
   ) {
     this.address = keys.ethereum;
-    this.client = new EthereumClient({ transport, contract: settings.contract });
+    this.deployment = watchDeployment({ chainId: settings.chainId, contract: settings.contract });
+    this.client = new EthereumClient({ transport, contract: settings.contract, chainId: settings.chainId });
     this.pins = { contract: settings.contract, chainId: settings.chainId, maxGas: ETH_FREEZE_GAS_LIMIT, maxFeePerGas: settings.maxFeePerGas };
   }
 
@@ -199,7 +223,7 @@ export class EthereumChain implements ChainPort {
     }
     const tx: EthFreezeTx = { chainId: this.settings.chainId, nonce, to: call.to, data: call.data, value: 0n, gas: ETH_FREEZE_GAS_LIMIT, maxFeePerGas: feePerGas, maxPriorityFeePerGas: tipNow };
     const raw = await this.keys.signEthereumFreeze(tx, swap.swapRef, this.pins);
-    return { txId: keccak256(raw), wire: Uint8Array.from(Buffer.from(raw.slice(2), 'hex')), maxFee: ETH_FREEZE_GAS_LIMIT * feePerGas, nonce, feePerGas, tipPerGas: tipNow };
+    return { txId: keccak256(raw), wire: Uint8Array.from(Buffer.from(raw.slice(2), 'hex')), maxFee: ETH_FREEZE_GAS_LIMIT * feePerGas, nonce, feePerGas, tipPerGas: tipNow, validUntil: null };
   }
   async broadcast(wire: Bytes): Promise<void> {
     try {
@@ -209,6 +233,9 @@ export class EthereumChain implements ChainPort {
       if (/already known|known transaction|already imported|already in mempool/i.test(String((e as Error)?.message))) return;
       throw e;
     }
+  }
+  async expired(): Promise<boolean> {
+    return false;
   }
   async lookup(txId: string): Promise<'landed' | 'failed' | 'unknown'> {
     const r = (await this.transport.request({ method: 'eth_getTransactionReceipt', params: [txId] })) as { status: string } | null;

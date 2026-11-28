@@ -9,7 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Transaction } from '@solana/web3.js';
 import { ACCOUNT_SIZE, type ChainName, IXmrSwapAbi, PROGRAM_ID, SWAP_FLAG, SWAP_STATE, type Swap, base58Encode, decodeInstructionData, encodeAccount, errorCode } from '@xmrswap/protocol';
-import { type Bytes, type EthSwapStruct, type EthTransport, type SwapView, buildNotice, hex, hex0x, init, noticeKey, unhex } from '@xmrswap/sdk';
+import { type Bytes, type EthSwapStruct, type EthTransport, type SwapView, type WatchRequest, type WatchRequestArgs, buildNotice, hex, hex0x, init, noticeKey, unhex, watchRequest } from '@xmrswap/sdk';
 import { FakeEthereum, FakeMoneroNode, FakeRevert, FakeSolana, type FakeTx } from '@xmrswap/sdk/testing';
 import { type Abi, decodeFunctionData, keccak256, parseTransaction } from 'viem';
 import { type ChainPort, EthereumChain, SolanaChain } from '../src/chains.js';
@@ -68,6 +68,22 @@ export interface SwapSpec {
   direction?: 0 | 1;
 }
 
+/** A swap on the fake chain, with what its locker holds. */
+export interface WorldSwap {
+  ref: Bytes;
+  /** The locker's notice key: computable at lock time, before any notice exists. */
+  noticeKey: Bytes;
+  /** The secret of the locker's encryption key recorded in the swap: what authenticates its watch request. */
+  lockerEncSecret: Bytes;
+  /** The secret of the counterparty's (the claimer's) encryption key: it knows the notice key too, and must not pass for the locker. */
+  claimerEncSecret: Bytes;
+  view: () => Promise<SwapView>;
+  /** What the locker's client passes to `WatcherClient.register` (format 2), `issued_at` = chain time now. */
+  args(over?: Partial<WatchRequestArgs>): WatchRequestArgs;
+  /** The request body the locker's client posts. */
+  request(over?: Partial<WatchRequestArgs>): WatchRequest;
+}
+
 export interface SentFreeze {
   swapRef: string;
   /** Function or instruction names in the transaction, in order. */
@@ -85,7 +101,11 @@ export interface World {
   setTime(t: bigint): void;
   setBalance(v: bigint): void;
   /** Put a swap on the fake chain. Returns its reference and the locker's notice key. */
-  addSwap(spec?: SwapSpec): Promise<{ ref: Bytes; noticeKey: Bytes; view: () => Promise<SwapView> }>;
+  addSwap(spec?: SwapSpec): Promise<WorldSwap>;
+  /** Chain time now. */
+  now(): bigint;
+  /** Solana: let `n` blocks pass (a blockhash lives 150). */
+  advanceBlocks(n: number): void;
   /** Post (or replace) the notice of a swap already on chain, moving it to NOTICED. */
   postNotice(ref: Bytes, kind: Exclude<NoticeKind, 'none'>): Promise<void>;
   setState(ref: Bytes, state: number): void;
@@ -109,11 +129,12 @@ export interface World {
 
 export const SETTINGS: ServiceSettings = {
   maxSwaps: 50,
-  maxKeysPerSwap: 4,
   retentionDays: 30,
   stopConfirmations: 2,
   minLeadSecs: 120,
   attemptTimeoutSecs: 150,
+  requestMaxAgeSecs: 3_600,
+  requestClockSkewSecs: 1_800,
   limits: { solana: { perSwap: 100_000n, perDay: 5_000_000n }, ethereum: { perSwap: 30_000_000_000_000_000n, perDay: 300_000_000_000_000_000n } },
 };
 
@@ -144,6 +165,7 @@ export async function makeWorld(chain: ChainName): Promise<World> {
   let create: (ref: Bytes, spec: SwapSpec) => void;
   let removeSwap: (ref: Bytes) => void;
   let signedOrSimulated: () => { calls: string[] }[];
+  let advanceBlocks: (n: number) => void = () => {};
 
   if (chain === 'solana') {
     const fake = new FakeSolana({ subscriptions: false });
@@ -187,6 +209,7 @@ export async function makeWorld(chain: ChainName): Promise<World> {
       fake.setClock(t);
     };
     setBalance = (v) => fake.setAccount(keys.solana, SYSTEM, z(0), v);
+    advanceBlocks = (n) => void (fake.blockHeight += n);
     create = (ref, spec) => {
       const pda = base58Encode(ref);
       const watcher = spec.watcher === undefined ? keys.solana : (spec.watcher ?? SYSTEM);
@@ -220,7 +243,6 @@ export async function makeWorld(chain: ChainName): Promise<World> {
     const structs = new Map<string, EthSwapStruct>();
     const zero32 = `0x${'00'.repeat(32)}`;
     const zeroAddr = '0x0000000000000000000000000000000000000000';
-    let balance = 0n;
     const raws: `0x${string}`[] = [];
     fake.views['getSwap'] = ([id]) => structs.get(String(id).toLowerCase()) ?? { ...template(), state: 0 };
     fake.views['freeze'] = ([id], ctx) => {
@@ -242,7 +264,6 @@ export async function makeWorld(chain: ChainName): Promise<World> {
     const transport: EthTransport = {
       async request(a) {
         if (net.readsFail && a.method !== 'eth_sendRawTransaction') throw new Error('connect ECONNREFUSED 127.0.0.1');
-        if (a.method === 'eth_getBalance') return `0x${balance.toString(16)}`;
         if (a.method === 'eth_sendRawTransaction') {
           const raw = a.params![0] as `0x${string}`;
           raws.push(raw);
@@ -277,7 +298,7 @@ export async function makeWorld(chain: ChainName): Promise<World> {
       now = t;
       for (const h of [fake.finalized, fake.latest]) fake.blocks.set(h, { ...fake.block(h), timestamp: t });
     };
-    setBalance = (v) => void (balance = v);
+    setBalance = (v) => void fake.balances.set(keys.ethereum, v);
     create = (ref, spec) => {
       const watcher = spec.watcher === undefined ? keys.ethereum : (spec.watcher ?? zeroAddr);
       structs.set(hex0x(ref), { ...template(), state: spec.state ?? SWAP_STATE.ACTIVE, direction: spec.direction ?? 0, watcher, freezeSecs: spec.wZ ?? 86_400 });
@@ -323,9 +344,13 @@ export async function makeWorld(chain: ChainName): Promise<World> {
       if (spec.notice && spec.notice !== 'none') await postNotice(ref, spec.notice);
       if (spec.state !== undefined) write(ref, { state: spec.state });
       const s = await view(ref);
-      // The locker's notice key: computable at lock time, before any notice exists.
-      return { ref, noticeKey: noticeKey(s, unhex(s.direction === 0 ? ENC.taker_secret : ENC.maker_secret)), view: () => view(ref) };
+      const lockerEncSecret = unhex(s.direction === 0 ? ENC.taker_secret : ENC.maker_secret);
+      const key = noticeKey(s, lockerEncSecret);
+      const args = (over: Partial<WatchRequestArgs> = {}): WatchRequestArgs => ({ chain, swapRef: ref, noticeKey: key, watcherSolanaKey: keys.solana, lockerEncSecret, deployment: port.deployment, issuedAt: now, ...over });
+      return { ref, noticeKey: key, lockerEncSecret, claimerEncSecret: unhex(s.direction === 0 ? ENC.maker_secret : ENC.taker_secret), view: () => view(ref), args, request: (over) => watchRequest(args(over)) };
     },
+    now: () => now,
+    advanceBlocks: (n) => advanceBlocks(n),
     postNotice,
     setState: (ref, state) => write(ref, { state }),
     patch: (ref, patch) => write(ref, patch),

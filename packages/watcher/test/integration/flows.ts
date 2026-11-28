@@ -22,6 +22,7 @@ import { priceEthQuote, priceOffer } from '../../../sdk/src/registry/pricing.js'
 import { signEthQuote } from '../../../sdk/src/signing/eip712.js';
 import { seedSigner } from '../../../sdk/src/solana/client.js';
 import { hex, hex0x, unhex } from '../../../sdk/src/util.js';
+import { type WatchRequestArgs, noticeKey, watchDeployment } from '../../../sdk/src/watcher/protocol.js';
 import { ETH_NATIVE, type EthWorld, fundForGas } from '../../../sdk/test/integration/eth.js';
 import { type SolWorld, XMR as X } from '../../../sdk/test/integration/sol.js';
 import { loadConfig } from '../../src/config.js';
@@ -174,4 +175,18 @@ export async function errorCode(p: Promise<unknown>): Promise<string> {
     return typeof (e as { code?: unknown }).code === 'string' ? (e as { code: string }).code : `other: ${(e as Error).message}`;
   }
   return 'accepted';
+}
+
+// ------------------------------------------------------------------ the locker's watch request (wire format 2)
+
+/**
+ * What the locker's client passes to `WatcherClient.register`: the notice key, authenticated
+ * with the secret of the locker's encryption key recorded in the swap (A: the taker's one-time
+ * key; B: the maker's), bound to the deployment and to chain time now.
+ */
+export async function solRegistration(w: SolWorld, s: SwapView, lockerEncSecret: Uint8Array, watcherSolanaKey: string): Promise<WatchRequestArgs> {
+  return { chain: 'solana', swapRef: s.swapRef, noticeKey: noticeKey(s, lockerEncSecret), watcherSolanaKey, lockerEncSecret, deployment: watchDeployment({ programId: PROGRAM_ID }), issuedAt: await w.now() };
+}
+export async function ethRegistration(w: EthWorld, s: SwapView, lockerEncSecret: Uint8Array, watcherSolanaKey: string): Promise<WatchRequestArgs> {
+  return { chain: 'ethereum', swapRef: s.swapRef, noticeKey: noticeKey(s, lockerEncSecret), watcherSolanaKey, lockerEncSecret, deployment: watchDeployment({ chainId: 31337, contract: w.contract }), issuedAt: await w.now() };
 }

@@ -25,12 +25,11 @@ import { deadlinesOf } from '../../../sdk/src/machine/view.js';
 import { resumeSwapKeys } from '../../../sdk/src/recovery/file.js';
 import { seedSigner } from '../../../sdk/src/solana/client.js';
 import { hex, hex0x } from '../../../sdk/src/util.js';
-import { noticeKey } from '../../../sdk/src/watcher/protocol.js';
 import { type EthWorld, startEthereum } from '../../../sdk/test/integration/eth.js';
 import { type SolWorld, startSolana } from '../../../sdk/test/integration/sol.js';
 import * as xmr from '../../../sdk/test/integration/xmr.js';
 import { Crash, crashAt } from '../world.js';
-import { ETH_TAKER_SEED, FREEZE_WINDOW, PRICE, TAKER_SEED, X, errorCode, ethLock, ethNotice, solFund, solNotice, solOpen, startService } from './flows.js';
+import { ETH_TAKER_SEED, FREEZE_WINDOW, PRICE, TAKER_SEED, X, errorCode, ethLock, ethNotice, ethRegistration, solRegistration, solFund, solNotice, solOpen, startService } from './flows.js';
 
 type Service = Awaited<ReturnType<typeof startService>>;
 const jointKeys = (j: JointAddress) => ({ viewPriv: hex(j.viewPriv), spendPub: hex(j.spendPub) });
@@ -67,7 +66,9 @@ describe('Solana', () => {
     const info = await client.info();
     const o = await solOpen(w, 0, X, info.solana);
     expect(o.s).toMatchObject({ state: SWAP_STATE.ACTIVE, watcher: true, watcherAddress: svc.keys.solana, wZ: FREEZE_WINDOW.solana });
-    const ack = await client.register({ chain: 'solana', swapRef: o.s.swapRef, noticeKey: noticeKey(o.s, o.plan.keys.encSecret), watcherSolanaKey: info.solana });
+    // Only the locker can hand the swap over: the maker (who knows the notice key too) and a stranger are rejected.
+    for (const secret of [w.makerEnc.encSecret, new Uint8Array(32).fill(0x33)]) await expect(client.register(await solRegistration(w, o.s, secret, info.solana))).rejects.toMatchObject({ status: 403 });
+    const ack = await client.register(await solRegistration(w, o.s, o.plan.keys.encSecret, info.solana));
     expect(BigInt(ack.watching_until)).toBe(o.s.tNoteDeadline + BigInt(o.s.dC));
     return { ...o, share: o.share! };
   }
@@ -188,7 +189,7 @@ describe('Solana', () => {
     // Another data directory: another watcher, with its own keys.
     expect(info.solana).not.toBe(svc.keys.solana);
     const o = await solOpen(w, 0, X, info.solana);
-    await new WatcherClient(dying.url).register({ chain: 'solana', swapRef: o.s.swapRef, noticeKey: noticeKey(o.s, o.plan.keys.encSecret), watcherSolanaKey: info.solana });
+    await new WatcherClient(dying.url).register(await solRegistration(w, o.s, o.plan.keys.encSecret, info.solana));
     const freezes = await counter('freezes');
     const s = await solNotice(w, o.s, o.share!, FALSE_TXID);
     const dl = deadlinesOf('solana', s);
@@ -228,12 +229,15 @@ describe('Solana', () => {
     const o = await solOpen(w, 1, X);
     const info = await client.info();
     // Before `fund` the swap names no watcher: the service refuses it.
-    await expect(client.register({ chain: 'solana', swapRef: o.s.swapRef, noticeKey: new Uint8Array(32).fill(1), watcherSolanaKey: info.solana })).rejects.toMatchObject({ status: 404 });
+    await expect(client.register(await solRegistration(w, o.s, w.makerEnc.encSecret, info.solana))).rejects.toMatchObject({ status: 404 });
     // The maker names its watcher at fund and hands it the notice key.
     const f = await solFund(w, o.s, info.solana);
     let s = f.s;
     expect(s).toMatchObject({ state: SWAP_STATE.ACTIVE, direction: 1, watcher: true, watcherAddress: svc.keys.solana });
-    await client.register({ chain: 'solana', swapRef: s.swapRef, noticeKey: noticeKey(s, w.makerEnc.encSecret), watcherSolanaKey: info.solana });
+    // The taker is the counterparty here: it knows the notice key too, and is not the locker. Rejected, like any stranger.
+    for (const secret of [o.plan.keys.encSecret, new Uint8Array(32).fill(0x33)]) await expect(client.register(await solRegistration(w, s, secret, info.solana))).rejects.toMatchObject({ status: 403 });
+    expect(svc.store.getWatch('solana', hex(s.swapRef))).toBe(null);
+    await client.register(await solRegistration(w, s, w.makerEnc.encSecret, info.solana));
 
     // The taker never pays XMR and posts a notice for a transaction that does not exist. The daemon is down.
     await w.exec(s, takerStep({ swap: s, now: await w.now(), paid: true }), { session: o.session }, { notice: buildNotice(s, o.plan.keys.encSecret, new Uint8Array(32).fill(0xfb), o.plan.keys.view) });
@@ -287,9 +291,12 @@ describe('Ethereum', () => {
     const o = await ethLock(w, X, info.ethereum as Address);
     expect(o.s).toMatchObject({ state: SWAP_STATE.ACTIVE, watcher: true, watcherAddress: info.ethereum, wZ: FREEZE_WINDOW.ethereum });
     // The notice key is sealed to the watcher's Solana key whichever chain the swap is on. Accepted only once the swap is final.
-    await expect(client.register({ chain: 'ethereum', swapRef: o.s.swapRef, noticeKey: noticeKey(o.s, o.plan.keys.encSecret), watcherSolanaKey: info.solana })).rejects.toMatchObject({ status: 404 });
+    await expect(client.register(await ethRegistration(w, o.s, o.plan.keys.encSecret, info.solana))).rejects.toMatchObject({ status: 404 });
     await w.finalize();
-    const ack = await client.register({ chain: 'ethereum', swapRef: o.s.swapRef, noticeKey: noticeKey(o.s, o.plan.keys.encSecret), watcherSolanaKey: info.solana });
+    // The maker (the counterparty) and a stranger cannot register the taker's swap.
+    for (const secret of [w.makerEnc.encSecret, new Uint8Array(32).fill(0x33)]) await expect(client.register(await ethRegistration(w, o.s, secret, info.solana))).rejects.toMatchObject({ status: 403 });
+    expect(svc.store.getWatch('ethereum', hex(o.s.swapRef))).toBe(null);
+    const ack = await client.register(await ethRegistration(w, o.s, o.plan.keys.encSecret, info.solana));
     expect(BigInt(ack.watching_until)).toBe(o.s.tNoteDeadline + BigInt(o.s.dC));
     const freezes = await counter('freezes');
     const refunds = await counter('refunds_after_freeze');

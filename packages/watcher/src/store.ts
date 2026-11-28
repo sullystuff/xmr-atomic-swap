@@ -5,8 +5,8 @@
  *
  * It stores the minimum (SPEC 11.6): the chain, the swap reference, where the watch stands and
  * the transactions the watcher itself sent. It never stores the swap's amount, its parties, the
- * Monero transaction, the joint address or a view share. The one secret, the notice key, is
- * sealed under a key from the keystore and its row is deleted when the watch ends.
+ * Monero transaction, the joint address or a view share. The one secret, the notice key (one per
+ * swap), is sealed under a key from the keystore and its row is deleted when the watch ends.
  *
  * The file is bound to one pair of watcher keys at first start and refuses to open for another.
  */
@@ -25,11 +25,11 @@ CREATE TABLE IF NOT EXISTS watches (
   PRIMARY KEY (chain, swap_ref));
 CREATE INDEX IF NOT EXISTS watches_open ON watches (terminal_at);
 CREATE TABLE IF NOT EXISTS watch_keys (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, chain TEXT NOT NULL, swap_ref TEXT NOT NULL, sealed BLOB NOT NULL, created_at INTEGER NOT NULL);
-CREATE INDEX IF NOT EXISTS watch_keys_swap ON watch_keys (chain, swap_ref);
+  chain TEXT NOT NULL, swap_ref TEXT NOT NULL, sealed BLOB NOT NULL, issued_at INTEGER NOT NULL, created_at INTEGER NOT NULL,
+  PRIMARY KEY (chain, swap_ref));
 CREATE TABLE IF NOT EXISTS attempts (
   id INTEGER PRIMARY KEY AUTOINCREMENT, chain TEXT NOT NULL, swap_ref TEXT NOT NULL, tx_id TEXT NOT NULL, wire BLOB NOT NULL,
-  max_fee TEXT NOT NULL, nonce INTEGER, fee_per_gas TEXT, tip_per_gas TEXT, status TEXT NOT NULL, error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+  max_fee TEXT NOT NULL, nonce INTEGER, fee_per_gas TEXT, tip_per_gas TEXT, valid_until INTEGER, status TEXT NOT NULL, error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS attempts_swap ON attempts (chain, swap_ref);
 CREATE INDEX IF NOT EXISTS attempts_at ON attempts (chain, created_at);
 `;
@@ -81,6 +81,8 @@ export interface AttemptRow {
   nonce: number | null;
   fee_per_gas: string | null;
   tip_per_gas: string | null;
+  /** Solana: the block height after which the transaction's blockhash is dead. */
+  valid_until: number | null;
   status: AttemptStatus;
   error: string | null;
   created_at: number;
@@ -142,32 +144,31 @@ export class Store {
   keyCount(chain: ChainName, swapRef: string): number {
     return (this.db.prepare('SELECT COUNT(*) AS n FROM watch_keys WHERE chain = ? AND swap_ref = ?').get(chain, swapRef) as { n: number }).n;
   }
-  keys(chain: ChainName, swapRef: string): { id: number; sealed: Buffer }[] {
-    return this.db.prepare('SELECT id, sealed FROM watch_keys WHERE chain = ? AND swap_ref = ? ORDER BY id').all(chain, swapRef) as { id: number; sealed: Buffer }[];
-  }
-  /** Keep only the key that opened the notice: every other candidate is not this swap's key. */
-  keepOnlyKey(chain: ChainName, swapRef: string, id: number): void {
-    this.db.prepare('DELETE FROM watch_keys WHERE chain = ? AND swap_ref = ? AND id <> ?').run(chain, swapRef, id);
+  /** The one notice key of a watch (sealed), with the `issued_at` of the request that brought it. */
+  key(chain: ChainName, swapRef: string): { sealed: Buffer; issued_at: number } | null {
+    return (this.db.prepare('SELECT sealed, issued_at FROM watch_keys WHERE chain = ? AND swap_ref = ?').get(chain, swapRef) as { sealed: Buffer; issued_at: number } | undefined) ?? null;
   }
 
   /**
-   * Store a watch and one candidate notice key in a single committed transaction. `limits` are
-   * re-checked inside it. Returns what happened; nothing is acknowledged before this returns.
+   * Store a watch and its notice key in a single committed transaction; the cap is re-checked
+   * inside it. One key per swap: every accepted request was made by the swap's locker, so a
+   * later request (`issued_at` newer) replaces the key, the same request again changes nothing,
+   * and an older one is refused. Nothing is acknowledged before this returns.
    */
-  admit(a: { chain: ChainName; swapRef: string; sealedKey: Buffer; watchingUntil: number; now: number; maxSwaps: number; maxKeys: number; duplicate: (sealed: Buffer) => boolean }): 'stored' | 'duplicate' | 'full' | 'too-many-keys' | 'ended' {
+  admit(a: { chain: ChainName; swapRef: string; sealedKey: Buffer; issuedAt: number; watchingUntil: number; now: number; maxSwaps: number }): 'stored' | 'same' | 'renewed' | 'older' | 'full' | 'ended' {
     return this.db
       .transaction(() => {
         const row = this.getWatch(a.chain, a.swapRef);
         if (row && row.terminal_at !== null) return 'ended' as const;
+        const have = this.key(a.chain, a.swapRef);
+        if (have && a.issuedAt < have.issued_at) return 'older' as const;
+        if (have && a.issuedAt === have.issued_at) return 'same' as const;
         if (!row) {
           if (this.activeCount() >= a.maxSwaps) return 'full' as const;
           this.db.prepare("INSERT INTO watches (chain, swap_ref, status, phase, watching_until, created_at, updated_at) VALUES (?, ?, 'watching', 'new', ?, ?, ?)").run(a.chain, a.swapRef, a.watchingUntil, a.now, a.now);
         }
-        const have = this.keys(a.chain, a.swapRef);
-        if (have.some((k) => a.duplicate(k.sealed))) return 'duplicate' as const;
-        if (have.length >= a.maxKeys) return 'too-many-keys' as const;
-        this.db.prepare('INSERT INTO watch_keys (chain, swap_ref, sealed, created_at) VALUES (?, ?, ?, ?)').run(a.chain, a.swapRef, a.sealedKey, a.now);
-        return 'stored' as const;
+        this.db.prepare('INSERT INTO watch_keys (chain, swap_ref, sealed, issued_at, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (chain, swap_ref) DO UPDATE SET sealed = excluded.sealed, issued_at = excluded.issued_at').run(a.chain, a.swapRef, a.sealedKey, a.issuedAt, a.now);
+        return have ? ('renewed' as const) : ('stored' as const);
       })
       .immediate();
   }
@@ -216,8 +217,8 @@ export class Store {
     return this.db.prepare('SELECT * FROM attempts WHERE chain = ? AND swap_ref = ? ORDER BY id').all(chain, swapRef) as AttemptRow[];
   }
   /** Journal a signed transaction before it is broadcast. */
-  journalAttempt(a: { chain: ChainName; swapRef: string; txId: string; wire: Uint8Array; maxFee: bigint; nonce: number | null; feePerGas: bigint | null; tipPerGas: bigint | null; now: number }): number {
-    const r = this.db.prepare("INSERT INTO attempts (chain, swap_ref, tx_id, wire, max_fee, nonce, fee_per_gas, tip_per_gas, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'journaled', ?, ?)").run(a.chain, a.swapRef, a.txId, Buffer.from(a.wire), a.maxFee.toString(), a.nonce, a.feePerGas?.toString() ?? null, a.tipPerGas?.toString() ?? null, a.now, a.now);
+  journalAttempt(a: { chain: ChainName; swapRef: string; txId: string; wire: Uint8Array; maxFee: bigint; nonce: number | null; feePerGas: bigint | null; tipPerGas: bigint | null; validUntil: number | null; now: number }): number {
+    const r = this.db.prepare("INSERT INTO attempts (chain, swap_ref, tx_id, wire, max_fee, nonce, fee_per_gas, tip_per_gas, valid_until, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'journaled', ?, ?)").run(a.chain, a.swapRef, a.txId, Buffer.from(a.wire), a.maxFee.toString(), a.nonce, a.feePerGas?.toString() ?? null, a.tipPerGas?.toString() ?? null, a.validUntil, a.now, a.now);
     return Number(r.lastInsertRowid);
   }
   setAttempt(id: number, status: AttemptStatus, now: number, error: string | null = null): void {

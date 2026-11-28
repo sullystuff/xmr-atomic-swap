@@ -46,7 +46,7 @@ export function serviceSettings(config: WatcherConfig): ServiceSettings {
   const limits: ServiceSettings['limits'] = {};
   if (config.solana) limits.solana = { perSwap: config.solana.perSwapLimit, perDay: config.solana.perDayLimit };
   if (config.ethereum) limits.ethereum = { perSwap: config.ethereum.perSwapLimit, perDay: config.ethereum.perDayLimit };
-  return { maxSwaps: config.maxSwaps, maxKeysPerSwap: config.maxKeysPerSwap, retentionDays: config.retentionDays, stopConfirmations: config.stopConfirmations, minLeadSecs: config.minLeadSecs, attemptTimeoutSecs: config.attemptTimeoutSecs, limits };
+  return { maxSwaps: config.maxSwaps, retentionDays: config.retentionDays, stopConfirmations: config.stopConfirmations, minLeadSecs: config.minLeadSecs, attemptTimeoutSecs: config.attemptTimeoutSecs, requestMaxAgeSecs: config.requestMaxAgeSecs, requestClockSkewSecs: config.requestClockSkewSecs, limits };
 }
 
 export async function startWatcher(config: WatcherConfig, opts: RunOptions): Promise<Running> {

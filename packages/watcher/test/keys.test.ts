@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { ComputeBudgetProgram, Keypair, PublicKey, SystemProgram, Transaction, TransactionInstruction } from '@solana/web3.js';
 import { INSTRUCTIONS, IXmrSwapAbi, PROGRAM_ID, base58Encode } from '@xmrswap/protocol';
-import { XmrSwapContract, XmrSwapProgram, hex, legacyTransaction, sealNoticeKey, toBase64, verifyWatchAck } from '@xmrswap/sdk';
+import { type SwapView, XmrSwapContract, XmrSwapProgram, hex, legacyTransaction, verifyWatchAck, watchDeployment, watchRequest } from '@xmrswap/sdk';
+import { x25519Public as x25519Pub } from '@xmrswap/core-wasm';
 import { type Abi, decodeFunctionData, parseTransaction, recoverTransactionAddress } from 'viem';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { type EthFreezeTx, type EthereumPins, NotAFreeze, type SolanaPins, WatcherKeys, assertEthereumFreeze, assertSolanaFreeze } from '../src/keys.js';
@@ -160,7 +161,7 @@ describe('the only Ethereum signature: freeze(swapId)', () => {
 
 describe('what the key holder offers', () => {
   it('has exactly these operations: no "sign bytes", no export of a secret', () => {
-    expect(Object.getOwnPropertyNames(WatcherKeys.prototype).sort()).toEqual(['constructor', 'openFromStore', 'openRequest', 'save', 'sealForStore', 'signAck', 'signEthereumFreeze', 'signSolanaFreeze']);
+    expect(Object.getOwnPropertyNames(WatcherKeys.prototype).sort()).toEqual(['constructor', 'openFromStore', 'save', 'sealForStore', 'signAck', 'signEthereumFreeze', 'signSolanaFreeze', 'verifyRequest']);
     const keys = testKeys();
     // Nothing enumerable or JSON-visible but the two public keys.
     expect(Object.keys(keys).sort()).toEqual(['ethereum', 'solana']);
@@ -168,11 +169,17 @@ describe('what the key holder offers', () => {
     for (const secret of [hex(SOLANA_SEED), hex(ETHEREUM_KEY)]) expect(dump).not.toContain(secret);
   });
 
-  it('opens a request sealed to it and signs an acknowledgement the SDK verifies', () => {
+  it('opens a request only against the locker key of the swap it is given, and signs an acknowledgement the SDK verifies', () => {
     const keys = testKeys();
     const noticeKey = new Uint8Array(32).fill(9);
-    const body = { chain: 'ethereum', swap_ref: hex(swapRef), notice_key: toBase64(sealNoticeKey({ noticeKey, watcherSolanaKey: keys.solana, chain: 'ethereum', swapRef })) };
-    expect(hex(keys.openRequest(body).noticeKey)).toBe(hex(noticeKey));
+    const lockerEncSecret = new Uint8Array(32).fill(0x21);
+    const deployment = watchDeployment({ chainId: 31337, contract: CONTRACT });
+    const body = watchRequest({ chain: 'ethereum', swapRef, noticeKey, watcherSolanaKey: keys.solana, lockerEncSecret, deployment, issuedAt: 1_800_000_100 });
+    const swap = (takerEncKey: Uint8Array) => ({ chain: 'ethereum', swapRef, direction: 0, takerEncKey, makerEncKey: new Uint8Array(32).fill(3), tLock: 1_800_000_000n }) as unknown as SwapView;
+    const ctx = { deployment, now: 1_800_000_200n, maxAgeSecs: 3_600, clockSkewSecs: 1_800 };
+    expect(hex(keys.verifyRequest(body, { ...ctx, swap: swap(x25519Pub(lockerEncSecret)) }).noticeKey)).toBe(hex(noticeKey));
+    // The same request against a swap whose locker key is another's: not the locker.
+    expect(() => keys.verifyRequest(body, { ...ctx, swap: swap(x25519Pub(new Uint8Array(32).fill(0x22))) })).toThrow(/WatchKeyInvalid|not sealed by this swap's locker/);
     const ack = keys.signAck('ethereum', swapRef, 1_800_005_000n);
     expect(verifyWatchAck(ack, { chain: 'ethereum', swapRef, watcherSolanaKey: keys.solana })).toBe(true);
     expect(verifyWatchAck(ack, { chain: 'solana', swapRef, watcherSolanaKey: keys.solana })).toBe(false);
